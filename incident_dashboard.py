@@ -2629,7 +2629,21 @@ seuil_min_count = st.sidebar.number_input("Seuil minimal (filtrer petits groupes
 # =========================
 # Déploiement en ligne : source unique = upload (xlsx/csv)
 if upl is None:
-    st.info("Téléverse un fichier (xlsx/csv) pour démarrer.")
+    st.info("📂 Téléverse un fichier (xlsx ou csv) pour démarrer.")
+
+    st.info(
+        """
+        📊 **Visualisations disponibles :**
+        - Situation globale des cas et décès
+        - Évolution hebdomadaire des cas 📈
+        - Taux de létalité par semaine ⚠️
+        - Répartition des cas par province 🗺️
+        - Analyse par zone de santé 🏥
+        - Tableaux croisés province × semaine 📋
+        - Cartographie des cas (si fichiers géographiques disponibles) 🌍
+        """
+    )
+
     st.stop()
 
 try:
@@ -2638,11 +2652,12 @@ try:
     else:
         sh = sheet_upl.strip() if isinstance(sheet_upl, str) else ""
         raw = pd.read_excel(upl, sheet_name=sh if sh else 0)
-    files_used = [f"upload:{upl.name}"]
-except Exception as e:
-    st.error(f"Impossible de lire le fichier uploadé: {e}")
-    st.stop()
 
+    files_used = [f"upload:{upl.name}"]
+
+except Exception as e:
+    st.error(f"❌ Impossible de lire le fichier téléversé : {e}")
+    st.stop()
 
 # ✅ 1) Standardisation commune (Rougeole/Choléra/…)
 raw = standardize_ll_core(raw)
