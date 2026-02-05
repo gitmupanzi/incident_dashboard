@@ -8,3 +8,4 @@ xlsxwriter
 geopandas
 rapidfuzz
 contextily
+reportlab
