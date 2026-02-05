@@ -37,6 +37,179 @@ from datetime import date
 from typing import Iterable, List, Tuple, Any, Optional
 import io
 from functools import lru_cache
+import tempfile
+
+
+
+# =========================================================
+# ✅ BLOC CARTE (INTÉGRÉ) – AUTONOME
+# =========================================================
+def carte_statique_matplotlib(
+    gdf,
+    colonne_valeurs: str,
+    titre: str,
+    annoter: bool = True,
+    nom_zone: str = "name",
+    fmt_valeurs: str = "{:.0f}",
+    seuil_affichage: float = 1,
+    cmap: str = "Reds",
+    afficher_fond_carte: bool = False,
+    titre_fontsize: int = 11,
+    legend_titre: str = "Nombre de cas",
+    legend_taille_ticks: int = 7,
+    legend_taille_titre: int = 8,
+    cb_height: float = 0.12,
+    cb_width: float = 0.25,
+    cb_shift_up: float = 0.05,
+    afficher_barre_echelle: bool = True,
+    longueur_barre_km: float = 50,
+    afficher_boussole: bool = True,
+    figsize=(12, 10),
+):
+    """
+    IMPORTANT Streamlit:
+    - Retourne une figure Matplotlib (fig)
+    - L'appelant fait st.pyplot(fig) puis plt.close(fig)
+    """
+    if gdf is None or gdf.empty:
+        return None
+    if colonne_valeurs not in gdf.columns:
+        return None
+
+    # ---- helpers ----
+    def _ajouter_barre_echelle(ax, longueur_km=50, loc=(0.10, 0.06), largeur_ligne=0.8, taille_police=7):
+        x_min, x_max = ax.get_xlim()
+        y_min, y_max = ax.get_ylim()
+
+        x_debut = x_min + (x_max - x_min) * loc[0]
+        y = y_min + (y_max - y_min) * loc[1]
+
+        longueur_m = longueur_km * 1000
+        h = (y_max - y_min) * 0.005
+
+        ax.plot([x_debut, x_debut + longueur_m], [y, y], linewidth=largeur_ligne, color="black")
+        ax.plot([x_debut, x_debut], [y - h, y + h], linewidth=largeur_ligne, color="black")
+        ax.plot([x_debut + longueur_m, x_debut + longueur_m], [y - h, y + h], linewidth=largeur_ligne, color="black")
+
+        ax.text(
+            x_debut + longueur_m / 2,
+            y + h * 2,
+            f"{longueur_km:.0f} km",
+            ha="center",
+            va="bottom",
+            fontsize=taille_police,
+        )
+
+    def _ajouter_boussole(ax, loc=(0.95, 0.95), offset=0.08, taille_police=11):
+        ax.annotate(
+            "N",
+            xy=loc,
+            xytext=(loc[0], loc[1] - offset),
+            xycoords="axes fraction",
+            textcoords="axes fraction",
+            ha="center",
+            va="center",
+            fontsize=taille_police,
+            fontweight="bold",
+            arrowprops=dict(arrowstyle="-|>", linewidth=1.2),
+        )
+
+    # ---- reprojection (pour échelle en mètres) ----
+    try:
+        if gdf.crs is None or (hasattr(gdf.crs, "to_epsg") and gdf.crs.to_epsg() != 3857):
+            gdf = gdf.to_crs(epsg=3857)
+    except Exception:
+        pass
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # ---- plot ----
+    geom_types = gdf.geometry[~gdf.geometry.is_empty].geom_type.unique()
+    if set(geom_types) == {"Point"}:
+        gdf.plot(
+            column=colonne_valeurs,
+            cmap=cmap,
+            ax=ax,
+            legend=True,
+            markersize=40,
+            edgecolor="k",
+            linewidth=0.5,
+        )
+    else:
+        gdf.plot(
+            column=colonne_valeurs,
+            cmap=cmap,
+            ax=ax,
+            legend=True,
+            edgecolor="0.75",
+            linewidth=0.8,
+        )
+
+    ax.set_title(titre, fontsize=titre_fontsize)
+    ax.axis("off")
+
+    # ---- fond (optionnel) ----
+    if afficher_fond_carte and ctx is not None:
+        try:
+            ctx.add_basemap(ax, source=ctx.providers.Stamen.TonerLite)
+        except Exception:
+            pass
+
+    # ---- labels ----
+    if annoter:
+        for _, row in gdf.iterrows():
+            if row.geometry is None or row.geometry.is_empty:
+                continue
+
+            val = row[colonne_valeurs]
+            if pd.isna(val) or val <= seuil_affichage:
+                continue
+
+            if row.geometry.geom_type in ["Polygon", "MultiPolygon"]:
+                c = row.geometry.centroid
+                x, y = c.x, c.y
+            else:
+                x, y = row.geometry.x, row.geometry.y
+
+            parts = []
+            if nom_zone in gdf.columns:
+                parts.append(str(row[nom_zone]))
+            try:
+                parts.append(fmt_valeurs.format(val))
+            except Exception:
+                parts.append(str(val))
+
+            ax.text(
+                x, y, "\n".join(parts),
+                ha="center", va="center",
+                fontsize=7, color="black",
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.65, boxstyle="round,pad=0.15"),
+            )
+
+    # ---- échelle + boussole ----
+    if afficher_barre_echelle:
+        _ajouter_barre_echelle(ax, longueur_km=longueur_barre_km)
+    if afficher_boussole:
+        _ajouter_boussole(ax)
+
+    plt.tight_layout()
+
+    # ---- colorbar compacte ----
+    if len(fig.axes) > 1:
+        cb_ax = fig.axes[-1]
+        pos = cb_ax.get_position()
+        cb_ax.set_position([
+            pos.x0 + 0.01,
+            pos.y0 + cb_shift_up,
+            pos.width * cb_width,
+            pos.height * cb_height,
+        ])
+        cb_ax.tick_params(labelsize=legend_taille_ticks)
+        if legend_titre:
+            cb_ax.set_title(legend_titre, fontsize=legend_taille_titre, pad=4)
+
+    return fig
+
 
 def choose_week_column(df: pd.DataFrame) -> Tuple[pd.Series, Optional[str]]:
     """Choisit la meilleure colonne semaine disponible (YW > TIME_KEY > TIME_LAB).
@@ -5640,175 +5813,6 @@ with tab9:
                     st.info("Aucune donnée après filtrage (impossible de produire le tableau province × semaine).")
 
 
-# =========================================================
-# ✅ BLOC CARTE (INTÉGRÉ) – AUTONOME
-# =========================================================
-def carte_statique_matplotlib(
-    gdf,
-    colonne_valeurs: str,
-    titre: str,
-    annoter: bool = True,
-    nom_zone: str = "name",
-    fmt_valeurs: str = "{:.0f}",
-    seuil_affichage: float = 1,
-    cmap: str = "Reds",
-    afficher_fond_carte: bool = False,
-    titre_fontsize: int = 11,
-    legend_titre: str = "Nombre de cas",
-    legend_taille_ticks: int = 7,
-    legend_taille_titre: int = 8,
-    cb_height: float = 0.12,
-    cb_width: float = 0.25,
-    cb_shift_up: float = 0.05,
-    afficher_barre_echelle: bool = True,
-    longueur_barre_km: float = 50,
-    afficher_boussole: bool = True,
-    figsize=(12, 10),
-):
-    """
-    IMPORTANT Streamlit:
-    - Retourne une figure Matplotlib (fig)
-    - L'appelant fait st.pyplot(fig) puis plt.close(fig)
-    """
-    if gdf is None or gdf.empty:
-        return None
-    if colonne_valeurs not in gdf.columns:
-        return None
-
-    # ---- helpers ----
-    def _ajouter_barre_echelle(ax, longueur_km=50, loc=(0.10, 0.06), largeur_ligne=0.8, taille_police=7):
-        x_min, x_max = ax.get_xlim()
-        y_min, y_max = ax.get_ylim()
-
-        x_debut = x_min + (x_max - x_min) * loc[0]
-        y = y_min + (y_max - y_min) * loc[1]
-
-        longueur_m = longueur_km * 1000
-        h = (y_max - y_min) * 0.005
-
-        ax.plot([x_debut, x_debut + longueur_m], [y, y], linewidth=largeur_ligne, color="black")
-        ax.plot([x_debut, x_debut], [y - h, y + h], linewidth=largeur_ligne, color="black")
-        ax.plot([x_debut + longueur_m, x_debut + longueur_m], [y - h, y + h], linewidth=largeur_ligne, color="black")
-
-        ax.text(
-            x_debut + longueur_m / 2,
-            y + h * 2,
-            f"{longueur_km:.0f} km",
-            ha="center",
-            va="bottom",
-            fontsize=taille_police,
-        )
-
-    def _ajouter_boussole(ax, loc=(0.95, 0.95), offset=0.08, taille_police=11):
-        ax.annotate(
-            "N",
-            xy=loc,
-            xytext=(loc[0], loc[1] - offset),
-            xycoords="axes fraction",
-            textcoords="axes fraction",
-            ha="center",
-            va="center",
-            fontsize=taille_police,
-            fontweight="bold",
-            arrowprops=dict(arrowstyle="-|>", linewidth=1.2),
-        )
-
-    # ---- reprojection (pour échelle en mètres) ----
-    try:
-        if gdf.crs is None or (hasattr(gdf.crs, "to_epsg") and gdf.crs.to_epsg() != 3857):
-            gdf = gdf.to_crs(epsg=3857)
-    except Exception:
-        pass
-
-    fig, ax = plt.subplots(figsize=figsize)
-
-    # ---- plot ----
-    geom_types = gdf.geometry[~gdf.geometry.is_empty].geom_type.unique()
-    if set(geom_types) == {"Point"}:
-        gdf.plot(
-            column=colonne_valeurs,
-            cmap=cmap,
-            ax=ax,
-            legend=True,
-            markersize=40,
-            edgecolor="k",
-            linewidth=0.5,
-        )
-    else:
-        gdf.plot(
-            column=colonne_valeurs,
-            cmap=cmap,
-            ax=ax,
-            legend=True,
-            edgecolor="0.75",
-            linewidth=0.8,
-        )
-
-    ax.set_title(titre, fontsize=titre_fontsize)
-    ax.axis("off")
-
-    # ---- fond (optionnel) ----
-    if afficher_fond_carte and ctx is not None:
-        try:
-            ctx.add_basemap(ax, source=ctx.providers.Stamen.TonerLite)
-        except Exception:
-            pass
-
-    # ---- labels ----
-    if annoter:
-        for _, row in gdf.iterrows():
-            if row.geometry is None or row.geometry.is_empty:
-                continue
-
-            val = row[colonne_valeurs]
-            if pd.isna(val) or val <= seuil_affichage:
-                continue
-
-            if row.geometry.geom_type in ["Polygon", "MultiPolygon"]:
-                c = row.geometry.centroid
-                x, y = c.x, c.y
-            else:
-                x, y = row.geometry.x, row.geometry.y
-
-            parts = []
-            if nom_zone in gdf.columns:
-                parts.append(str(row[nom_zone]))
-            try:
-                parts.append(fmt_valeurs.format(val))
-            except Exception:
-                parts.append(str(val))
-
-            ax.text(
-                x, y, "\n".join(parts),
-                ha="center", va="center",
-                fontsize=7, color="black",
-                bbox=dict(facecolor="white", edgecolor="none", alpha=0.65, boxstyle="round,pad=0.15"),
-            )
-
-    # ---- échelle + boussole ----
-    if afficher_barre_echelle:
-        _ajouter_barre_echelle(ax, longueur_km=longueur_barre_km)
-    if afficher_boussole:
-        _ajouter_boussole(ax)
-
-    plt.tight_layout()
-
-    # ---- colorbar compacte ----
-    if len(fig.axes) > 1:
-        cb_ax = fig.axes[-1]
-        pos = cb_ax.get_position()
-        cb_ax.set_position([
-            pos.x0 + 0.01,
-            pos.y0 + cb_shift_up,
-            pos.width * cb_width,
-            pos.height * cb_height,
-        ])
-        cb_ax.tick_params(labelsize=legend_taille_ticks)
-        if legend_titre:
-            cb_ax.set_title(legend_titre, fontsize=legend_taille_titre, pad=4)
-
-    return fig
-
 # =========================
 # MAPS
 # =========================
@@ -5817,18 +5821,42 @@ if show_maps:
     st.header("Cartes (statique)")
 
     if gpd is None:
-        st.warning("geopandas n'est pas installé (conda install -c conda-forge geopandas).")
+        st.warning("geopandas n'est pas installé. Ajoute 'geopandas' dans requirements.txt si tu veux les cartes.")
     else:
         st.caption("Cartes statiques (provinces / zones). Jointure fuzzy tolérante sur 'name'.")
 
-        geo_prov = st.text_input(
-            "GeoJSON provinces",
-            value=r"geometry_rdc_provinces.geojson"
-        )
-        geo_zs = st.text_input(
-            "GeoJSON zones de santé",
-            value=r"geometry_rdc_zones_sante.geojson"
-        )
+        # --- GeoJSON (déploiement en ligne)
+        # Par défaut: utiliser les fichiers présents dans le repo
+        # Si l'utilisateur téléverse: le fichier uploadé remplace le défaut
+        geo_prov_upl = st.file_uploader("📍 GeoJSON provinces (optionnel)", type=["geojson", "json"], key="geojson_prov")
+        geo_zs_upl   = st.file_uploader("📍 GeoJSON zones de santé (optionnel)", type=["geojson", "json"], key="geojson_zs")
+
+        col_reset1, col_reset2 = st.columns([1, 3])
+        with col_reset1:
+            if st.button("↩️ Réinitialiser"):
+                st.session_state["geojson_prov"] = None
+                st.session_state["geojson_zs"] = None
+                st.rerun()
+        with col_reset2:
+            st.caption("Réinitialise les uploads et revient aux GeoJSON par défaut du dépôt (si présents).")
+
+        # Fichiers par défaut (dans le repo)
+        geo_prov_default = "geometry_rdc_provinces.geojson"
+        geo_zs_default   = "geometry_rdc_zones_sante.geojson"
+
+        def _upl_to_tmp_path(upl_obj, suffix=".geojson"):
+            if upl_obj is None:
+                return None
+            data = upl_obj.getvalue()
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+            tmp.write(data)
+            tmp.flush()
+            tmp.close()
+            return tmp.name
+
+        # Priorité : upload → sinon défaut local (repo) → sinon None
+        geo_prov = _upl_to_tmp_path(geo_prov_upl) or (geo_prov_default if Path(geo_prov_default).exists() else None)
+        geo_zs   = _upl_to_tmp_path(geo_zs_upl)   or (geo_zs_default   if Path(geo_zs_default).exists() else None)
 
         seuil_match = st.slider("Seuil de matching (fuzzy)", 0.70, 1.00, 0.90, 0.01)
 
@@ -5840,7 +5868,7 @@ if show_maps:
 
         # ---------- Provinces ----------
         st.subheader("Carte Provinces (cas)")
-        if Path(geo_prov).exists() and COL_PROV in df_f.columns:
+        if geo_prov and Path(geo_prov).exists() and COL_PROV in df_f.columns:
             gdfp = gpd.read_file(geo_prov)
 
             df_carte = df_f[[COL_PROV]].dropna().copy()
@@ -5870,32 +5898,22 @@ if show_maps:
                 seuil_affichage=float(seuil_aff),
                 cmap="Reds",
                 afficher_fond_carte=afficher_fond,
-                titre_fontsize=11,
-                legend_titre="Nombre de cas",
-                legend_taille_ticks=7,
-                legend_taille_titre=8,
-                cb_height=0.12,
-                cb_width=0.25,
-                cb_shift_up=0.05,
-                afficher_barre_echelle=True,
                 longueur_barre_km=float(longueur_km),
-                afficher_boussole=True,
-                figsize=(12, 10),
             )
 
-            if fig is None:
-                st.error("Impossible de générer la carte provinces.")
-            else:
-                st.pyplot(fig, width="stretch")
+            if fig:
+                st.pyplot(fig)
                 plt.close(fig)
+            else:
+                st.error("Impossible de générer la carte provinces.")
         else:
-            st.info("Carte provinces: fichier GeoJSON absent ou Province_notification absente.")
+            st.info("Carte provinces: charge un GeoJSON provinces et assure-toi que la colonne Province est présente.")
 
         st.divider()
 
         # ---------- Zones de santé ----------
         st.subheader("Carte Zones de santé (cas)")
-        if Path(geo_zs).exists() and COL_ZS in df_f.columns:
+        if geo_zs and Path(geo_zs).exists() and COL_ZS in df_f.columns:
             gdfz = gpd.read_file(geo_zs)
 
             df_carte = df_f[[COL_ZS]].dropna().copy()
@@ -5925,23 +5943,13 @@ if show_maps:
                 seuil_affichage=float(seuil_aff),
                 cmap="Reds",
                 afficher_fond_carte=afficher_fond,
-                titre_fontsize=11,
-                legend_titre="Nombre de cas",
-                legend_taille_ticks=7,
-                legend_taille_titre=8,
-                cb_height=0.12,
-                cb_width=0.25,
-                cb_shift_up=0.05,
-                afficher_barre_echelle=True,
                 longueur_barre_km=float(longueur_km),
-                afficher_boussole=True,
-                figsize=(12, 10),
             )
 
-            if fig is None:
-                st.error("Impossible de générer la carte ZS.")
-            else:
-                st.pyplot(fig, width="stretch")
+            if fig:
+                st.pyplot(fig)
                 plt.close(fig)
+            else:
+                st.error("Impossible de générer la carte ZS.")
         else:
-            st.info("Carte ZS: fichier GeoJSON absent ou Zone_de_sante_notification absente.")
+            st.info("Carte ZS: charge un GeoJSON ZS et assure-toi que la colonne Zone de santé est présente.")
