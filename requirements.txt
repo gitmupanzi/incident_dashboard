@@ -2,5 +2,9 @@ streamlit
 pandas
 numpy
 plotly
+matplotlib
 openpyxl
 xlsxwriter
+geopandas
+rapidfuzz
+contextily
