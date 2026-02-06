@@ -1720,12 +1720,31 @@ PROVINCES_END  = [p for p, ok in EPIDEMIE.items() if not ok]
 # =========================
 # HELPERS (UI)
 # =========================
-def st_plot(fig, key=None, height=None):
-    """Affiche une figure plotly ou un message."""
+def st_plot(fig, key=None, height=None, stretch=True):
+    """Affiche une figure Plotly de manière robuste et compatible Streamlit ≥ 1.31.
+
+    - Remplace use_container_width (déprécié) par width
+    - width='stretch'  -> pleine largeur
+    - width='content'  -> largeur naturelle
+    - N'envoie jamais height=None
+    """
     if fig is None:
         st.info("Aucune donnée à afficher (figure vide / colonnes manquantes).")
         return
-    st.plotly_chart(fig, width="stretch", key=key)
+
+    kwargs = {}
+
+    # ✅ Nouveau standard Streamlit
+    kwargs["width"] = "stretch" if stretch else "content"
+
+    if key is not None:
+        kwargs["key"] = key
+
+    if height is not None:
+        kwargs["height"] = height
+
+    return st.plotly_chart(fig, **kwargs)
+
 
 
 def apply_plotly_value_annotations(fig: Optional[go.Figure], enabled: bool) -> Optional[go.Figure]:
@@ -2883,7 +2902,7 @@ use_custom_viz = st.sidebar.checkbox(
     value=True,
     help="Ici, les fonctions custom sont intégrées dans ce fichier (autonome)."
 )
-annot_vals = st.sidebar.checkbox("Afficher annotations (valeurs)", value=False)
+annot_vals = st.sidebar.checkbox("Afficher annotations (valeurs)", value=False, key="annot_vals")
 pas_x = st.sidebar.number_input("Pas X (ticks)", min_value=1, max_value=10, value=1, step=1)
 seuil_min_count = st.sidebar.number_input("Seuil minimal (filtrer petits groupes)", min_value=0, max_value=100, value=0, step=1)
 
@@ -3293,7 +3312,7 @@ with tab1:
             colonne_y=COL_PROV,
             titre="Évolution des cas par semaine et province",
             rotation=45,
-            annot=True,
+            annot=annot_vals,
             pas_x=int(pas_x),
             taille_fig=(1500, 600)
         )
