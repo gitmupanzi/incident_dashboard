@@ -1167,24 +1167,64 @@ def graphique_pyramide_age(
         if cat not in couleurs_personnalisees:
             couleurs_personnalisees[cat] = None
 
-    fig = px.bar(
-        agg_df,
-        y=col_tranche,
-        x=col_valeur,
-        color=col_sexe,
-        orientation="h",
-        text="label_text" if annot else None,
-        color_discrete_map=couleurs_personnalisees,
-        facet_col=facette_col,
-        facet_col_wrap=4 if facette_col else None,
-        title=titre,
-        labels={col_valeur: "Nombre", col_tranche: "Tranche d'âge", col_sexe: "Sexe"},
-        category_orders={col_tranche: agg_df[col_tranche].cat.categories.tolist()},
-        width=taille_fig[0],
-        height=taille_fig[1],
-    )
+    # --- Construction de la pyramide ---
+    # Objectif: 2 barres (homme/femme) EXACTEMENT sur la même ligne de tranche d'âge
+    # => on évite le "grouped bar" et on force une superposition relative autour de 0.
+    if facette_col is None:
+        # Séparer les groupes (ex: Masculin/Feminin) pour avoir 2 traces alignées sur le même y
+        sexes = list(agg_df[col_sexe].dropna().unique())
 
-    max_val = max(abs(agg_df[col_valeur])) if not agg_df.empty else 0
+        fig = go.Figure()
+        for sx in sexes:
+            d = agg_df[agg_df[col_sexe] == sx].copy()
+            fig.add_trace(go.Bar(
+                y=d[col_tranche],
+                x=d[col_valeur],
+                orientation="h",
+                name=str(sx),
+                marker=dict(color=couleurs_personnalisees.get(str(sx))),
+                text=d["label_text"] if annot else None,
+                textposition="outside" if annot else "none",
+                cliponaxis=False,
+            ))
+
+        # IMPORTANT: "relative" = même ligne (y) + valeurs négatives à gauche, positives à droite
+        fig.update_layout(
+            barmode="relative",
+            title=titre,
+            width=taille_fig[0],
+            height=taille_fig[1],
+            template="plotly_white",
+            bargap=0.1,
+            bargroupgap=0,
+            title_x=0.5,
+            margin=dict(t=80, b=80, l=80, r=80),
+            yaxis=dict(autorange="reversed", categoryorder="array", categoryarray=categories),
+            xaxis_title="Nombre",
+            yaxis_title="Tranche d'âge",
+        )
+    else:
+        # Avec facettes: on garde px.bar, mais on force l'alignement par tranche
+        fig = px.bar(
+            agg_df,
+            y=col_tranche,
+            x=col_valeur,
+            color=col_sexe,
+            orientation="h",
+            text="label_text" if annot else None,
+            color_discrete_map=couleurs_personnalisees,
+            facet_col=facette_col,
+            facet_col_wrap=4 if facette_col else None,
+            title=titre,
+            labels={col_valeur: "Nombre", col_tranche: "Tranche d'âge", col_sexe: "Sexe"},
+            category_orders={col_tranche: agg_df[col_tranche].cat.categories.tolist()},
+            width=taille_fig[0],
+            height=taille_fig[1],
+        )
+        fig.update_layout(barmode="relative")
+
+
+    max_val =    max_val = max(abs(agg_df[col_valeur])) if not agg_df.empty else 0
     fig.update_layout(
         template="plotly_white",
         xaxis=dict(
@@ -1686,6 +1726,45 @@ def st_plot(fig, key=None, height=None):
         st.info("Aucune donnée à afficher (figure vide / colonnes manquantes).")
         return
     st.plotly_chart(fig, width="stretch", key=key)
+
+
+def apply_plotly_value_annotations(fig: Optional[go.Figure], enabled: bool) -> Optional[go.Figure]:
+    """Ajoute des annotations (valeurs) sur les graphiques Plotly, de façon générique.
+    - Bar: valeurs au-dessus des barres
+    - Line/Scatter: valeurs au-dessus des points (si markers)
+    """
+    if fig is None or not enabled:
+        return fig
+
+    try:
+        for tr in fig.data:
+            # Bar charts
+            if isinstance(tr, go.Bar):
+                # Si text déjà présent, on le respecte
+                if tr.text is None:
+                    tr.text = tr.y
+                # Position/format
+                tr.texttemplate = "%{text}"
+                tr.textposition = "outside"
+                tr.cliponaxis = False
+
+            # Line charts / scatter
+            elif isinstance(tr, go.Scatter):
+                # N'annoter que si on a des y numériques
+                if tr.y is None:
+                    continue
+                # Ajoute le texte uniquement si pas déjà en mode text
+                mode = tr.mode or ""
+                if "text" not in mode:
+                    tr.mode = (mode + "+text") if mode else "lines+markers+text"
+                if tr.text is None:
+                    tr.text = tr.y
+                tr.textposition = "top center"
+    except Exception:
+        # On ne casse jamais l'app si Plotly refuse une propriété
+        return fig
+
+    return fig
 
 def pick_age_col(df):
     """Choisir automatiquement la meilleure colonne tranche d’âge disponible."""
@@ -3132,12 +3211,15 @@ with tab1:
         cA, cB = st.columns([2, 1])
         with cA:
             fig = px.line(weekly, x="YW", y="Cas", markers=True, title="Cas par semaine (YW)")
+            fig = apply_plotly_value_annotations(fig, annot_vals)
             st.plotly_chart(fig, width="stretch")
         with cB:
             fig2 = px.bar(weekly, x="YW", y="Deces", title="Décès par semaine")
+            fig2 = apply_plotly_value_annotations(fig2, annot_vals)
             st.plotly_chart(fig2, width="stretch")
 
         fig3 = px.line(weekly, x="YW", y="CFR_%", markers=True, title="CFR (%) par semaine")
+        fig3 = apply_plotly_value_annotations(fig3, annot_vals)
         st.plotly_chart(fig3, width="stretch")
     else:
         st.info("Pas de clé YW disponible (Annee_epid / Num_semaine_epid manquants).")
@@ -3211,7 +3293,7 @@ with tab1:
             colonne_y=COL_PROV,
             titre="Évolution des cas par semaine et province",
             rotation=45,
-            annot=False,
+            annot=True,
             pas_x=int(pas_x),
             taille_fig=(1500, 600)
         )
@@ -3346,6 +3428,7 @@ with tab2:
 
         fig = px.bar(g_ind, x=group_col, y=ind_to_plot, title=f"{ind_to_plot} par {group_col}")
         fig.update_layout(xaxis_tickangle=-45)
+        fig = apply_plotly_value_annotations(fig, annot_vals)
         st.plotly_chart(fig, width="stretch")
 
     st.divider()
@@ -3437,6 +3520,7 @@ with tab3:
         else:
             long = df_del.melt(value_vars=delais_cols, var_name="Type_delai", value_name="Jours").dropna()
             fig = px.box(long, x="Type_delai", y="Jours", points="outliers", title="Boxplot des délais (global)")
+            fig = apply_plotly_value_annotations(fig, annot_vals)
             st.plotly_chart(fig, width="stretch")
 
         st.divider()
@@ -3510,6 +3594,7 @@ with tab4:
             sex_counts = df_f[COL_SEX].fillna("Inconnu").astype(str).str.strip().value_counts().reset_index()
             sex_counts.columns = [COL_SEX, "Cas"]
             fig = px.bar(sex_counts, x=COL_SEX, y="Cas", title="Cas par sexe")
+            fig = apply_plotly_value_annotations(fig, annot_vals)
             st.plotly_chart(fig, width="stretch")
         else:
             st.info("Colonne Sexe absente.")
@@ -3520,6 +3605,7 @@ with tab4:
             age_counts.columns = [age_col, "Cas"]
             fig = px.bar(age_counts, x=age_col, y="Cas", title=f"Cas par {age_col}")
             fig.update_layout(xaxis_tickangle=-45)
+            fig = apply_plotly_value_annotations(fig, annot_vals)
             st.plotly_chart(fig, width="stretch")
         else:
             st.info("Colonnes tranche âge absentes (Tranche_age_en_ans / Tranche_age).")
@@ -3552,7 +3638,7 @@ with tab4:
             valeurs_neg=["Masculin", "Homme", "M"],
             titre="Pyramide des âges (Masculin à gauche, Féminin à droite)",
             seuil_min=int(seuil_min_count),
-            croissant=True,
+            croissant=False,
             afficher_signe_negatif_dans_label=False
         )
         st_plot(fig, key="pyr_global")
@@ -3638,6 +3724,7 @@ with tab5:
             prov_counts.columns = [COL_PROV, "Cas"]
             figp = px.bar(prov_counts, x=COL_PROV, y="Cas", title="Volume des cas par province (filtrés)")
             figp.update_layout(xaxis_tickangle=-45)
+            figp = apply_plotly_value_annotations(figp, annot_vals)
             st.plotly_chart(figp, width="stretch")
 
         # TCD
@@ -3740,6 +3827,7 @@ with tab5:
                     topk = st.number_input("Top K", min_value=5, max_value=30, value=15, step=1, key="ct_topk_prov")
                     figp = px.bar(piv.head(int(topk)), x=COL_PROV, y="Occurrences", title="Top provinces – occurrences")
                     figp.update_layout(xaxis_tickangle=-45)
+                    figp = apply_plotly_value_annotations(figp, annot_vals)
                     st.plotly_chart(figp, width="stretch")
 
             # 2) Province + Zone de santé
@@ -3853,6 +3941,7 @@ with tab5:
                         topk = st.number_input("Top K", min_value=5, max_value=30, value=15, step=1, key="ct_topk_pz")
                         figp = px.bar(tot_prov.head(int(topk)), x=COL_PROV, y="Occurrences", title="Top provinces – occurrences (scope)")
                         figp.update_layout(xaxis_tickangle=-45)
+                        figp = apply_plotly_value_annotations(figp, annot_vals)
                         st.plotly_chart(figp, width="stretch")
 
             # 3) Tableau croisé Province × Zone
@@ -4157,6 +4246,7 @@ with tab7:
                 title=f"Score complétude (%) – {topn} groupes les moins complets (par {group_for_comp})"
             )
             figc.update_layout(xaxis_tickangle=-45, yaxis=dict(range=[0, 100]))
+            figc = apply_plotly_value_annotations(figc, annot_vals)
             st.plotly_chart(figc, width="stretch")
 
 
@@ -4242,6 +4332,7 @@ with tab7:
             if len(sig):
                 figa = px.bar(sig, x=alert_group, y="Cas", title=f"Signaux (semaine {last_yw}) – top 30")
                 figa.update_layout(xaxis_tickangle=-45)
+                figa = apply_plotly_value_annotations(figa, annot_vals)
                 st.plotly_chart(figa, width="stretch")
             else:
                 st.success("Aucun signal détecté avec les seuils actuels (baseline*1.5 et Cas≥10).")
@@ -5879,6 +5970,7 @@ with tab9:
                             margin=dict(t=70, b=60, l=60, r=60),
                             height=420,
                         )
+                        fig_cas_cfr = apply_plotly_value_annotations(fig_cas_cfr, annot_vals)
                         st.plotly_chart(fig_cas_cfr, width="stretch", key="idsr_hist_cas_cfr")
                     else:
                         st.info("Colonnes insuffisantes pour tracer l'évolution hebdomadaire (TIME_LAB/Cas).")
