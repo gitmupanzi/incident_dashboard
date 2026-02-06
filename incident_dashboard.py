@@ -1489,6 +1489,180 @@ DATE_ONSET = "Date_debut_maladie"
 DATE_ADM   = "Date_admission_au_CT"
 DATE_PREL  = "Date_prelevement"
 
+# =========================
+# MALADIES (CONFIG / SPECS)
+# Objectif: rendre le dashboard "multi-line list" (Choléra, Rougeole, Mpox, Ebola, Intox, IDSR)
+# - Chaque maladie peut avoir des noms de colonnes différents -> on renomme vers le schéma commun
+# - Le reste du pipeline (standardize_ll_core -> standardize_df -> KPI/graphs) reste identique
+# =========================
+
+DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
+    "cholera": {
+        "label": "Choléra",
+        "default_sheet": "LL_Cholera",
+        "rename_map": {
+            # variations fréquentes
+            "Nom_complet_cas_suspect": "Nom_complet",
+        },
+        # dates candidates (pour Date_debut_maladie si manquante)
+        "onset_candidates": ["Date_debut_maladie"],
+        "notif_candidates": ["Date_notification"],
+        "adm_candidates": ["Date_admission_au_CT"],
+        "prel_candidates": ["Date_prelevement"],
+    },
+    "rougeole": {
+        "label": "Rougeole (line list)",
+        "default_sheet": "LL_Rougeole",
+        "rename_map": {},
+        "onset_candidates": ["Date_debut_maladie", "Date_debut_symptomes"],
+        "notif_candidates": ["Date_notification"],
+        "adm_candidates": ["Date_admission_au_CT", "Date_admission"],
+        "prel_candidates": ["Date_prelevement", "Date_prelevement_clean"],
+    },
+    "mpox": {
+        "label": "Mpox (line list)",
+        "default_sheet": "LL_Mpox",
+        "rename_map": {
+            # Identité
+            "Nom_complet_cas_suspect": "Nom_complet",
+            # Classification
+            "Classification_finale_du_cas": "Classification_finale",
+            # Prélevement / labo (harmonisation minimale)
+            "Prelevement_realise_au_moment_de_investigation": "Prelevement",
+            "Si_oui_date_de_prelevement": "Date_prelevement",
+            "Quel_est_le_resultats": "Resultat_labo",
+        },
+        # Mpox: onset "unique" rarement présent; on choisit une meilleure approximation si dispo
+        "onset_candidates": [
+            "Si_oui_des_eruption_cutanee_quelle_est_la_date_de_debut_de_leruption_cutanee",
+            "Si_le_cas_suspect_a_eu_une_fievre_quelle_est_la_date_du_debut_de_la_fievre",
+            "Date_debut_symptomes",
+            "Date_debut_maladie",
+        ],
+        "notif_candidates": ["Date_notification"],
+        "adm_candidates": ["Date_d_hospitalisation_isolement", "Date_admission_au_CT"],
+        "prel_candidates": ["Date_prelevement", "Date_d_envoie_d_echantillons_au_laboratoire"],
+    },
+    "ebola": {
+        "label": "Ebola / MVE (line list)",
+        "default_sheet": "LL_Ebola",
+        "rename_map": {
+            "Date_debut_symptomes": "Date_debut_maladie",
+            "Date_issue": "Date_sortie_au_CT",
+        },
+        "onset_candidates": ["Date_debut_maladie", "Date_debut_symptomes"],
+        "notif_candidates": ["Date_notification"],
+        "adm_candidates": ["Date_admission_au_CT"],
+        "prel_candidates": ["Date_prelevement"],
+    },
+    "intox": {
+        "label": "Intoxication (line list)",
+        "default_sheet": "LL_Intox",
+        "rename_map": {
+            "Date_consultation": "Date_notification",
+            "Date_apparition_signes": "Date_debut_maladie",
+        },
+        "onset_candidates": ["Date_debut_maladie", "Date_apparition_signes"],
+        "notif_candidates": ["Date_notification", "Date_consultation"],
+        "adm_candidates": ["Date_admission_au_CT"],
+        "prel_candidates": ["Date_prelevement"],
+    },
+    "idsr": {
+        "label": "IDSR agrégé (hebdo)",
+        "default_sheet": "IDSR",
+        "rename_map": {
+            "Num": "Num",
+            "Pays": "Pays",
+            "Province": "Province_notification",
+            "Zone_de_sante": "Zone_de_sante_notification",
+            "NUMSEM": "Num_semaine_epid",
+            "Year": "Annee_epid",
+            "MALADIE": "Maladie",
+            "TOTALCAS": "Total_cas",
+            "TOTALDECES": "Total_deces",
+        },
+        "onset_candidates": ["Date_debut_semaine", "Date_notification"],
+        "notif_candidates": ["Date_debut_semaine", "Date_notification"],
+        "adm_candidates": [],
+        "prel_candidates": [],
+    },
+}
+
+def _coalesce_first(df: pd.DataFrame, candidates: List[str]) -> pd.Series:
+    """Retourne la première colonne non-NA dans candidates (coalesce)."""
+    if not candidates:
+        return pd.Series([pd.NA] * len(df), index=df.index)
+    out = None
+    for c in candidates:
+        if c in df.columns:
+            s = df[c]
+            out = s if out is None else out.combine_first(s)
+    if out is None:
+        out = pd.Series([pd.NA] * len(df), index=df.index)
+    return out
+
+def standardize_ll_by_disease(df: pd.DataFrame, disease_key: str) -> pd.DataFrame:
+    """
+    1) Renommage spécifique maladie (DISEASE_SPECS[disease_key]['rename_map'])
+    2) Standardisation core (standardize_ll_core)
+    3) Coalesce dates: Date_debut_maladie / Date_notification / Date_admission_au_CT / Date_prelevement
+       à partir des candidats de la maladie (si colonnes manquantes ou vides)
+    """
+    spec = DISEASE_SPECS.get(disease_key, DISEASE_SPECS["cholera"])
+    df = _clean_colnames(df)
+
+    # 1) Rename spécifique
+    rmap = spec.get("rename_map", {}) or {}
+    # Renommage seulement si la colonne source existe ET la cible n'existe pas déjà
+    for src, dst in rmap.items():
+        if (src in df.columns) and (dst not in df.columns):
+            df = df.rename(columns={src: dst})
+
+    # 2) Core
+    df = standardize_ll_core(df)
+
+    # 3) Coalesce dates (si vides)
+    # - On convertit toutes les candidates en datetime (robuste)
+    for colset in ["onset_candidates", "notif_candidates", "adm_candidates", "prel_candidates"]:
+        for c in spec.get(colset, []) or []:
+            if c in df.columns:
+                df[c] = _to_dt(df[c])
+
+    # On remplit les colonnes standard si elles sont totalement vides
+    if ("Date_debut_maladie" in df.columns) and df["Date_debut_maladie"].isna().all():
+        df["Date_debut_maladie"] = _coalesce_first(df, spec.get("onset_candidates", []))
+    if ("Date_notification" in df.columns) and df["Date_notification"].isna().all():
+        df["Date_notification"] = _coalesce_first(df, spec.get("notif_candidates", []))
+    if ("Date_admission_au_CT" in df.columns):
+        if df["Date_admission_au_CT"].isna().all():
+            df["Date_admission_au_CT"] = _coalesce_first(df, spec.get("adm_candidates", []))
+    if ("Date_prelevement" in df.columns):
+        if df["Date_prelevement"].isna().all():
+            df["Date_prelevement"] = _coalesce_first(df, spec.get("prel_candidates", []))
+
+    # Recalcul ISO si nécessaire après coalesce
+    # (ex: Mpox où Date_debut_maladie était vide et vient d'être rempli)
+    need_year = df["Annee_epid"].isna().all()
+    need_week = df["Num_semaine_epid"].isna().all()
+    if need_year or need_week:
+        ref = None
+        if df["Date_notification"].notna().any():
+            ref = df["Date_notification"]
+        elif df["Date_debut_maladie"].notna().any():
+            ref = df["Date_debut_maladie"]
+        if ref is not None:
+            iso = ref.dt.isocalendar()
+            if need_year:
+                df["Annee_epid"] = iso["year"].astype("Int64")
+            if need_week:
+                df["Num_semaine_epid"] = iso["week"].astype("Int64")
+            y = pd.to_numeric(df["Annee_epid"], errors="coerce").astype("Int64")
+            w = pd.to_numeric(df["Num_semaine_epid"], errors="coerce").astype("Int64")
+            df["Semaine_epid"] = y.astype("string") + "-W" + w.astype("string").str.zfill(2)
+
+    return df
+
+
 # Provinces épidémiques (tes paramètres)
 EPIDEMIE = {
     "Bas Uele": False, "Equateur": True, "Haut Katanga": True, "Haut Lomami": True,
@@ -2589,6 +2763,14 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
 # =========================
 st.sidebar.header("Source des données")
 
+# ✅ Choix maladie (pour renommer/standardiser correctement)
+disease_key = st.sidebar.selectbox(
+    "Maladie / type de line list",
+    options=list(DISEASE_SPECS.keys()),
+    format_func=lambda k: DISEASE_SPECS.get(k, {}).get("label", k),
+    index=0,
+)
+
 mode = "Téléverser (upload)"  # Déploiement en ligne : upload uniquement
 
 # --- Upload line list (toutes maladies)
@@ -2597,7 +2779,10 @@ upl = st.sidebar.file_uploader(
     type=["xlsx", "xls", "csv"],
     key="ll_upload"
 )
-sheet_upl = st.sidebar.text_input("Nom feuille (si Excel upload)", value="LL_Cholera")
+
+# Par défaut: feuille selon la maladie (modifiable)
+default_sheet = DISEASE_SPECS.get(disease_key, DISEASE_SPECS["cholera"]).get("default_sheet", "")
+sheet_upl = st.sidebar.text_input("Nom feuille (si Excel upload)", value=default_sheet)
 
 
 
@@ -2660,7 +2845,7 @@ except Exception as e:
     st.stop()
 
 # ✅ 1) Standardisation commune (Rougeole/Choléra/…)
-raw = standardize_ll_core(raw)
+raw = standardize_ll_by_disease(raw, disease_key)
 
 # ✅ 2) Standardisation spécifique choléra (les indicateurs/timeliness/etc.)
 df = standardize_df(raw)
