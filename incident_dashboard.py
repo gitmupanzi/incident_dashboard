@@ -363,10 +363,33 @@ def flatten_columns(cols) -> List[str]:
     return flat
 
 def st_dataframe_safe(df, *, height: int = 520):
-    """Affichage Streamlit robuste: colonnes uniques + pleine largeur."""
+    """Affichage Streamlit robuste:
+    - Aplatit MultiIndex
+    - Rend colonnes uniques
+    - Rend Arrow-compatible (convertit object mixtes -> string)
+    """
     _df = df.copy()
+
+    # 1) Colonnes uniques + lisibles
     _df.columns = make_unique(flatten_columns(_df.columns))
-    st.dataframe(_df, width='stretch', height=height)
+
+    # 2) ✅ Arrow-safe: convertir les colonnes object mixtes
+    for c in _df.columns:
+        if _df[c].dtype == "object":
+            # bytes -> str
+            _df[c] = _df[c].map(
+                lambda x: x.decode("utf-8", "ignore")
+                if isinstance(x, (bytes, bytearray))
+                else x
+            )
+
+            # si types mixtes (int + str + ...) -> tout en string
+            # (Arrow n'aime pas les colonnes object hétérogènes)
+            _df[c] = _df[c].astype("string")
+
+    # 3) Affichage
+    st.dataframe(_df, width="stretch", height=height)
+
 
 
 def render_pivot_with_cfr(pivot: pd.DataFrame,
@@ -2672,10 +2695,49 @@ def _clean_colnames(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def _to_dt(s: pd.Series) -> pd.Series:
-    # robuste: excel numeric, texte, etc.
-    if pd.api.types.is_numeric_dtype(s):
-        return pd.to_datetime(s, unit="D", origin="1899-12-30", errors="coerce")
-    return pd.to_datetime(s, errors="coerce", dayfirst=True)
+
+    if s is None:
+        return pd.Series(dtype="datetime64[ns]")
+
+    # 1) déjà datetime
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s
+
+    # 2) tentative texte directe
+    dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
+
+    # si >60% converti -> c'était bien du texte
+    if dt.notna().mean() > 0.6:
+        return dt
+
+    # 3) conversion numérique intelligente
+    x = pd.to_numeric(s, errors="coerce")
+    out = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+
+    # ---- timestamps millisecondes (Android/Kobo) ----
+    ms_mask = x.between(1e11, 1e14)
+    out.loc[ms_mask] = pd.to_datetime(x.loc[ms_mask], unit="ms", errors="coerce")
+
+    # ---- timestamps secondes ----
+    sec_mask = x.between(1e9, 1e11)
+    out.loc[sec_mask] = pd.to_datetime(x.loc[sec_mask], unit="s", errors="coerce")
+
+    # ---- Excel serial dates (vrai cas attendu) ----
+    excel_mask = x.between(1, 60000)
+    out.loc[excel_mask] = pd.to_datetime(
+        x.loc[excel_mask],
+        unit="D",
+        origin="1899-12-30",
+        errors="coerce"
+    )
+
+    # fallback final texte
+    rest = out.isna()
+    if rest.any():
+        out.loc[rest] = pd.to_datetime(s.astype(str), errors="coerce", dayfirst=True)
+
+    return out
+
 
 def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -3764,8 +3826,62 @@ with tab5:
             - Une province silencieuse pendant une épidémie = signal d’alerte système à investiguer.
             """,
             expanded=False
-        )
+        )     
         
+        with st.expander("Définir les provinces en épidémie (attendues dans la line list)", expanded=False):
+
+            # ---- Init states ----
+            if "epidemie_state_tab5" not in st.session_state:
+                st.session_state.epidemie_state_tab5 = EPIDEMIE.copy()
+
+            if "epid_version_tab5" not in st.session_state:
+                st.session_state.epid_version_tab5 = 0
+
+            # ---- Callbacks (ne modifient PAS les keys existantes) ----
+            def _apply_bulk_tab5(value: bool):
+                # Met à jour le dict + change de version -> recrée les checkboxes
+                for p in EPIDEMIE.keys():
+                    st.session_state.epidemie_state_tab5[p] = value
+                st.session_state.epid_version_tab5 += 1
+
+            def _reset_defaults_tab5():
+                st.session_state.epidemie_state_tab5 = EPIDEMIE.copy()
+                st.session_state.epid_version_tab5 += 1
+
+            def _sync_one_tab5(prov: str, widget_key: str):
+                # Synchronise le dict à partir de l'état réel du widget
+                st.session_state.epidemie_state_tab5[prov] = bool(st.session_state.get(widget_key, False))
+
+            st.markdown("✅ **Coche** = province considérée **en épidémie** (attendue dans la line list)")
+
+            provs = sorted(list(EPIDEMIE.keys()))
+            cols = st.columns(3)
+
+            # ---- Checkboxes (keys versionnées) ----
+            v = st.session_state.epid_version_tab5
+            for i, prov in enumerate(provs):
+                with cols[i % 3]:
+                    wkey = f"chk_epid_{prov}_v{v}"  # <-- clé versionnée
+                    st.checkbox(
+                        prov,
+                        value=st.session_state.epidemie_state_tab5.get(prov, False),
+                        key=wkey,
+                        on_change=_sync_one_tab5,
+                        args=(prov, wkey),
+                    )
+
+            # ---- Boutons (on_click = safe) ----
+            c1, c2, c3 = st.columns([1, 1, 2])
+            with c1:
+                st.button("Tout cocher", key="tab5_all", on_click=_apply_bulk_tab5, args=(True,))
+            with c2:
+                st.button("Tout décocher", key="tab5_none", on_click=_apply_bulk_tab5, args=(False,))
+            with c3:
+                st.button("Réinitialiser (défaut script)", key="tab5_reset", on_click=_reset_defaults_tab5)
+
+            # ✅ Provinces attendues (UI Tab5)
+            PROVINCES_EPID = [p for p, ok in st.session_state.epidemie_state_tab5.items() if ok]
+       
         st.subheader("Complétude (provinces attendues vs reçues)")
         
         if COL_PROV not in df_f.columns:
@@ -4092,6 +4208,7 @@ with tab5:
     # =========================
     # TAB 6: DATA & EXPORT
     # =========================
+
 with tab6:
     if IDSR_MODE:
         st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
