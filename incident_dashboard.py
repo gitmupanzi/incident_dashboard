@@ -2954,7 +2954,7 @@ if use_week_filter and COL_WNUM in df.columns:
 
 # Doublons (simple)
 if supp_doublons:
-    key_cols = [c for c in ["Nom_complet", COL_PROV, COL_ZS, COL_AS, COL_SEX, COL_AGE, COL_UNIT, "Profession"] if c in df.columns]
+    key_cols = [c for c in ["Semaine_epid","Nom_complet", COL_PROV, COL_ZS, COL_AS, COL_SEX, COL_AGE, COL_UNIT, "Profession"] if c in df.columns]
     if key_cols:
         df = df.drop_duplicates(subset=key_cols, keep="first")
 
