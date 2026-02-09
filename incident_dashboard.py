@@ -3226,7 +3226,7 @@ else:
     df_f = pd.DataFrame()
     files_used = []
     st.title("Incident RDC – Dashboard")
-    st.info("🧭 Mode **IDSR agrégé (hebdo)** : va dans l'onglet **9) IDSR** pour téléverser et analyser le fichier.")
+    st.info("🧭 Mode **IDSR agrégé (hebdo)** : allez dans l'onglet **9) IDSR** pour téléverser et analyser le fichier.")
 
 # =========================
 # TABS
@@ -3247,7 +3247,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
 # =========================
 with tab1:
     if IDSR_MODE:
-        st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
+        st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Allez dans l'onglet **9) IDSR**.")
     else:
         tab_help(
             "Comment lire cet onglet",
