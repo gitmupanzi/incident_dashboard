@@ -2021,9 +2021,9 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
         dehy_tbl = (
             df[COL_DEHY]
             .astype("string")
-            .fillna("Inconnu")
+            .fillna("Inconnu/Non renseigné")
             .str.strip()
-            .replace({"": "Inconnu"})
+            .replace({"": "Inconnu/Non renseigné", "inconnu/non renseigne": "Inconnu/Non renseigné","inconnu": "Inconnu/Non renseigné"})
             .value_counts(dropna=False)
             .rename_axis(COL_DEHY)
             .reset_index(name="Nombre_de_cas")
