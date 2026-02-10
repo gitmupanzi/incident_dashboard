@@ -2968,7 +2968,7 @@ else:
 
 
 
-supp_doublons = st.sidebar.checkbox("Supprimer les doublons (simple)", value=True)
+supp_doublons = st.sidebar.checkbox("Supprimer les doublons (simple)", value=False)
 show_maps = st.sidebar.checkbox("Activer cartes (GeoJSON)", value=False)
 
 st.sidebar.header("Période")
@@ -3052,7 +3052,7 @@ if not IDSR_MODE:
 
     # Doublons (simple)
     if supp_doublons:
-        key_cols = [c for c in ["Semaine_epid","Nom_complet", COL_PROV, COL_ZS, COL_AS, COL_SEX, COL_AGE, COL_UNIT, "Profession"] if c in df.columns]
+        key_cols = [c for c in ["Semaine_epid","Nom_complet",COL_SEX,COL_AGE,COL_PROV, COL_ZS,COL_UNIT, "Profession"] if c in df.columns]
         if key_cols:
             df = df.drop_duplicates(subset=key_cols, keep="first")
 
