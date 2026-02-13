@@ -26,7 +26,8 @@ import plotly.express as px
 
 import plotly.graph_objects as go
 from pandas.api.types import is_numeric_dtype
-from datetime import date
+from datetime import date,datetime
+from io import BytesIO
 
 
 # =========================================================
@@ -6315,6 +6316,188 @@ with tab9:
 
                 else:
                     st.info("Aucune donnée après filtrage (impossible de produire le tableau province × semaine).")
+
+            # 14.4) Tableau croisé – totaux mensuels (Province / ZS)
+            with st.expander("Tableau croisé – totaux mensuels (Province / ZS)", expanded=False):
+
+                if df9.empty:
+                    st.info("Aucune donnée après filtrage.")
+                else:
+                    # ---------------------------------------------------------
+                    # 1) Construire une date source robuste
+                    # ---------------------------------------------------------
+                    def _get_date_series(_df: pd.DataFrame) -> pd.Series:
+                        # Priorité : Date_debut_semaine_iso (déjà calculée)
+                        if "Date_debut_semaine_iso" in _df.columns:
+                            s = pd.to_datetime(_df["Date_debut_semaine_iso"], errors="coerce")
+                            if s.notna().any():
+                                return s
+
+                        # Sinon Date_debut_semaine si dispo
+                        if "Date_debut_semaine" in _df.columns:
+                            s = pd.to_datetime(_df["Date_debut_semaine"], errors="coerce")
+                            if s.notna().any():
+                                return s
+
+                        # Sinon DEBUTSEM (Excel serial ou date)
+                        if "DEBUTSEM" in _df.columns:
+                            _debutsem = _df["DEBUTSEM"]
+                            if pd.api.types.is_numeric_dtype(_debutsem):
+                                s = pd.to_datetime(_debutsem, unit="D", origin="1899-12-30", errors="coerce")
+                            else:
+                                s = pd.to_datetime(_debutsem, errors="coerce")
+                            if s.notna().any():
+                                return s
+
+                        return pd.Series(pd.NaT, index=_df.index)
+
+                    tmp_m = df9.copy()
+                    tmp_m["_dt"] = _get_date_series(tmp_m)
+
+                    if tmp_m["_dt"].isna().all():
+                        st.warning("Impossible de créer les mois (aucune date exploitable : Date_debut_semaine_iso / Date_debut_semaine / DEBUTSEM).")
+                    else:
+                        # Mois (période)
+                        tmp_m["_month"] = tmp_m["_dt"].dt.to_period("M").dt.to_timestamp()
+
+                        # Libellé mois en FR: "janv.-19"
+                        mois_fr = {
+                            1: "janv.", 2: "févr.", 3: "mars", 4: "avr.", 5: "mai", 6: "juin",
+                            7: "juil.", 8: "août", 9: "sept.", 10: "oct.", 11: "nov.", 12: "déc."
+                        }
+                        tmp_m["_month_lab"] = tmp_m["_dt"].dt.month.map(mois_fr) + "-" + tmp_m["_dt"].dt.strftime("%y")
+
+                        # ---------------------------------------------------------
+                        # 2) Choix niveau: Province / Province+ZS
+                        # ---------------------------------------------------------
+                        level_m = st.radio(
+                            "Niveau d’affichage",
+                            ["Provincial", "Zonal (Province + ZS)"],
+                            horizontal=True,
+                            key="idsr_month_level",
+                        )
+
+                        # Colonnes id
+                        col_mal = "Maladie" if "Maladie" in tmp_m.columns else COL_MAL
+                        col_prov = COL_PROV_ID
+                        col_zs = COL_ZS_ID if COL_ZS_ID in tmp_m.columns else None
+
+                        idx_cols = [col_mal, col_prov]
+                        if (level_m.startswith("Zonal")) and (col_zs is not None):
+                            idx_cols = [col_mal, col_prov, col_zs]
+
+                        # ---------------------------------------------------------
+                        # 3) Indicateurs à produire
+                        # ---------------------------------------------------------
+                        # NOTE: "Population exposée" = colonne Population (MAX mensuel)
+                        # Les autres = SOMME mensuelle
+                        metrics = [
+                            ("Population", "Population exposée", "max"),
+                            ("Cas_0_11mois", "Cas suspects 0 à 11mois", "sum"),
+                            ("Cas_12_59mois", "Cas suspects 12mois à 5ans", "sum"),
+                            ("Cas_5_14ans", "Cas suspects 5 à 14ans", "sum"),
+                            ("Cas_15plus", "Cas suspects Adultes", "sum"),
+                            ("Total_deces", "Nombre de déces", "sum"),
+                        ]
+
+                        # Garder uniquement les métriques existantes
+                        metrics_ok = [(c, lab, agg) for (c, lab, agg) in metrics if c in tmp_m.columns]
+                        if not metrics_ok:
+                            st.info("Aucune colonne indicateur trouvée (Population / Cas_* / Total_deces).")
+                        else:
+                            # -----------------------------------------------------
+                            # 4) Construire une table longue puis pivot mensuel
+                            # -----------------------------------------------------
+                            # Préparer valeurs numériques
+                            for c, _, _ in metrics_ok:
+                                tmp_m[c] = pd.to_numeric(tmp_m[c], errors="coerce")
+
+                            pieces = []
+                            group_base = idx_cols + ["_month", "_month_lab"]
+
+                            for c, lab, agg in metrics_ok:
+                                g = tmp_m[group_base + [c]].copy()
+
+                                if agg == "max":
+                                    out = g.groupby(group_base, as_index=False)[c].max()
+                                else:
+                                    out = g.groupby(group_base, as_index=False)[c].sum(min_count=1)
+
+                                out = out.rename(columns={c: "Valeur"})
+                                out["Données"] = lab
+                                pieces.append(out)
+
+                            long_df = pd.concat(pieces, ignore_index=True)
+
+                            # Pivot: mois en colonnes
+                            pivot = (
+                                long_df.pivot_table(
+                                    index=idx_cols + ["Données"],
+                                    columns="_month",
+                                    values="Valeur",
+                                    aggfunc="sum",  # déjà agrégé, mais pivot_table exige un aggfunc
+                                    fill_value=0
+                                )
+                                .reset_index()
+                            )
+
+                            # Remplacer colonnes datetime par labels "janv.-19"
+                            # Créer mapping month_timestamp -> label présent dans long_df
+                            month_map = (
+                                long_df.dropna(subset=["_month"])
+                                .drop_duplicates(subset=["_month"])[["_month", "_month_lab"]]
+                                .sort_values("_month")
+                                .set_index("_month")["_month_lab"]
+                                .to_dict()
+                            )
+
+                            new_cols = []
+                            for col in pivot.columns:
+                                if isinstance(col, (pd.Timestamp, datetime)):
+                                    new_cols.append(month_map.get(pd.Timestamp(col), pd.Timestamp(col).strftime("%b-%y")))
+                                else:
+                                    new_cols.append(col)
+                            pivot.columns = new_cols
+
+                            # Tri logique des lignes "Données"
+                            order_data = [
+                                "Population exposée",
+                                "Cas suspects 0 à 11mois",
+                                "Cas suspects 12mois à 5ans",
+                                "Cas suspects 5 à 14ans",
+                                "Cas suspects Adultes",
+                                "Nombre de déces",
+                            ]
+                            pivot["Données"] = pd.Categorical(pivot["Données"], categories=order_data, ordered=True)
+                            pivot = pivot.sort_values(idx_cols + ["Données"]).reset_index(drop=True)
+
+                            st.dataframe(pivot, width="stretch", height=520, hide_index=True)
+
+                            # Export CSV
+                            csv_m = pivot.to_csv(index=False).encode("utf-8")
+                            st.download_button(
+                                "⬇️ Télécharger (mensuel) – CSV",
+                                data=csv_m,
+                                file_name="idsr_tableau_mensuel.csv",
+                                mime="text/csv",
+                                key="tab9_dl_monthly_pivot",
+                            )
+                            # Export XLSX
+                            xlsx_buffer = BytesIO()
+
+                            with pd.ExcelWriter(xlsx_buffer, engine="openpyxl") as writer:
+                                pivot.to_excel(writer, sheet_name="Tableau_mensuel", index=False)
+
+                            xlsx_buffer.seek(0)
+
+                            st.download_button(
+                                "⬇️ Télécharger (mensuel) – XLSX",
+                                data=xlsx_buffer,
+                                file_name="idsr_tableau_mensuel.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="tab9_dl_monthly_pivot_xlsx",
+                            )
+
 
 
 # =========================
