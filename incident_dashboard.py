@@ -1855,7 +1855,7 @@ def is_death(x):
     if x is None or (isinstance(x, float) and np.isnan(x)):
         return False
     s = str(x).strip().lower()
-    keys = ["deces", "décès", "decede", "décédé", "mort", "death", "dead", "dcd"]
+    keys = ["deces", "décès", "decede", "décédé", "décéder", "deceder", "mort", "death", "dead", "dcd","Décéder"]
     return any(k in s for k in keys)
 
 def safe_to_datetime(df, cols):
@@ -6343,6 +6343,7 @@ with tab9:
                         if "DEBUTSEM" in _df.columns:
                             _debutsem = _df["DEBUTSEM"]
                             if pd.api.types.is_numeric_dtype(_debutsem):
+                                # Excel serial -> date
                                 s = pd.to_datetime(_debutsem, unit="D", origin="1899-12-30", errors="coerce")
                             else:
                                 s = pd.to_datetime(_debutsem, errors="coerce")
@@ -6357,147 +6358,170 @@ with tab9:
                     if tmp_m["_dt"].isna().all():
                         st.warning("Impossible de créer les mois (aucune date exploitable : Date_debut_semaine_iso / Date_debut_semaine / DEBUTSEM).")
                     else:
-                        # Mois (période)
-                        tmp_m["_month"] = tmp_m["_dt"].dt.to_period("M").dt.to_timestamp()
-
-                        # Libellé mois en FR: "janv.-19"
-                        mois_fr = {
-                            1: "janv.", 2: "févr.", 3: "mars", 4: "avr.", 5: "mai", 6: "juin",
-                            7: "juil.", 8: "août", 9: "sept.", 10: "oct.", 11: "nov.", 12: "déc."
-                        }
-                        tmp_m["_month_lab"] = tmp_m["_dt"].dt.month.map(mois_fr) + "-" + tmp_m["_dt"].dt.strftime("%y")
-
                         # ---------------------------------------------------------
-                        # 2) Choix niveau: Province / Province+ZS
+                        # 1bis) (Optionnel) filtrer dates absurdes pour éviter 1965/2037
                         # ---------------------------------------------------------
-                        level_m = st.radio(
-                            "Niveau d’affichage",
-                            ["Provincial", "Zonal (Province + ZS)"],
-                            horizontal=True,
-                            key="idsr_month_level",
-                        )
+                        dt_min = pd.Timestamp("2000-01-01")
+                        dt_max = pd.Timestamp.today() + pd.Timedelta(days=366)
+                        tmp_m = tmp_m[tmp_m["_dt"].between(dt_min, dt_max)]
 
-                        # Colonnes id
-                        col_mal = "Maladie" if "Maladie" in tmp_m.columns else COL_MAL
-                        col_prov = COL_PROV_ID
-                        col_zs = COL_ZS_ID if COL_ZS_ID in tmp_m.columns else None
-
-                        idx_cols = [col_mal, col_prov]
-                        if (level_m.startswith("Zonal")) and (col_zs is not None):
-                            idx_cols = [col_mal, col_prov, col_zs]
-
-                        # ---------------------------------------------------------
-                        # 3) Indicateurs à produire
-                        # ---------------------------------------------------------
-                        # NOTE: "Population exposée" = colonne Population (MAX mensuel)
-                        # Les autres = SOMME mensuelle
-                        metrics = [
-                            ("Population", "Population exposée", "max"),
-                            ("Cas_0_11mois", "Cas suspects 0 à 11mois", "sum"),
-                            ("Cas_12_59mois", "Cas suspects 12mois à 5ans", "sum"),
-                            ("Cas_5_14ans", "Cas suspects 5 à 14ans", "sum"),
-                            ("Cas_15plus", "Cas suspects Adultes", "sum"),
-                            ("Total_deces", "Nombre de déces", "sum"),
-                        ]
-
-                        # Garder uniquement les métriques existantes
-                        metrics_ok = [(c, lab, agg) for (c, lab, agg) in metrics if c in tmp_m.columns]
-                        if not metrics_ok:
-                            st.info("Aucune colonne indicateur trouvée (Population / Cas_* / Total_deces).")
+                        if tmp_m.empty:
+                            st.warning("Toutes les dates disponibles sont hors plage (2000 → +1 an). Vérifie DEBUTSEM/Date_debut_semaine.")
                         else:
-                            # -----------------------------------------------------
-                            # 4) Construire une table longue puis pivot mensuel
-                            # -----------------------------------------------------
-                            # Préparer valeurs numériques
-                            for c, _, _ in metrics_ok:
-                                tmp_m[c] = pd.to_numeric(tmp_m[c], errors="coerce")
+                            # Mois (timestamp)
+                            tmp_m["_month"] = tmp_m["_dt"].dt.to_period("M").dt.to_timestamp()
 
-                            pieces = []
-                            group_base = idx_cols + ["_month", "_month_lab"]
+                            # Libellé mois en FR: "janv.-2024" (IMPORTANT: %Y pour éviter collisions 1924 vs 2024)
+                            mois_fr = {
+                                1: "janv.", 2: "févr.", 3: "mars", 4: "avr.", 5: "mai", 6: "juin",
+                                7: "juil.", 8: "août", 9: "sept.", 10: "oct.", 11: "nov.", 12: "déc."
+                            }
+                            tmp_m["_month_lab"] = tmp_m["_dt"].dt.month.map(mois_fr) + "-" + tmp_m["_dt"].dt.strftime("%Y")
 
-                            for c, lab, agg in metrics_ok:
-                                g = tmp_m[group_base + [c]].copy()
-
-                                if agg == "max":
-                                    out = g.groupby(group_base, as_index=False)[c].max()
-                                else:
-                                    out = g.groupby(group_base, as_index=False)[c].sum(min_count=1)
-
-                                out = out.rename(columns={c: "Valeur"})
-                                out["Données"] = lab
-                                pieces.append(out)
-
-                            long_df = pd.concat(pieces, ignore_index=True)
-
-                            # Pivot: mois en colonnes
-                            pivot = (
-                                long_df.pivot_table(
-                                    index=idx_cols + ["Données"],
-                                    columns="_month",
-                                    values="Valeur",
-                                    aggfunc="sum",  # déjà agrégé, mais pivot_table exige un aggfunc
-                                    fill_value=0
-                                )
-                                .reset_index()
+                            # ---------------------------------------------------------
+                            # 2) Choix niveau: Province / Province+ZS
+                            # ---------------------------------------------------------
+                            level_m = st.radio(
+                                "Niveau d’affichage",
+                                ["Provincial", "Zonal (Province + ZS)"],
+                                horizontal=True,
+                                key="idsr_month_level",
                             )
 
-                            # Remplacer colonnes datetime par labels "janv.-19"
-                            # Créer mapping month_timestamp -> label présent dans long_df
-                            month_map = (
-                                long_df.dropna(subset=["_month"])
-                                .drop_duplicates(subset=["_month"])[["_month", "_month_lab"]]
-                                .sort_values("_month")
-                                .set_index("_month")["_month_lab"]
-                                .to_dict()
-                            )
+                            # Colonnes id
+                            col_mal = "Maladie" if "Maladie" in tmp_m.columns else COL_MAL
+                            col_prov = COL_PROV_ID
+                            col_zs = COL_ZS_ID if (COL_ZS_ID in tmp_m.columns) else None
 
-                            new_cols = []
-                            for col in pivot.columns:
-                                if isinstance(col, (pd.Timestamp, datetime)):
-                                    new_cols.append(month_map.get(pd.Timestamp(col), pd.Timestamp(col).strftime("%b-%y")))
-                                else:
-                                    new_cols.append(col)
-                            pivot.columns = new_cols
+                            idx_cols = [col_mal, col_prov]
+                            if (level_m.startswith("Zonal")) and (col_zs is not None):
+                                idx_cols = [col_mal, col_prov, col_zs]
 
-                            # Tri logique des lignes "Données"
-                            order_data = [
-                                "Population exposée",
-                                "Cas suspects 0 à 11mois",
-                                "Cas suspects 12mois à 5ans",
-                                "Cas suspects 5 à 14ans",
-                                "Cas suspects Adultes",
-                                "Nombre de déces",
+                            # ---------------------------------------------------------
+                            # 3) Indicateurs à produire
+                            # ---------------------------------------------------------
+                            metrics = [
+                                ("Population", "Population exposée", "max"),
+                                ("Cas_0_11mois", "Cas suspects 0 à 11mois", "sum"),
+                                ("Cas_12_59mois", "Cas suspects 12mois à 5ans", "sum"),
+                                ("Cas_5_14ans", "Cas suspects 5 à 14ans", "sum"),
+                                ("Cas_15plus", "Cas suspects Adultes", "sum"),
+                                ("Total_deces", "Nombre de décès", "sum"),
                             ]
-                            pivot["Données"] = pd.Categorical(pivot["Données"], categories=order_data, ordered=True)
-                            pivot = pivot.sort_values(idx_cols + ["Données"]).reset_index(drop=True)
 
-                            st.dataframe(pivot, width="stretch", height=520, hide_index=True)
+                            # Garder uniquement les métriques existantes
+                            metrics_ok = [(c, lab, agg) for (c, lab, agg) in metrics if c in tmp_m.columns]
+                            if not metrics_ok:
+                                st.info("Aucune colonne indicateur trouvée (Population / Cas_* / Total_deces).")
+                            else:
+                                # Préparer valeurs numériques
+                                for c, _, _ in metrics_ok:
+                                    tmp_m[c] = pd.to_numeric(tmp_m[c], errors="coerce")
 
-                            # Export CSV
-                            csv_m = pivot.to_csv(index=False).encode("utf-8")
-                            st.download_button(
-                                "⬇️ Télécharger (mensuel) – CSV",
-                                data=csv_m,
-                                file_name="idsr_tableau_mensuel.csv",
-                                mime="text/csv",
-                                key="tab9_dl_monthly_pivot",
-                            )
-                            # Export XLSX
-                            xlsx_buffer = BytesIO()
+                                # -----------------------------------------------------
+                                # 4) Construire une table longue puis pivot mensuel
+                                # -----------------------------------------------------
+                                pieces = []
+                                group_base = idx_cols + ["_month", "_month_lab"]
 
-                            with pd.ExcelWriter(xlsx_buffer, engine="openpyxl") as writer:
-                                pivot.to_excel(writer, sheet_name="Tableau_mensuel", index=False)
+                                for c, lab, agg in metrics_ok:
+                                    g = tmp_m[group_base + [c]].copy()
 
-                            xlsx_buffer.seek(0)
+                                    if agg == "max":
+                                        out = g.groupby(group_base, as_index=False)[c].max()
+                                    else:
+                                        out = g.groupby(group_base, as_index=False)[c].sum(min_count=1)
 
-                            st.download_button(
-                                "⬇️ Télécharger (mensuel) – XLSX",
-                                data=xlsx_buffer,
-                                file_name="idsr_tableau_mensuel.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key="tab9_dl_monthly_pivot_xlsx",
-                            )
+                                    out = out.rename(columns={c: "Valeur"})
+                                    out["Données"] = lab
+                                    pieces.append(out)
 
+                                long_df = pd.concat(pieces, ignore_index=True)
+
+                                pivot = (
+                                    long_df.pivot_table(
+                                        index=idx_cols + ["Données"],
+                                        columns="_month",
+                                        values="Valeur",
+                                        aggfunc="sum",
+                                        fill_value=0
+                                    )
+                                    .reset_index()
+                                )
+
+                                # Mapping mois timestamp -> label "janv.-2024"
+                                month_map = (
+                                    long_df.dropna(subset=["_month"])
+                                    .drop_duplicates(subset=["_month"])[["_month", "_month_lab"]]
+                                    .sort_values("_month")
+                                    .set_index("_month")["_month_lab"]
+                                    .to_dict()
+                                )
+
+                                new_cols = []
+                                for col in pivot.columns:
+                                    if isinstance(col, (pd.Timestamp, datetime)):
+                                        new_cols.append(month_map.get(pd.Timestamp(col), pd.Timestamp(col).strftime("%b-%Y")))
+                                    else:
+                                        new_cols.append(col)
+                                pivot.columns = new_cols
+
+                                # Tri logique des lignes "Données"
+                                order_data = [
+                                    "Population exposée",
+                                    "Cas suspects 0 à 11mois",
+                                    "Cas suspects 12mois à 5ans",
+                                    "Cas suspects 5 à 14ans",
+                                    "Cas suspects Adultes",
+                                    "Nombre de décès",
+                                ]
+                                pivot["Données"] = pd.Categorical(pivot["Données"], categories=order_data, ordered=True)
+                                pivot = pivot.sort_values(idx_cols + ["Données"]).reset_index(drop=True)
+
+                                # -----------------------------------------------------
+                                # 5) IMPORTANT: rendre les colonnes uniques (Streamlit/PyArrow)
+                                # -----------------------------------------------------
+                                def _make_unique(cols):
+                                    seen = {}
+                                    out = []
+                                    for x in cols:
+                                        x = str(x)
+                                        if x not in seen:
+                                            seen[x] = 0
+                                            out.append(x)
+                                        else:
+                                            seen[x] += 1
+                                            out.append(f"{x}__{seen[x]}")
+                                    return out
+
+                                pivot.columns = _make_unique(pivot.columns)
+
+                                st.dataframe(pivot, width="stretch", height=520, hide_index=True)
+
+                                # -----------------------------------------------------
+                                # 6) Export CSV / XLSX (colonnes déjà uniques)
+                                # -----------------------------------------------------
+                                csv_m = pivot.to_csv(index=False).encode("utf-8")
+                                st.download_button(
+                                    "⬇️ Télécharger (mensuel) – CSV",
+                                    data=csv_m,
+                                    file_name="idsr_tableau_mensuel.csv",
+                                    mime="text/csv",
+                                    key="tab9_dl_monthly_pivot",
+                                )
+
+                                xlsx_buffer = BytesIO()
+                                with pd.ExcelWriter(xlsx_buffer, engine="openpyxl") as writer:
+                                    pivot.to_excel(writer, sheet_name="Tableau_mensuel", index=False)
+                                xlsx_buffer.seek(0)
+
+                                st.download_button(
+                                    "⬇️ Télécharger (mensuel) – XLSX",
+                                    data=xlsx_buffer,
+                                    file_name="idsr_tableau_mensuel.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="tab9_dl_monthly_pivot_xlsx",
+                                )
 
 
 # =========================
