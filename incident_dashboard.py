@@ -4209,7 +4209,6 @@ with tab5:
     # =========================
     # TAB 6: DATA & EXPORT
     # =========================
-
 with tab6:
     if IDSR_MODE:
         st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
@@ -4550,80 +4549,87 @@ with tab8:
     else:
         import pandas as pd
         import numpy as np
+        import plotly.express as px
         from datetime import date
-        
+
         st.markdown("## SITREP")
+
         tab_help(
             "Comment lire cet onglet",
             """
             ### 📰 Objectif du SITREP automatique
             Cet onglet génère un **rapport épidémiologique hebdomadaire** à partir des données actuellement filtrées dans le tableau de bord.
-        
+
             ---
-        
+
             ### ⚙️ Comment ça fonctionne
             - Le SITREP utilise **les données filtrées (df_f)** : provinces, ZS, période, classification, etc.
             - Les indicateurs sont recalculés **automatiquement** selon la **SE** et l’**année** sélectionnées.
             - Si tu changes les filtres du dashboard, le SITREP se met à jour.
-        
+
             ---
-        
+
             ### 📌 Sections du rapport
             **1️⃣ Points saillants**  
             Résumé automatique de la situation :
             - nombre de cas et décès de la semaine
             - évolution par rapport aux semaines précédentes
             - zones de santé les plus affectées
-        
+
             **2️⃣ Situation épidémiologique**  
             Indicateurs clés :
             - Cas et décès de la semaine
             - Taux de létalité (CFR)
             - Cas cumulés de l’année
             - Tableau des zones de santé les plus touchées
-        
+
             **3️⃣ Labo / qualité / signaux**  
             Indicateurs de surveillance :
             - Cascade prélèvement → TDR → résultat (si données disponibles)
             - Alertes statistiques basées sur l’évolution récente des cas
-        
+
+            **4️⃣ Analyse spatiale & gravité**  
+            - Tableau provinces (Cas/Décès/CFR)
+            - ZS à létalité critique (seuil configurable)
+
+            **5️⃣ Démographie & délais**  
+            - Répartition par sexe / tranche d’âge
+            - Délais (début maladie → admission)
+
             ---
-        
+
             ### 📤 Export
             Tu peux télécharger le SITREP généré automatiquement au format **PDF** en bas de page.
             Le document exporté reflète exactement les données visibles dans cet onglet.
-        
+
             ---
             ℹ️ **Astuce :** Pour produire le SITREP officiel de la semaine, règle d’abord les filtres du tableau de bord (période, province, etc.), puis viens ici pour exporter.
             """,
             expanded=False
         )
-        
+
         # =========================================================
         # 1) UI: SE / Année / Date de publication dépendants de df_f
         # =========================================================
-        # Bornes SE
         if (COL_WNUM in df_f.columns) and df_f[COL_WNUM].notna().any():
             w_series = pd.to_numeric(df_f[COL_WNUM], errors="coerce").dropna()
             w_min, w_max = int(w_series.min()), int(w_series.max())
         else:
             w_min, w_max = 1, 53
-        
-        # Bornes Année
+
         if (COL_YEAR in df_f.columns) and df_f[COL_YEAR].notna().any():
             y_series = pd.to_numeric(df_f[COL_YEAR], errors="coerce").dropna()
             y_min, y_max = int(y_series.min()), int(y_series.max())
         else:
             y_min, y_max = 2020, date.today().year
-        
+
         auto_last = st.checkbox(
             "Auto: utiliser la dernière SE/Année du filtrage",
             value=True,
             key="sitrep_auto_last"
         )
-        
+
         colA, colB, colC = st.columns(3)
-        
         with colA:
             semaine = st.number_input(
                 "Semaine épidémiologique (SE)",
@@ -4633,7 +4639,6 @@ with tab8:
                 step=1,
                 key="sitrep_se",
             )
-        
         with colB:
             annee = st.number_input(
                 "Année",
@@ -4643,116 +4648,218 @@ with tab8:
                 step=1,
                 key="sitrep_year",
             )
-        
         with colC:
             date_pub = st.date_input(
                 "Date de publication",
                 value=date.today(),
                 key="sitrep_pubdate",
             )
-        
-        # Forcer aux valeurs "dernière SE/Année" si auto_last
+
         if auto_last:
             semaine = int(w_max)
             annee = int(y_max)
-        
+
         st.caption(
             f"Scope SITREP: df_f (filtré). SE disponibles: {w_min}–{w_max}. "
             f"Années disponibles: {y_min}–{y_max}."
         )
-        
+
         # =========================================================
-        # 2) Build payload (défini ici pour que Tab8 soit autonome)
+        # 2) Helpers supplémentaires (spatial, demo, délais, graphiques)
         # =========================================================
-        def _build_sitrep_payload_from_df(df_scope, se, annee, date_pub):
+        def _safe_pct(num, den):
+            return (num / den * 100.0) if den and den > 0 else np.nan
+
+        def _plotly_to_png_bytes(fig):
+            """
+            Convertit une figure Plotly en PNG bytes (pour PDF).
+            Nécessite kaleido ; si absent, renvoie None (export PDF restera OK, sans images).
+            """
+            try:
+                return fig.to_image(format="png", scale=2)
+            except Exception:
+                return None
+
+        def build_weekly_summary(df_scope):
+            """Table hebdo Cas/Décès/CFR (sur df_scope filtré)."""
+            if COL_YEAR not in df_scope.columns or COL_WNUM not in df_scope.columns:
+                return pd.DataFrame()
+
+            tmp = df_scope.copy()
+            tmp["_cas_"] = 1
+            tmp["_deces_"] = tmp["is_death"].astype(int) if "is_death" in tmp.columns else 0
+
+            wk = (tmp.groupby([COL_YEAR, COL_WNUM], as_index=False)
+                    .agg(Cas=("_cas_", "sum"), Décès=("_deces_", "sum")))
+
+            wk["CFR_%"] = np.where(wk["Cas"] > 0, wk["Décès"] / wk["Cas"] * 100.0, np.nan)
+            wk["YW"] = wk[COL_YEAR].astype(int).astype(str) + "W" + wk[COL_WNUM].astype(int).astype(str).str.zfill(2)
+            wk = wk.sort_values([COL_YEAR, COL_WNUM])
+
+            wk["Cas_prev"] = wk["Cas"].shift(1)
+            wk["var_%"] = np.where(
+                wk["Cas_prev"].fillna(0) > 0,
+                (wk["Cas"] - wk["Cas_prev"]) / wk["Cas_prev"] * 100.0,
+                np.nan
+            )
+            return wk
+
+        def build_geo_tables(d_se, min_cas_zs=30, min_cas_prov=50):
+            """Tables province/ZS pour la semaine (d_se)."""
+            out = {}
+            if "is_death" not in d_se.columns:
+                d_se = d_se.copy()
+                d_se["is_death"] = 0
+
+            tmp = d_se.copy()
+            tmp["_cas_"] = 1
+            tmp["_deces_"] = tmp["is_death"].astype(int)
+
+            if COL_PROV in tmp.columns:
+                prov = (tmp.groupby(COL_PROV, as_index=False)
+                          .agg(Cas=("_cas_", "sum"), Décès=("_deces_", "sum")))
+                prov["CFR_%"] = np.where(prov["Cas"] > 0, prov["Décès"] / prov["Cas"] * 100.0, np.nan)
+                out["prov_table"] = prov.sort_values("Cas", ascending=False)
+                out["prov_cfr_crit"] = prov.query("Cas >= @min_cas_prov").sort_values("CFR_%", ascending=False)
+
+            if COL_ZS in tmp.columns:
+                group_cols = [c for c in [COL_PROV, COL_ZS] if c in tmp.columns]
+                zs = (tmp.groupby(group_cols, as_index=False)
+                        .agg(Cas=("_cas_", "sum"), Décès=("_deces_", "sum")))
+                zs["CFR_%"] = np.where(zs["Cas"] > 0, zs["Décès"] / zs["Cas"] * 100.0, np.nan)
+                out["zs_table"] = zs.sort_values("Cas", ascending=False)
+                out["zs_cfr_crit"] = zs.query("Cas >= @min_cas_zs").sort_values("CFR_%", ascending=False)
+
+            return out
+
+        def build_demo_tables(d_se):
+            """Sexe / tranches âge (si disponibles)."""
+            out = {}
+            if COL_SEX in d_se.columns:
+                sex = (d_se.groupby(COL_SEX, as_index=False)
+                         .size().rename(columns={"size": "Cas"})
+                         .sort_values("Cas", ascending=False))
+                out["sex_table"] = sex
+
+            # Priorité aux tranches déjà calculées dans tes données
+            age_group_col = None
+            if COL_AGEG in d_se.columns:
+                age_group_col = COL_AGEG
+            elif COL_AGEG2 in d_se.columns:
+                age_group_col = COL_AGEG2
+
+            if age_group_col:
+                age = (d_se.groupby(age_group_col, as_index=False)
+                         .size().rename(columns={"size": "Cas"}))
+                age = age.rename(columns={age_group_col: "Tranche_age"})
+                out["age_table"] = age
+            return out
+
+        def build_delay_summary(d_se):
+            """Résumé timeliness (début maladie → admission) si dates présentes."""
+            if (DATE_ONSET not in d_se.columns) or (DATE_ADM not in d_se.columns):
+                return pd.DataFrame()
+
+            tmp = d_se[[DATE_ONSET, DATE_ADM]].copy()
+            tmp[DATE_ONSET] = pd.to_datetime(tmp[DATE_ONSET], errors="coerce")
+            tmp[DATE_ADM] = pd.to_datetime(tmp[DATE_ADM], errors="coerce")
+            tmp["delai_onset_adm"] = (tmp[DATE_ADM] - tmp[DATE_ONSET]).dt.days
+
+            # bornes raisonnables (0..30j)
+            tmp = tmp[(tmp["delai_onset_adm"].notna()) & (tmp["delai_onset_adm"] >= 0) & (tmp["delai_onset_adm"] <= 30)]
+            if tmp.empty:
+                return pd.DataFrame()
+
+            s = tmp["delai_onset_adm"]
+            return pd.DataFrame([{
+                "n": int(s.notna().sum()),
+                "médiane": float(s.median()),
+                "p75": float(s.quantile(0.75)),
+                "%≤1j": _safe_pct((s <= 1).sum(), s.notna().sum()),
+                "%≤2j": _safe_pct((s <= 2).sum(), s.notna().sum()),
+                "max": float(s.max()),
+            }])
+
+        # =========================================================
+        # 3) Build payload (Tab8 autonome) — VERSION ENRICHIE
+        # =========================================================
+        def _build_sitrep_payload_from_df(df_scope, se, annee, date_pub, min_cas_zs=30, min_cas_prov=50):
             """
             Build un payload SITREP à partir de df_scope (ici df_f filtré).
-        
-            - Filtre SE/Année pour les indicateurs de la semaine (d_se)
-            - Calcule les cumuls année jusqu'à la SE (d_cum)
-            - Produit un tableau ZS (top cas) et des points saillants
+
+            - Filtre SE/Année pour indicateurs de la semaine (d_se)
+            - Calcule cumuls année jusqu'à la SE (d_cum)
+            - Produit table ZS, provinces, démographie, délais, alertes, images pour PDF
             """
             d = df_scope.copy()
-        
-            # Fix: colonnes dupliquées => garder 1ère occurrence
+
+            # Fix colonnes dupliquées
             if d.columns.duplicated().any():
                 d = d.loc[:, ~d.columns.duplicated()].copy()
-        
+
             # Filtre SE/Année
             d_se = d.copy()
             if COL_WNUM in d_se.columns:
                 d_se = d_se[pd.to_numeric(d_se[COL_WNUM], errors="coerce") == int(se)]
             if COL_YEAR in d_se.columns:
                 d_se = d_se[pd.to_numeric(d_se[COL_YEAR], errors="coerce") == int(annee)]
-        
+
             # Cumul année <= SE
             d_cum = d.copy()
             if COL_YEAR in d_cum.columns:
                 d_cum = d_cum[pd.to_numeric(d_cum[COL_YEAR], errors="coerce") == int(annee)]
             if COL_WNUM in d_cum.columns:
                 d_cum = d_cum[pd.to_numeric(d_cum[COL_WNUM], errors="coerce") <= int(se)]
-        
+
             def _kpi(df_):
                 cases = int(len(df_))
                 deaths = int(df_["is_death"].sum()) if "is_death" in df_.columns else 0
-                cfr = (deaths / cases * 100) if cases > 0 else 0.0
+                cfr = (deaths / cases * 100.0) if cases > 0 else 0.0
                 return cases, deaths, cfr
-        
+
             cas_se, dec_se, cfr_se = _kpi(d_se)
             cas_cum, dec_cum, cfr_cum = _kpi(d_cum)
-        
-            # ---------------------------------------------------------
-            # Table épidémiologique par ZS (sur la SE sélectionnée)
-            # -> Ajout de la colonne "Province de notification"
-            # ---------------------------------------------------------
+
+            # Table épidémiologique par ZS (SE sélectionnée)
             table_epi = pd.DataFrame()
-        
-            prov_notif_col = None
-            if "COL_PROV_NOTIF" in globals() and globals()["COL_PROV_NOTIF"] in d_se.columns:
-                prov_notif_col = globals()["COL_PROV_NOTIF"]
-            elif "COL_PROV" in globals() and globals()["COL_PROV"] in d_se.columns:
-                prov_notif_col = globals()["COL_PROV"]
-        
             if (COL_ZS in d_se.columns) and len(d_se):
                 tmp = d_se.copy()
                 tmp["_cas_"] = 1
                 tmp["_deces_"] = tmp["is_death"].astype(int) if "is_death" in tmp.columns else 0
-        
-                group_cols = []
-                if prov_notif_col is not None:
-                    group_cols.append(prov_notif_col)
-                group_cols.append(COL_ZS)
-        
+
+                group_cols = [c for c in [COL_PROV, COL_ZS] if c in tmp.columns]
                 table_epi = (
                     tmp.groupby(group_cols, as_index=False)
                        .agg(cas=("_cas_", "sum"), deces=("_deces_", "sum"))
                        .sort_values("cas", ascending=False)
                 )
-        
-                if prov_notif_col is not None:
-                    table_epi = table_epi.rename(columns={prov_notif_col: "Province de notification"})
-        
+                # rename friendly
+                if COL_PROV in table_epi.columns:
+                    table_epi = table_epi.rename(columns={COL_PROV: "Province de notification"})
+                if COL_ZS in table_epi.columns:
+                    table_epi = table_epi.rename(columns={COL_ZS: "Zone de santé"})
+
+            # Points saillants (base)
             points = [
                 f"SE{int(se):02d}/{int(annee)} : {cas_se} cas, {dec_se} décès (CFR {cfr_se:.2f}%).",
                 f"Cumul année (SE01→SE{int(se):02d}) : {cas_cum} cas, {dec_cum} décès (CFR {cfr_cum:.2f}%).",
             ]
-        
             if not table_epi.empty:
                 top5 = table_epi.head(5)
                 if "Province de notification" in table_epi.columns:
                     points.append(
                         "Top 5 ZS (cas) : " + ", ".join(
-                            [f"{r['Province de notification']} / {r[COL_ZS]}={int(r['cas'])}"
+                            [f"{r['Province de notification']} / {r['Zone de santé']}={int(r['cas'])}"
                              for _, r in top5.iterrows()]
                         )
                     )
                 else:
                     points.append(
                         "Top 5 ZS (cas) : " + ", ".join(
-                            [f"{r[COL_ZS]}={int(r['cas'])}" for _, r in top5.iterrows()]
+                            [f"{r['Zone de santé']}={int(r['cas'])}" for _, r in top5.iterrows()]
                         )
                     )
-        
+
             payload = {
                 "meta": {"semaine": int(se), "annee": int(annee), "date_publication": date_pub},
                 "kpi": {
@@ -4766,7 +4873,8 @@ with tab8:
                 "table_epi": table_epi,
                 "points_saillants": points,
             }
-        
+
+            # Cascade labo (si fonction dispo)
             if "cascade_metrics" in globals() and callable(globals()["cascade_metrics"]):
                 try:
                     payload["cascade"] = globals()["cascade_metrics"](d_se)
@@ -4774,7 +4882,8 @@ with tab8:
                     payload["cascade"] = pd.DataFrame()
             else:
                 payload["cascade"] = pd.DataFrame()
-        
+
+            # Alertes (dernière semaine disponible) — sur df_scope filtré
             if "alerts_weekly_simple" in globals() and callable(globals()["alerts_weekly_simple"]):
                 try:
                     payload["alertes_last"] = globals()["alerts_weekly_simple"](d, COL_PROV) if COL_PROV in d.columns else pd.DataFrame()
@@ -4782,24 +4891,115 @@ with tab8:
                     payload["alertes_last"] = pd.DataFrame()
             else:
                 payload["alertes_last"] = pd.DataFrame()
-        
+
+            # ---- ENRICHMENTS ----
+            # Weekly summary (sur df_scope filtré)
+            payload["weekly"] = build_weekly_summary(d)
+
+            # Geo tables (SE)
+            geo = build_geo_tables(d_se, min_cas_zs=min_cas_zs, min_cas_prov=min_cas_prov)
+            payload.update(geo)
+
+            # Demo tables (SE)
+            payload.update(build_demo_tables(d_se))
+
+            # Délais (SE)
+            payload["delais"] = build_delay_summary(d_se)
+
+            # Narration automatique (interprétation)
+            interpret = []
+            if cas_se > 0:
+                interpret.append(f"La SE{int(se):02d} enregistre {cas_se} cas et {dec_se} décès (CFR {cfr_se:.1f}%).")
+                if cfr_se >= 1:
+                    interpret.append("Le CFR est au-dessus du seuil attendu (<1%) et suggère un retard d’accès aux soins, une qualité de prise en charge à renforcer, ou une sous-détection des formes légères.")
+                if cfr_se >= 2:
+                    interpret.append("Priorité : revue des décès, disponibilité SRO/IV, triage et organisation CT/CTC, et détection communautaire.")
+            else:
+                interpret.append(f"Aucun cas sur SE{int(se):02d}/{int(annee)} dans le scope filtré (df_f).")
+
+            zscrit = payload.get("zs_cfr_crit")
+            if isinstance(zscrit, pd.DataFrame) and not zscrit.empty:
+                topz = zscrit.head(3)
+                # colonnes possibles
+                zname = COL_ZS if COL_ZS in topz.columns else ("Zone de santé" if "Zone de santé" in topz.columns else None)
+                pname = COL_PROV if COL_PROV in topz.columns else None
+                parts = []
+                for _, r in topz.iterrows():
+                    if zname and pname:
+                        parts.append(f"{r[pname]} / {r[zname]} (CFR {r['CFR_%']:.1f}%)")
+                    elif zname:
+                        parts.append(f"{r[zname]} (CFR {r['CFR_%']:.1f}%)")
+                if parts:
+                    interpret.append("ZS à létalité élevée (seuil) : " + ", ".join(parts))
+
+            payload["interpretation"] = interpret
+
+            # Images pour PDF (optionnel)
+            payload["images"] = []
+            try:
+                # 1) courbe hebdo cas/décès (si historique dispo)
+                wk = payload.get("weekly")
+                if isinstance(wk, pd.DataFrame) and not wk.empty and "YW" in wk.columns:
+                    fig1 = px.line(wk, x="YW", y=["Cas", "Décès"], markers=True, title="Évolution hebdomadaire – Cas et décès")
+                    fig1.update_layout(xaxis_title="Semaine (YW)", yaxis_title="Nombre")
+                    png1 = _plotly_to_png_bytes(fig1)
+                    if png1:
+                        payload["images"].append(("Évolution hebdomadaire", png1))
+
+                # 2) top provinces (SE) — cas
+                provt = payload.get("prov_table")
+                if isinstance(provt, pd.DataFrame) and not provt.empty and COL_PROV in d_se.columns:
+                    provt2 = provt.copy()
+                    fig2 = px.bar(provt2.head(10), x=COL_PROV, y="Cas", title="Top 10 Provinces – Cas (SE)")
+                    fig2.update_layout(xaxis_tickangle=-45)
+                    png2 = _plotly_to_png_bytes(fig2)
+                    if png2:
+                        payload["images"].append(("Top provinces (cas)", png2))
+
+                # 3) top ZS (SE) — cas
+                zst = payload.get("zs_table")
+                if isinstance(zst, pd.DataFrame) and not zst.empty and COL_ZS in d_se.columns:
+                    zst2 = zst.copy()
+                    # Si province existe, concat pour lisibilité
+                    if COL_PROV in zst2.columns:
+                        zst2["Prov/ZS"] = zst2[COL_PROV].astype(str) + " / " + zst2[COL_ZS].astype(str)
+                        xcol = "Prov/ZS"
+                    else:
+                        xcol = COL_ZS
+                    fig3 = px.bar(zst2.head(10), x=xcol, y="Cas", title="Top 10 ZS – Cas (SE)")
+                    fig3.update_layout(xaxis_tickangle=-45)
+                    png3 = _plotly_to_png_bytes(fig3)
+                    if png3:
+                        payload["images"].append(("Top ZS (cas)", png3))
+            except Exception:
+                # Aucun impact si images non générées
+                pass
+
             return payload
-        
-        sitrep_payload = _build_sitrep_payload_from_df(df_f, semaine, annee, date_pub)
-        
+
+        # Paramètres de seuils (gravité)
+        st.markdown("### Paramètres (seuils gravité)")
+        cS1, cS2 = st.columns(2)
+        with cS1:
+            min_cas_zs = st.number_input("Seuil min cas ZS (pour CFR critique)", min_value=10, max_value=200, value=30, step=5)
+        with cS2:
+            min_cas_prov = st.number_input("Seuil min cas Province (pour CFR critique)", min_value=10, max_value=500, value=50, step=10)
+
+        sitrep_payload = _build_sitrep_payload_from_df(df_f, semaine, annee, date_pub, min_cas_zs=min_cas_zs, min_cas_prov=min_cas_prov)
+
         # =========================================================
-        # 3) Affichage (pliable)
+        # 4) Affichage (pliable)
         # =========================================================
         with st.expander("1) Points saillants", expanded=True):
-            if sitrep_payload["points_saillants"]:
+            if sitrep_payload.get("points_saillants"):
                 for b in sitrep_payload["points_saillants"]:
                     st.markdown(f"- {b}")
             else:
                 st.caption("Aucun point saillant (données insuffisantes pour le scope).")
-        
+
         with st.expander("2) Situation épidémiologique", expanded=True):
             k = sitrep_payload["kpi"]
-        
+
             k1, k2, k3, k4, k5 = st.columns(5)
             k1.metric("Cas (SE)", f"{k['cas_semaine']:,}".replace(",", " "))
             k2.metric("Décès (SE)", f"{k['deces_semaine']:,}".replace(",", " "))
@@ -4812,18 +5012,28 @@ with tab8:
                 "Semaine max (filtré)",
                 str(df_f[COL_WNUM].max()) if (COL_WNUM in df_f.columns and len(df_f)) else "-"
             )
-        
+
             st.caption(
-                f"Cumul année (SE01→SE{int(semaine):02d}) : "
-                f"{k['cas_cumul']:,} cas, {k['deces_cumul']:,} décès (CFR {k['cfr_cumul']:.2f}%)."
-                .replace(",", " ")
+                (
+                    f"Cumul année (SE01→SE{int(semaine):02d}) : "
+                    f"{k['cas_cumul']:,} cas, {k['deces_cumul']:,} décès (CFR {k['cfr_cumul']:.2f}%)."
+                ).replace(",", " ")
             )
-        
-            if sitrep_payload["table_epi"] is not None and not sitrep_payload["table_epi"].empty:
-                st_dataframe_safe(sitrep_payload["table_epi"], height=520)
+
+            table_epi = sitrep_payload.get("table_epi")
+            if table_epi is not None and isinstance(table_epi, pd.DataFrame) and not table_epi.empty:
+                st_dataframe_safe(table_epi, height=520)
             else:
                 st.caption("Table ZS indisponible (pas de données sur la SE/année ou colonne ZS manquante).")
-        
+
+            # Courbe hebdo (si dispo)
+            wk = sitrep_payload.get("weekly")
+            if isinstance(wk, pd.DataFrame) and not wk.empty and "YW" in wk.columns:
+                st.markdown("### Évolution hebdomadaire (scope filtré)")
+                fig = px.line(wk, x="YW", y=["Cas", "Décès"], markers=True, title="Cas et décès par semaine")
+                fig.update_layout(xaxis_title="Semaine (YW)", yaxis_title="Nombre")
+                st.plotly_chart(fig, width="stretch")
+
         with st.expander("3) Labo / qualité / signaux", expanded=False):
             cascad = sitrep_payload.get("cascade")
             if cascad is not None and isinstance(cascad, pd.DataFrame) and not cascad.empty:
@@ -4831,7 +5041,7 @@ with tab8:
                 st_dataframe_safe(cascad, height=320)
             else:
                 st.caption("Cascade indisponible (fonction/colonnes manquantes ou pas de données sur la SE).")
-        
+
             al = sitrep_payload.get("alertes_last")
             if al is not None and isinstance(al, pd.DataFrame) and not al.empty:
                 st.markdown("### Alertes (dernière semaine disponible)")
@@ -4839,79 +5049,69 @@ with tab8:
                 st_dataframe_safe(al[cols] if cols else al, height=420)
             else:
                 st.caption("Alertes indisponibles (fonction absente ou pas assez d’historique).")
-        
+
+        with st.expander("4) Analyse spatiale & gravité", expanded=True):
+            provt = sitrep_payload.get("prov_table")
+            if provt is not None and isinstance(provt, pd.DataFrame) and not provt.empty:
+                st.markdown("### Provinces – Cas / Décès / CFR (SE)")
+                st_dataframe_safe(provt, height=360)
+
+            provcrit = sitrep_payload.get("prov_cfr_crit")
+            if provcrit is not None and isinstance(provcrit, pd.DataFrame) and not provcrit.empty:
+                st.markdown(f"### Provinces à CFR critique (Cas ≥ {int(min_cas_prov)})")
+                st_dataframe_safe(provcrit, height=280)
+
+            zscrit = sitrep_payload.get("zs_cfr_crit")
+            if zscrit is not None and isinstance(zscrit, pd.DataFrame) and not zscrit.empty:
+                st.markdown(f"### ZS à CFR critique (Cas ≥ {int(min_cas_zs)})")
+                st_dataframe_safe(zscrit.head(30), height=520)
+            else:
+                st.caption("Aucune ZS ne dépasse le seuil (ou données insuffisantes).")
+
+        with st.expander("5) Démographie & délais", expanded=False):
+            sext = sitrep_payload.get("sex_table")
+            if sext is not None and isinstance(sext, pd.DataFrame) and not sext.empty:
+                st.markdown("### Répartition par sexe (SE)")
+                st_dataframe_safe(sext, height=220)
+
+            aget = sitrep_payload.get("age_table")
+            if aget is not None and isinstance(aget, pd.DataFrame) and not aget.empty:
+                st.markdown("### Répartition par tranches d’âge (SE)")
+                st_dataframe_safe(aget, height=320)
+
+            delais = sitrep_payload.get("delais")
+            if delais is not None and isinstance(delais, pd.DataFrame) and not delais.empty:
+                st.markdown("### Délais (début maladie → admission)")
+                st_dataframe_safe(delais, height=140)
+
+            interp = sitrep_payload.get("interpretation", [])
+            if interp:
+                st.markdown("### Interprétation épidémiologique (auto)")
+                for line in interp:
+                    st.markdown(f"- {line}")
+
         # =========================================================
-        # 4) Export PDF
+        # 5) Export PDF
         # =========================================================
         st.divider()
         st.markdown("### Export")
-        
+
         if "export_sitrep_pdf" in globals() and callable(export_sitrep_pdf):
-            pdf_bytes = export_sitrep_pdf(sitrep_payload)
-            st.download_button(
-                "⬇️ Télécharger le SITREP (PDF)",
-                data=pdf_bytes,
-                file_name=f"SITREP_CHOLERA_SE{int(semaine):02d}_{int(annee)}.pdf",
-                mime="application/pdf",
-                type="primary",
-                key="sitrep_dl_pdf",
-            )
+            try:
+                pdf_bytes = export_sitrep_pdf(sitrep_payload)
+                st.download_button(
+                    "⬇️ Télécharger le SITREP (PDF)",
+                    data=pdf_bytes,
+                    file_name=f"SITREP_CHOLERA_SE{int(semaine):02d}_{int(annee)}.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    key="sitrep_dl_pdf",
+                )
+                st.caption("ℹ️ Si les images n’apparaissent pas dans le PDF : installe `kaleido` (Plotly → PNG). Le PDF reste exportable sans images.")
+            except Exception as e:
+                st.error(f"Erreur export PDF : {e}")
         else:
             st.error("La fonction export_sitrep_pdf(payload) n'est pas définie dans ce script.")
-        
-    # =========================
-    # TAB 9 — IDSR
-    # =========================
-    # ----------------------------
-    # Cache (Streamlit) : lecture Excel
-    # ----------------------------
-    @st.cache_data(show_spinner=False)
-    def load_excel_cached(file, sheet_name=None):
-            """Lecture Excel avec cache pour accélérer l'app (supporte UploadedFile ou chemin)."""
-            return pd.read_excel(file, sheet_name=sheet_name) if sheet_name else pd.read_excel(file)
-        
-    # ----------------------------
-    # Helpers robustes
-    # ----------------------------
-    def clean_week(series: pd.Series) -> pd.Series:
-            """Nettoie une colonne semaine (extrait digits) -> Int64, bornée 1..53."""
-            s = series.astype("string").str.extract(r"(\d+)", expand=False)
-            w = pd.to_numeric(s, errors="coerce").astype("Int64")
-            return w.where((w >= 1) & (w <= 53), pd.NA)
-        
-    def clean_year(series: pd.Series) -> pd.Series:
-            """Nettoie une colonne année (extrait YYYY) -> Int64."""
-            s = series.astype("string").str.extract(r"((?:19|20)\d{2})", expand=False)
-            y = pd.to_numeric(s, errors="coerce").astype("Int64")
-            return y.where((y >= 2000) & (y <= 2100), pd.NA)
-        
-    def parse_year_from_filename(path_or_name: str):
-            """Extrait une année YYYY depuis un nom de fichier si disponible."""
-            if not path_or_name:
-                return None
-            m = re.search(r"(19|20)\d{2}", str(path_or_name))
-            return int(m.group()) if m else None
-        
-    def iso_monday_from_year_week(y, w):
-            """Construit le lundi ISO depuis (année ISO, semaine ISO). Renvoie NaT si invalide."""
-            try:
-                return pd.Timestamp(date.fromisocalendar(int(y), int(w), 1))
-            except Exception:
-                return pd.NaT
-        
-    def norm_text(series: pd.Series) -> pd.Series:
-            """Normalise du texte pour réduire les doublons (espaces, casse)."""
-            s = series.astype("string")
-            s = s.str.replace(r"\s+", " ", regex=True).str.strip()
-            return s
-        
-    def to_numeric_cols(df: pd.DataFrame, cols) -> pd.DataFrame:
-            """Convertit une liste de colonnes en numeric si elles existent."""
-            for c in cols:
-                if c in df.columns:
-                    df[c] = pd.to_numeric(df[c], errors="coerce")
-            return df
-        
 with tab9:
     st.markdown("## IDSR – Analyses")
 
@@ -6522,7 +6722,6 @@ with tab9:
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     key="tab9_dl_monthly_pivot_xlsx",
                                 )
-
 
 # =========================
 # MAPS

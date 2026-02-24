@@ -1,11 +1,26 @@
-streamlit
-pandas
-numpy
-plotly
-matplotlib
-openpyxl
-xlsxwriter
-geopandas
-rapidfuzz
-contextily
-reportlab
+# App
+streamlit>=1.30,<2.0
+
+# Data
+pandas>=2.1,<3.0
+numpy>=1.26,<3.0
+
+# Plots + export images (Tab8 PDF)
+plotly>=6.1.1,<7.0
+kaleido>=1.2.0,<2.0
+
+matplotlib>=3.8,<4.0
+
+# Excel
+openpyxl>=3.1,<4.0
+xlsxwriter>=3.2,<4.0
+
+# GIS
+geopandas>=0.14,<1.0
+contextily>=1.6,<2.0
+
+# Matching
+rapidfuzz>=3.0,<4.0
+
+# PDF
+reportlab>=4.0,<5.0
