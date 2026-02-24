@@ -2183,7 +2183,6 @@ def standardize_df(df):
 
     return df
 
-
 # =========================
 # HELPERS (Qualité & Alertes)
 # =========================
@@ -3279,9 +3278,6 @@ if not IDSR_MODE:
         k6.metric("Provinces épidémiques", prov_ratio_epidem, f"{compl_epidem_pct:.1f}%")
         k7.metric("Couverture nationale", prov_ratio_nat, f"{compl_nat_pct:.1f}%")
         k8.metric("ZS touchées", f"{n_zs_f}")
-
-
-
 else:
     # Mode IDSR: on ne charge pas de line list ici. Les analyses IDSR sont dans l'onglet 9.
     raw = pd.DataFrame()
