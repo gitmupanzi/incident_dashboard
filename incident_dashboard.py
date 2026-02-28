@@ -29,7 +29,6 @@ from pandas.api.types import is_numeric_dtype
 from datetime import date,datetime
 from io import BytesIO
 
-
 # =========================================================
 # UTILITAIRES GÉNÉRAUX (Harmonisation & Robustesse)
 # - Centralise les fonctions réutilisées dans les onglets
@@ -4535,10 +4534,6 @@ with tab7:
                     st.plotly_chart(figa, width="stretch")
                 else:
                     st.success("Aucun signal détecté avec les seuils actuels (baseline*1.5 et Cas≥10).")
-        
-    # =========================
-    # TAB 8: Sitrep automatique
-    # =========================
 with tab8:
     if IDSR_MODE:
         st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
@@ -5108,6 +5103,185 @@ with tab8:
                 st.error(f"Erreur export PDF : {e}")
         else:
             st.error("La fonction export_sitrep_pdf(payload) n'est pas définie dans ce script.")
+
+# =========================
+# TAB 9 — IDSR : Helpers robuste
+# =========================
+def _make_unique_columns(cols):
+    seen = {}
+    out = []
+    for c in cols:
+        c = str(c)
+        if c not in seen:
+            seen[c] = 0
+            out.append(c)
+        else:
+            seen[c] += 1
+            out.append(f"{c}__{seen[c]}")
+    return out
+
+@st.cache_data(show_spinner=False)
+def _read_excel_from_bytes_cached(
+    file_bytes: bytes,
+    sheet_name: str | None,
+    engine: str,
+    kwargs_items: tuple
+) -> pd.DataFrame:
+    """
+    Cache interne stable:
+    - clé basée sur bytes du fichier + sheet_name + engine + kwargs hashables
+    """
+    kwargs = dict(kwargs_items)
+
+    bio = BytesIO(file_bytes)
+    with pd.ExcelFile(bio, engine=engine) as xls:
+        chosen = None
+
+        # 1) feuille demandée (exacte ou insensible à la casse)
+        if sheet_name:
+            if sheet_name in xls.sheet_names:
+                chosen = sheet_name
+            else:
+                low = {s.lower(): s for s in xls.sheet_names}
+                chosen = low.get(str(sheet_name).lower())
+
+        # 2) fallback: première feuille
+        if chosen is None:
+            chosen = xls.sheet_names[0] if xls.sheet_names else None
+
+        if chosen is None:
+            return pd.DataFrame()
+
+        df = pd.read_excel(xls, sheet_name=chosen, engine=engine, **kwargs)
+
+    df.columns = _make_unique_columns(df.columns)
+    return df
+
+@st.cache_data(show_spinner=False)
+def _read_excel_from_path_cached(
+    path_str: str,
+    mtime_ns: int,
+    sheet_name: str | None,
+    engine: str,
+    kwargs_items: tuple
+) -> pd.DataFrame:
+    """
+    Cache interne pour chemins locaux:
+    clé = path + mtime (change si fichier mis à jour) + params
+    """
+    p = Path(path_str)
+    file_bytes = p.read_bytes()
+    return _read_excel_from_bytes_cached(file_bytes, sheet_name, engine, kwargs_items)
+
+def load_excel_cached(file, sheet_name=None, engine="openpyxl", **kwargs) -> pd.DataFrame:
+    """
+    Lecture Excel avec cache pour accélérer l'app (supporte UploadedFile, file-like ou chemin local).
+    - sheet_name manquant -> fallback première feuille
+    - colonnes uniques
+    """
+    # kwargs doivent être hashables pour cache_data
+    kwargs_items = tuple(sorted(kwargs.items(), key=lambda x: x[0]))
+
+    # Cas 1: Streamlit UploadedFile
+    if hasattr(file, "getvalue") and callable(file.getvalue):
+        b = file.getvalue()
+        if not b:
+            return pd.DataFrame()
+        return _read_excel_from_bytes_cached(b, sheet_name, engine, kwargs_items)
+
+    # Cas 2: chemin local
+    if isinstance(file, (str, Path)):
+        p = Path(file)
+        if not p.exists():
+            raise FileNotFoundError(f"Fichier introuvable: {p}")
+        mtime_ns = p.stat().st_mtime_ns
+        return _read_excel_from_path_cached(str(p), mtime_ns, sheet_name, engine, kwargs_items)
+
+    # Cas 3: file-like (BytesIO / handle)
+    if hasattr(file, "read") and callable(file.read):
+        try:
+            pos = file.tell()
+        except Exception:
+            pos = None
+        b = file.read()
+        try:
+            if pos is not None:
+                file.seek(pos)
+        except Exception:
+            pass
+        if not b:
+            return pd.DataFrame()
+        return _read_excel_from_bytes_cached(b, sheet_name, engine, kwargs_items)
+
+    raise TypeError("load_excel_cached: 'file' doit être UploadedFile, str/Path ou file-like.")
+
+
+def clean_week(series: pd.Series) -> pd.Series:
+    """
+    Nettoie une colonne semaine:
+    - extrait digits
+    - cast Int64
+    - borne 1..53
+    """
+    s = series.astype("string").str.extract(r"(\d{1,2})", expand=False)
+    w = pd.to_numeric(s, errors="coerce").astype("Int64")
+    return w.where((w >= 1) & (w <= 53), pd.NA)
+
+def clean_year(series: pd.Series) -> pd.Series:
+    """
+    Nettoie une colonne année:
+    - extrait YYYY
+    - cast Int64
+    - borne 2000..2100 (adaptable)
+    """
+    s = series.astype("string").str.extract(r"((?:19|20)\d{2})", expand=False)
+    y = pd.to_numeric(s, errors="coerce").astype("Int64")
+    # RDC: on limite pour éviter 1960/1900 issus d'erreurs Excel ou parsing
+    return y.where((y >= 2000) & (y <= 2100), pd.NA)
+
+def parse_year_from_filename(path_or_name: str | None):
+    """Extrait une année YYYY depuis un nom de fichier si disponible."""
+    if not path_or_name:
+        return None
+    m = re.search(r"(19|20)\d{2}", str(path_or_name))
+    return int(m.group()) if m else None
+
+def iso_monday_from_year_week(y, w):
+    """
+    Construit le lundi ISO depuis (année ISO, semaine ISO).
+    Renvoie pd.NaT si invalide.
+    """
+    try:
+        if pd.isna(y) or pd.isna(w):
+            return pd.NaT
+        return pd.Timestamp(date.fromisocalendar(int(y), int(w), 1))
+    except Exception:
+        return pd.NaT
+
+def norm_text(series: pd.Series) -> pd.Series:
+    """
+    Normalise du texte pour réduire les doublons:
+    - cast string
+    - strip
+    - espaces multiples -> 1 espace
+    - option: uppercase (souvent utile IDSR)
+    """
+    s = series.astype("string")
+    s = s.str.replace(r"\s+", " ", regex=True).str.strip()
+    # Option robuste (souvent recommandé IDSR):
+    s = s.str.upper()
+    # Option: enlever les points/virgules parasites (sans casser les / -)
+    s = s.str.replace(r"[^\w\s\-/]", " ", regex=True).str.replace(r"\s+", " ", regex=True).str.strip()
+    return s
+
+def to_numeric_cols(df: pd.DataFrame, cols) -> pd.DataFrame:
+    """Convertit une liste de colonnes en numeric si elles existent."""
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
+
+
 with tab9:
     st.markdown("## IDSR – Analyses")
 
