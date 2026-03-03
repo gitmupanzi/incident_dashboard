@@ -1535,6 +1535,7 @@ COL_AS   = "Aire_de_sante_notification"
 
 COL_YEAR = "Annee_epid"
 COL_WNUM = "Num_semaine_epid"
+COL_WEEK = "Semaine_epid"  # colonne semaine (résolue dynamiquement plus bas si besoin)
 COL_SEX  = "Sexe"
 COL_AGE  = "Age"
 COL_UNIT = "Unite_age"
@@ -1552,6 +1553,7 @@ COL_CLASS= "Classification_finale"
 DATE_ONSET = "Date_debut_maladie"
 DATE_ADM   = "Date_admission_au_CT"
 DATE_PREL  = "Date_prelevement"
+DATE_NOTIF = "Date_notification"
 
 # =========================
 # MALADIES (CONFIG / SPECS)
@@ -2780,6 +2782,25 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
         "aire_sante_notification": "Aire_de_sante_notification",
         "as_notif": "Aire_de_sante_notification",
 
+        # Mpox / autres line lists (variantes fréquentes)
+        "Div_Prov": "Province_notification",
+        "div_prov": "Province_notification",
+        "Province_notif": "Province_notification",
+        "Zone_Sante": "Zone_de_sante_notification",
+        "zone_sante": "Zone_de_sante_notification",
+        "Aire_Sante": "Aire_de_sante_notification",
+        "aire_sante": "Aire_de_sante_notification",
+        "Age_Cas": "Age",
+        "age_cas": "Age",
+        "Age_Unite": "Unite_age",
+        "age_unite": "Unite_age",
+        "Sexe_Cas": "Sexe",
+        "sexe_cas": "Sexe",
+        "Statut_Cas": "Issue",
+        "statut_cas": "Issue",
+        "Date_Décès": "Date_deces",
+        "Date_Deces": "Date_deces",
+
         # Temps
         "year": "Annee_epid",
         "annee": "Annee_epid",
@@ -3293,10 +3314,10 @@ def tab_help(title: str, md: str, expanded: bool = False):
     with st.expander(f"ℹ️ {title}", expanded=expanded):
         st.markdown(md)
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9,tab10= st.tabs([
     "1) Évolution", "2) Taux & CFR", "3) Délais (timeliness)", "4) Démographie",
     "5) Complétude", "6) Données & Export", "7) Qualité & Alertes", "8) SITREP",
-    "9) IDSR"
+    "9) IDSR","10) 📌 Indice de risque”"
 ])
 
 
@@ -3746,22 +3767,286 @@ with tab4:
                 st.info("Colonnes tranche âge absentes (Tranche_age_en_ans / Tranche_age).")
         
         st.divider()
-        
-        st.subheader("Proportion des cas (camembert)")
-        if use_custom_viz and HAS_CUSTOM_VIZ and age_col:
-            fig = plot_camembert_interactif(
-                df=df_f,
-                colonne=[COL_UNIT, age_col] if COL_UNIT in df_f.columns else [age_col],
-                titre="Proportion des cas par tranche d'âge",
-                seuil_min=int(seuil_min_count),
-                afficher_legende=False,
-                annot=True,
-                taille_fig=(700, 500)
+
+        st.subheader("Qualité de l’âge (Data Manager)")
+
+        # --- Indicateurs rapides ---
+        n_total = len(df_f)
+
+        # Manquants âge: on considère Age OU une tranche (Tranche_age/Tranche_age_en_ans)
+        has_age_num = (COL_AGE in df_f.columns)
+        has_tr4 = (COL_AGEG2 in df_f.columns)
+        has_tr5 = (COL_AGEG in df_f.columns)
+
+        age_num_na = df_f[COL_AGE].isna() if has_age_num else pd.Series([True]*n_total, index=df_f.index)
+        tr4_na = df_f[COL_AGEG2].isna() if has_tr4 else pd.Series([True]*n_total, index=df_f.index)
+        tr5_na = df_f[COL_AGEG].isna() if has_tr5 else pd.Series([True]*n_total, index=df_f.index)
+
+        missing_age_mask = age_num_na & tr4_na & tr5_na
+        pct_age_missing = float(missing_age_mask.mean() * 100.0) if n_total else 0.0
+
+        # Unité incohérente
+        incoh_mask = pd.Series([False]*n_total, index=df_f.index)
+        if COL_UNIT in df_f.columns and df_f[COL_UNIT].notna().any():
+            u = df_f[COL_UNIT].astype("string").str.lower().str.strip()
+            ok = (
+                u.str.contains(r"\b(?:an|ans|annee|ann[eé]es|year|yr|yrs)\b", na=False)
+                | u.str.contains(r"\b(?:mois|month)s?\b", na=False)
+                | u.str.contains(r"\b(?:semaine|week)s?\b|\bsem\b", na=False)
+                | u.str.contains(r"\b(?:jour|day)s?\b", na=False)
             )
-            st_plot(fig, key="pie_age")
+            incoh_mask = u.notna() & (~ok)
+        pct_unit_incoh = float(incoh_mask.mean() * 100.0) if n_total else 0.0
+
+        # Âges extrêmes (convertis en années quand possible)
+        def _age_to_years_for_quality(df_):
+            age_raw = df_[COL_AGE] if (COL_AGE in df_.columns) else pd.Series([pd.NA] * len(df_), index=df_.index)
+            age_num = pd.to_numeric(age_raw, errors="coerce")
+
+            if COL_UNIT in df_.columns:
+                unit_raw = df_[COL_UNIT].astype("string").str.lower().str.strip()
+            else:
+                unit_raw = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
+
+            age_txt = age_raw.astype("string").str.lower()
+            extracted_num = age_txt.str.extract(r"(?P<num>\d+(?:[\.,]\d+)?)")["num"].str.replace(",", ".", regex=False)
+            extracted_num = pd.to_numeric(extracted_num, errors="coerce")
+            age_val = age_num.combine_first(extracted_num)
+
+            unit_from_age = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
+            unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:mois|month)s?\b", na=False), "mois")
+            unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:semaine|week)s?\b|\bsem\b", na=False), "semaine")
+            unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:jour|day)s?\b", na=False), "jour")
+            unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:an|ans|annee|ann[eé]es|year|yr|yrs)\b", na=False), "an")
+
+            unit = unit_raw.combine_first(unit_from_age)
+
+            years = pd.Series(np.nan, index=df_.index, dtype="float")
+            years = years.mask(unit.str.contains(r"\b(?:mois|month)s?\b", na=False), age_val / 12.0)
+            years = years.mask(unit.str.contains(r"\b(?:semaine|week)s?\b|\bsem\b", na=False), age_val / 52.0)
+            years = years.mask(unit.str.contains(r"\b(?:jour|day)s?\b", na=False), age_val / 365.25)
+            years = years.mask(unit.str.contains(r"\b(?:an|ans|annee|ann[eé]es|year|yr|yrs)\b", na=False), age_val)
+            years = years.mask(years.isna() & age_val.notna(), age_val)
+
+            return pd.to_numeric(years, errors="coerce")
+
+        years = _age_to_years_for_quality(df_f) if has_age_num else pd.Series([np.nan]*n_total, index=df_f.index)
+        extreme_mask = years.notna() & ((years < 0) | (years > 110))
+        pct_extreme = float(extreme_mask.mean() * 100.0) if n_total else 0.0
+
+        # --- Affichage KPI ---
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Âge manquant", f"{pct_age_missing:.1f}%")
+        m2.metric("Unité âge incohérente", f"{pct_unit_incoh:.1f}%")
+        m3.metric("Âges extrêmes (<0 ou >110 ans)", f"{pct_extreme:.1f}%")
+        m4.metric("N (après filtres)", f"{n_total:,}".replace(",", " "))
+
+        with st.expander("Détails qualité (unités, âges extrêmes)"):
+            if COL_UNIT in df_f.columns:
+                unit_dist = (
+                    df_f[COL_UNIT].astype("string").fillna("NA").str.lower().str.strip()
+                    .value_counts().reset_index()
+                )
+                unit_dist.columns = ["Unite_age (valeur)", "N"]
+                st.dataframe(unit_dist, width="stretch", height=260)
+            else:
+                st.info("Colonne Unite_age absente.")
+
+            if extreme_mask.any():
+                show_cols = [c for c in [COL_PROV, COL_ZS, COL_AGE, COL_UNIT, DATE_ONSET, DATE_ADM, DATE_NOTIF] if c in df_f.columns]
+                df_ext = df_f.loc[extreme_mask, show_cols].copy().head(50)
+                df_ext.insert(0, "Age_en_ans_estime", years.loc[extreme_mask].head(50).round(2).values)
+                st.warning("Exemples (max 50) de valeurs extrêmes — à vérifier/corriger.")
+                st.dataframe(df_ext, width="stretch", height=320)
+            else:
+                st.success("Aucun âge extrême détecté avec les règles actuelles.")
+
+        st.divider()
+
+        st.subheader("Proportion des cas (camembert)")
+
+        if use_custom_viz and HAS_CUSTOM_VIZ:
+            # ------------------------------------------------------------------
+            # 1) Tranche_age (4 catégories): 0-11 mois / 12-59 mois / 5-15 ans / >15 ans
+            # 2) Tranche_age_en_ans (classes 5 ans): 0-4, 5-9, ..., 60+
+            # Objectif: avoir 2 camemberts disponibles quelle que soit la maladie
+            # (si Age + Unite_age existent, on peut reconstruire les tranches)
+            # ------------------------------------------------------------------
+
+            def _age_to_years(df_):
+                """Convertit Age + Unite_age en années (float), de façon robuste.
+
+                - Supporte unités FR/EN (ans/années/years, mois/months, semaines/weeks, jours/days)
+                - Supporte Age sous forme texte (ex: "6 mois", "2 ans")
+                - Si Unite_age manquante: suppose Age en années (fallback)
+                """
+                # 1) récupérer âge brut (peut être numérique ou texte)
+                age_raw = df_[COL_AGE] if (COL_AGE in df_.columns) else pd.Series([pd.NA] * len(df_), index=df_.index)
+                age_num = pd.to_numeric(age_raw, errors="coerce")
+
+                # 2) déterminer unité (si disponible)
+                if COL_UNIT in df_.columns:
+                    unit_raw = df_[COL_UNIT].astype("string").str.lower().str.strip()
+                else:
+                    unit_raw = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
+
+                # 3) tenter d'extraire unité depuis Age texte si unit manquante
+                # Ex: "6 mois", "2 ans", "18 months", "3 weeks"
+                age_txt = age_raw.astype("string").str.lower()
+                # extraire premier nombre du texte
+                extracted_num = age_txt.str.extract(r"(?P<num>\d+(?:[\.,]\d+)?)")["num"].str.replace(",", ".", regex=False)
+                extracted_num = pd.to_numeric(extracted_num, errors="coerce")
+
+                # si age_num est NA mais extracted_num existe, on l'utilise
+                age_val = age_num.combine_first(extracted_num)
+
+                # unité extraite depuis texte
+                unit_from_age = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
+                unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:mois|month)s?\b", na=False), "mois")
+                unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:semaine|week)s?\b|\bsem\b", na=False), "semaine")
+                unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:jour|day)s?\b", na=False), "jour")
+                unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:an|ans|annee|ann[eé]es|year|yr|yrs)\b", na=False), "an")
+
+                unit = unit_raw.combine_first(unit_from_age)
+
+                # 4) conversion en années
+                years = pd.Series(np.nan, index=df_.index, dtype="float")
+                years = years.mask(unit.str.contains(r"\b(?:mois|month)s?\b", na=False), age_val / 12.0)
+                years = years.mask(unit.str.contains(r"\b(?:semaine|week)s?\b|\bsem\b", na=False), age_val / 52.0)
+                years = years.mask(unit.str.contains(r"\b(?:jour|day)s?\b", na=False), age_val / 365.25)
+                years = years.mask(unit.str.contains(r"\b(?:an|ans|annee|ann[eé]es|year|yr|yrs)\b", na=False), age_val)
+
+                # 5) fallback: si unité inconnue mais age_val numérique -> supposer années
+                years = years.mask(years.isna() & age_val.notna(), age_val)
+
+                return pd.to_numeric(years, errors="coerce")
+
+            def _derive_tranche_4(df_):
+                """Construit une tranche d'âge 4 catégories:
+                  - 0-11 mois
+                  - 12-59 mois
+                  - 5-15 ans
+                  - >15 ans
+            
+                Stratégie:
+                1) Si COL_AGEG2 existe -> on tente de recoder les valeurs (regex) vers les 4 catégories.
+                2) Sinon -> on dérive depuis Age/Unite_age via _age_to_years().
+                3) Fallback: garde la valeur initiale si rien ne matche.
+                """
+                # --- 1) base: tranche existante si dispo, sinon dérivée ---
+                if COL_AGEG2 in df_.columns and df_[COL_AGEG2].notna().any():
+                    s_raw = df_[COL_AGEG2].astype("string").str.strip()
+                    years = _age_to_years(df_)  # utile si on veut compléter les NA
+                    s_from_years = pd.Series(pd.NA, index=df_.index, dtype="string")
+                    s_from_years = s_from_years.mask(years.notna() & (years < 1), "0-11 mois")
+                    s_from_years = s_from_years.mask(years.notna() & (years >= 1) & (years < 5), "12-59 mois")
+                    s_from_years = s_from_years.mask(years.notna() & (years >= 5) & (years <= 15), "5-15 ans")
+                    s_from_years = s_from_years.mask(years.notna() & (years > 15), ">15 ans")
+                    # si tranche existante est vide sur certaines lignes, on peut la compléter par l'âge dérivé
+                    s_base = s_raw.combine_first(s_from_years)
+                else:
+                    years = _age_to_years(df_)
+                    s_base = pd.Series(pd.NA, index=df_.index, dtype="string")
+                    s_base = s_base.mask(years.notna() & (years < 1), "0-11 mois")
+                    s_base = s_base.mask(years.notna() & (years >= 1) & (years < 5), "12-59 mois")
+                    s_base = s_base.mask(years.notna() & (years >= 5) & (years <= 15), "5-15 ans")
+                    s_base = s_base.mask(years.notna() & (years > 15), ">15 ans")
+            
+                # --- 2) recodage regex sur la base (utile si s_base contient des libellés hétérogènes) ---
+                s_low = s_base.astype("string").str.lower().str.strip()
+                s2 = pd.Series(pd.NA, index=df_.index, dtype="string")
+            
+                # 0-11 mois
+                s2 = s2.mask(
+                    s_low.str.contains(r"0\s*[-–àa]\s*11", na=False)
+                    | (s_low.str.contains("0", na=False) & s_low.str.contains("11", na=False) & s_low.str.contains("mois", na=False))
+                    | s_low.str.contains(r"\b(?:0\s*[-–àa]\s*1|0\s*[-–àa]\s*0)\b\s*an", na=False),
+                    "0-11 mois"
+                )
+            
+                # 12-59 mois (≈ 1-4 ans)
+                s2 = s2.mask(
+                    s_low.str.contains(r"12\s*[-–àa]\s*59", na=False)
+                    | ((s_low.str.contains("12", na=False) & s_low.str.contains("59", na=False)))
+                    | (s_low.str.contains(r"\b1\s*[-–àa]\s*4\b", na=False) & s_low.str.contains(r"an|anne", na=False))
+                    | (s_low.str.contains(r"\b(?:1|2|3|4)\b", na=False) & s_low.str.contains(r"an|anne", na=False)),
+                    "12-59 mois"
+                )
+            
+                # 5-15 ans
+                s2 = s2.mask(
+                    s_low.str.contains(r"5\s*[-–àa]\s*15", na=False)
+                    | ((s_low.str.contains("5", na=False) & s_low.str.contains("15", na=False))),
+                    "5-15 ans"
+                )
+            
+                # >15 ans (15+, > 15, plus de 15, supérieur à 15)
+                s2 = s2.mask(
+                    s_low.str.contains(r">\s*15", na=False)
+                    | s_low.str.contains(r"15\s*\+", na=False)
+                    | s_low.str.contains(r"plus\s*de\s*15", na=False)
+                    | s_low.str.contains(r"superieur\s*a\s*15|sup[eé]rieur\s*[àa]\s*15", na=False),
+                    ">15 ans"
+                )
+            
+                # --- 3) final: prioriser recodage, sinon garder base ---
+                s_final = s2.combine_first(s_base.astype("string"))
+                return s_final
+            def _derive_tranche_5ans(df_):
+                if COL_AGEG in df_.columns and df_[COL_AGEG].notna().any():
+                    s = df_[COL_AGEG].astype("string").str.strip()
+                    # on tente de convertir en début de classe si c'est du type "0-4", "5-9", etc.
+                    # sinon on reconstruit plus bas.
+                    ok = s.str.match(r"^\d+\s*-\s*\d+$", na=False) | s.str.contains("60", na=False)
+                    if ok.mean() > 0.6:
+                        return s
+                years = _age_to_years(df_)
+                bins = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, np.inf]
+                labels = ["0-4", "5-9", "10-14", "15-19", "20-24", "25-29", "30-34", "35-39",
+                          "40-44", "45-49", "50-54", "55-59", "60+"]
+                return pd.cut(years, bins=bins, labels=labels, right=False).astype("string")
+
+            df_pie = df_f.copy()
+            df_pie["Tranche_age_4cat"] = _derive_tranche_4(df_pie)
+            df_pie["Tranche_age_en_ans_5ans"] = _derive_tranche_5ans(df_pie)
+
+            p1, p2 = st.columns(2)
+
+            with p1:
+                st.caption("**Tranche_age (4 catégories)** : 0-11 mois • 12-59 mois • 5-15 ans • >15 ans")
+                if df_pie["Tranche_age_4cat"].notna().any():
+                    fig = plot_camembert_interactif(
+                        df=df_pie,
+                        colonne="Tranche_age_4cat",
+                        titre="Proportion des cas – Tranche_age (4 catégories)",
+                        seuil_min=int(seuil_min_count),
+                        afficher_legende=True,
+                        annot=True,
+                        taille_fig=(700, 500),
+                    )
+                    st_plot(fig, key="pie_age_4cat")
+                else:
+                    st.info("Impossible de construire la tranche 4 catégories (âge/unité manquants).")
+
+            with p2:
+                st.caption("**Tranche_age_en_ans (classes 5 ans)** : 0-4 … 60+")
+                if df_pie["Tranche_age_en_ans_5ans"].notna().any():
+                    fig = plot_camembert_interactif(
+                        df=df_pie,
+                        colonne="Tranche_age_en_ans_5ans",
+                        titre="Proportion des cas – Tranche_age_en_ans (5 ans)",
+                        seuil_min=int(seuil_min_count),
+                        afficher_legende=True,
+                        annot=True,
+                        taille_fig=(700, 500),
+                    )
+                    st_plot(fig, key="pie_age_5ans")
+                else:
+                    st.info("Impossible de construire la tranche 5 ans (âge/unité manquants).")
+
         else:
-            st.info("Camembert: nécessite tranche d’âge + visualisations custom.")
-        
+            st.info("Camemberts: nécessite visualisations custom (HAS_CUSTOM_VIZ=True).")
+
         st.divider()
         
         st.subheader("Pyramide âge / sexe")
@@ -5280,7 +5565,6 @@ def to_numeric_cols(df: pd.DataFrame, cols) -> pd.DataFrame:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
-
 
 with tab9:
     st.markdown("## IDSR – Analyses")
@@ -6892,6 +7176,403 @@ with tab9:
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     key="tab9_dl_monthly_pivot_xlsx",
                                 )
+
+def _score_quantile_0_100(s: pd.Series, q_low=0.05, q_high=0.95) -> pd.Series:
+    """Transforme une série numérique en score 0–100 via quantiles (robuste aux extrêmes)."""
+    s = pd.to_numeric(s, errors="coerce")
+    if s.notna().sum() < 3:
+        return pd.Series([np.nan]*len(s), index=s.index)
+
+    lo = s.quantile(q_low)
+    hi = s.quantile(q_high)
+    if pd.isna(lo) or pd.isna(hi) or hi <= lo:
+        return pd.Series([np.nan]*len(s), index=s.index)
+
+    x = s.clip(lo, hi)
+    return (x - lo) / (hi - lo) * 100.0
+
+def _completeness_pct(df: pd.DataFrame, required_cols: list) -> float:
+    """% de complétude moyenne sur champs clés (0–100)."""
+    cols = [c for c in required_cols if c in df.columns]
+    if not cols:
+        return np.nan
+    # proportion non-NA par colonne, puis moyenne
+    per_col = [df[c].notna().mean() for c in cols]
+    return float(np.mean(per_col) * 100.0)
+
+def _timeliness_pct(df: pd.DataFrame, date_onset: str, date_notif: str, threshold_days: int = 2) -> float:
+    """% de cas avec (Date_notification - Date_debut_maladie) <= threshold_days."""
+    if (date_onset not in df.columns) or (date_notif not in df.columns):
+        return np.nan
+
+    d1 = pd.to_datetime(df[date_onset], errors="coerce")
+    d2 = pd.to_datetime(df[date_notif], errors="coerce")
+    dd = (d2 - d1).dt.days
+
+    valid = dd.notna()
+    if valid.sum() < 5:
+        return np.nan
+
+    return float((dd[valid] <= threshold_days).mean() * 100.0)
+
+def compute_irep_province(
+    df: pd.DataFrame,
+    *,
+    col_prov: str = "Province_notification",
+    col_week: str = "Semaine_epid",         # ex: "2026-W07"
+    col_cases: str = "Total_cas",           # si line list -> tu peux pré-agréger en count
+    col_deaths: str = "Total_deces",
+    current_week: str = None,               # ex "2026-W07" ; si None -> prend la dernière
+    population_map: dict = None,            # {"Kinshasa": 17000000, ...}
+    date_onset: str = "Date_debut_maladie",
+    date_notif: str = "Date_notification",
+    threshold_days: int = 2,
+    completeness_required: list = None,
+    w: dict = None                          # poids
+) -> pd.DataFrame:
+
+    population_map = population_map or {}
+    completeness_required = completeness_required or [
+        col_prov, "Zone_de_sante_notification", "Sexe", "Age",
+        date_onset, date_notif, "Issue"
+    ]
+    w = w or {"trend": 0.30, "incidence": 0.25, "cfr": 0.20, "timeliness": 0.15, "completeness": 0.10}
+
+    d = df.copy()
+
+    # --- Déterminer semaine courante ---
+    if current_week is None:
+        if col_week not in d.columns or d[col_week].dropna().empty:
+            raise ValueError("Impossible de déterminer la semaine courante (col_week manquante/NA).")
+        current_week = sorted(d[col_week].dropna().astype(str).unique())[-1]
+
+    # --- Séparer S0 et historique récent ---
+    # On prend S0 + S-1..S-3 pour tendance
+    # => nécessite un ordre des semaines; si tu as déjà YW_KEY / TIME_KEY c’est encore mieux.
+    weeks = sorted(d[col_week].dropna().astype(str).unique())
+    if current_week not in weeks:
+        raise ValueError(f"current_week '{current_week}' non trouvée.")
+
+    i0 = weeks.index(current_week)
+    hist_weeks = weeks[max(0, i0-3): i0]   # 3 semaines avant
+    # NB: si moins de 3, ça marche quand même.
+
+    # --- agrégation hebdo provinciale ---
+    # Supporte:
+    # - IDSR agrégé : col_cases / col_deaths numériques existent
+    # - Line list : 1 ligne = 1 cas ; décès dérivé de Issue ou is_death
+    d_work = d.copy()
+
+    # Cas
+    if (col_cases in d_work.columns):
+        d_work["_irep_cas"] = pd.to_numeric(d_work[col_cases], errors="coerce")
+        # si la colonne existe mais est majoritairement NA/non-numérique -> fallback à 1 (line list)
+        if d_work["_irep_cas"].notna().mean() < 0.2:
+            d_work["_irep_cas"] = 1.0
+        d_work["_irep_cas"] = d_work["_irep_cas"].fillna(0.0)
+    else:
+        d_work["_irep_cas"] = 1.0
+
+    # Décès
+    if (col_deaths in d_work.columns):
+        d_work["_irep_deces"] = pd.to_numeric(d_work[col_deaths], errors="coerce").fillna(0.0)
+    elif "is_death" in d_work.columns:
+        d_work["_irep_deces"] = pd.to_numeric(d_work["is_death"], errors="coerce").fillna(0.0)
+    elif "Issue" in d_work.columns:
+        issue = d_work["Issue"].astype("string").str.lower().str.strip()
+        death_set = {"dec", "decede", "décédé", "décédée", "decedee", "died", "dead", "décès", "deces"}
+        d_work["_irep_deces"] = issue.isin(death_set).astype(float)
+    else:
+        d_work["_irep_deces"] = 0.0
+
+    agg = (
+        d_work.groupby([col_prov, col_week], dropna=False, as_index=False)
+              .agg(cas=("_irep_cas", "sum"), deces=("_irep_deces", "sum"))
+    )
+
+    # --- S0 ---
+
+    s0 = agg[agg[col_week].astype(str) == str(current_week)].copy()
+    s0 = s0.rename(columns={"cas": "cas_S0", "deces": "deces_S0"})
+
+    # --- moyenne 3 semaines (tendance) ---
+    if hist_weeks:
+        sh = agg[agg[col_week].astype(str).isin([str(x) for x in hist_weeks])].copy()
+        moy = (sh.groupby(col_prov, as_index=False)["cas"].mean().rename(columns={"cas": "moy_3sem"}))
+    else:
+        moy = pd.DataFrame({col_prov: s0[col_prov].unique(), "moy_3sem": np.nan})
+
+    out = s0.merge(moy, on=col_prov, how="left")
+
+    # --- Trend metric ---
+    out["trend_ratio"] = out["cas_S0"] / (out["moy_3sem"].fillna(0) + 1)
+
+    # --- Incidence ---
+    out["population"] = out[col_prov].map(population_map)
+    out["incidence_100k"] = np.where(
+        out["population"].notna() & (out["population"] > 0),
+        (out["cas_S0"] / out["population"]) * 100000.0,
+        np.nan
+    )
+
+    # --- CFR ---
+    out["cfr_pct"] = np.where(out["cas_S0"] > 0, (out["deces_S0"] / out["cas_S0"]) * 100.0, np.nan)
+
+    # --- Promptitude & Complétude (calculées sur les lignes S0, pas sur l'agrégat) ---
+    d_s0 = d[d[col_week].astype(str) == str(current_week)].copy()
+
+    tim = []
+    comp = []
+    for p in out[col_prov]:
+        dp = d_s0[d_s0[col_prov] == p].copy()
+        tim_pct = _timeliness_pct(dp, date_onset=date_onset, date_notif=date_notif, threshold_days=threshold_days)
+        comp_pct = _completeness_pct(dp, required_cols=completeness_required)
+        tim.append(tim_pct)
+        comp.append(comp_pct)
+
+    out["promptitude_pct_le2j"] = tim
+    out["completude_pct"] = comp
+
+    # Convertir en risques (faible % => risque élevé)
+    out["timeliness_risk"] = 100.0 - out["promptitude_pct_le2j"]
+    out["completeness_risk"] = 100.0 - out["completude_pct"]
+
+    # --- scores 0-100 ---
+    out["TrendScore"]       = _score_quantile_0_100(out["trend_ratio"])
+    out["IncidenceScore"]   = _score_quantile_0_100(out["incidence_100k"])
+    out["CFRScore"]         = _score_quantile_0_100(out["cfr_pct"])
+    out["PromptitudeScore"] = _score_quantile_0_100(out["timeliness_risk"])
+    out["CompletenessScore"]= _score_quantile_0_100(out["completeness_risk"])
+
+    # --- Score global avec redistribution des poids si NaN ---
+    score_cols = {
+        "trend": "TrendScore",
+        "incidence": "IncidenceScore",
+        "cfr": "CFRScore",
+        "timeliness": "PromptitudeScore",
+        "completeness": "CompletenessScore",
+    }
+
+    def _row_irep(r):
+        available = {k: w[k] for k, c in score_cols.items() if pd.notna(r[c])}
+        if not available:
+            return np.nan
+        w_sum = sum(available.values())
+        return sum((available[k]/w_sum) * r[score_cols[k]] for k in available)
+
+    out["IREP"] = out.apply(_row_irep, axis=1)
+
+    # --- Catégorisation (optionnel) ---
+    out["Risque_cat"] = pd.cut(
+        out["IREP"],
+        bins=[-np.inf, 30, 60, 80, np.inf],
+        labels=["Faible", "Modéré", "Élevé", "Très élevé"]
+    )
+
+    # Nettoyage sortie
+    keep = [
+        col_prov, "cas_S0", "deces_S0", "moy_3sem", "trend_ratio",
+        "population", "incidence_100k", "cfr_pct",
+        "promptitude_pct_le2j", "completude_pct",
+        "TrendScore", "IncidenceScore", "CFRScore", "PromptitudeScore", "CompletenessScore",
+        "IREP", "Risque_cat"
+    ]
+    keep = [c for c in keep if c in out.columns]
+    out = out[keep].sort_values("IREP", ascending=False)
+
+    return out
+
+with tab10:
+    st.subheader("Indice de risque épidémique provincial (IREP)")
+    tab_help(
+        "Lecture et interprétation",
+        """
+        **🎯 Objectif** : classer les provinces selon un risque combiné (0–100) qui intègre:
+        - **Tendance** (hausse récente)
+        - **Incidence** (si population disponible)
+        - **Létalité**
+        - **Promptitude** (retard de notification)
+        - **Complétude** (qualité de saisie)
+
+        **🧠 Interprétation** : plus l’**IREP** est élevé, plus la situation mérite attention (investigation / renfort / supervision).
+        """,
+        expanded=False,
+    )
+
+    if df is None or df.empty:
+        st.info("Aucune donnée disponible pour calculer l’IREP.")
+    else:
+        # -----------------------------
+        # 1) Choisir colonne semaine
+        # -----------------------------
+        if "Semaine_epid" in df.columns:
+            col_week_irep = "Semaine_epid"
+        else:
+            # fallback: YW / TIME_KEY / TIME_LAB
+            _wk, _ = choose_week_column(df)
+            if _wk is not None and _wk.notna().any():
+                df["_WEEK_TMP_"] = _wk.astype(str)
+                col_week_irep = "_WEEK_TMP_"
+            else:
+                st.error("Aucune colonne semaine détectée (Semaine_epid / YW / TIME_KEY / TIME_LAB).")
+                st.stop()
+
+        # Liste des semaines (tri robuste)
+        week_vals = sorted(df[col_week_irep].dropna().astype(str).unique().tolist())
+        if not week_vals:
+            st.info("Aucune semaine valide pour calculer l’IREP.")
+            st.stop()
+
+        # -----------------------------
+        # 2) Population (optionnel)
+        # -----------------------------
+        st.markdown("### Population provinciale (optionnel, pour l’incidence)")
+        pop_upl = st.file_uploader(
+            "Téléverser un fichier population (csv/xlsx) avec colonnes: Province, Population",
+            type=["csv", "xlsx", "xls"],
+            key="pop_upload_irep"
+        )
+
+        population_map = {}
+        if pop_upl is not None:
+            try:
+                if pop_upl.name.lower().endswith(".csv"):
+                    pop_df = pd.read_csv(pop_upl)
+                else:
+                    pop_df = pd.read_excel(pop_upl)
+
+                # normaliser noms colonnes
+                pop_df.columns = [str(c).strip() for c in pop_df.columns]
+                # heuristiques colonnes
+                prov_col = None
+                for c in ["Province_notification", "Province", "province", "PROVINCE"]:
+                    if c in pop_df.columns:
+                        prov_col = c
+                        break
+                pop_col = None
+                for c in ["Population", "POPULATION", "pop", "POP", "population"]:
+                    if c in pop_df.columns:
+                        pop_col = c
+                        break
+
+                if prov_col is None or pop_col is None:
+                    st.warning("Fichier population non reconnu. Attendu: colonnes 'Province' et 'Population'.")
+                else:
+                    pop_df = pop_df[[prov_col, pop_col]].dropna()
+                    pop_df[prov_col] = pop_df[prov_col].astype(str).str.strip()
+                    pop_df[pop_col] = pd.to_numeric(pop_df[pop_col], errors="coerce")
+                    pop_df = pop_df.dropna(subset=[pop_col])
+
+                    population_map = dict(zip(pop_df[prov_col], pop_df[pop_col].astype(int)))
+                    st.success(f"Population chargée pour {len(population_map)} provinces.")
+                    with st.expander("Aperçu population"):
+                        st.dataframe(pop_df.head(30), width="stretch")
+            except Exception as e:
+                st.warning(f"Impossible de lire le fichier population : {e}")
+
+        # -----------------------------
+        # 3) Paramètres score (poids & fenêtres)
+        # -----------------------------
+        st.markdown("### Paramètres de calcul")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        with c1:
+            w_trend = st.slider("Poids Tendance", 0.0, 1.0, 0.30, 0.05)
+        with c2:
+            w_inc = st.slider("Poids Incidence", 0.0, 1.0, 0.25, 0.05)
+        with c3:
+            w_cfr = st.slider("Poids Létalité", 0.0, 1.0, 0.20, 0.05)
+        with c4:
+            w_time = st.slider("Poids Promptitude", 0.0, 1.0, 0.15, 0.05)
+        with c5:
+            w_comp = st.slider("Poids Complétude", 0.0, 1.0, 0.10, 0.05)
+
+        # Normaliser pour éviter somme=0
+        w_user = {"trend": w_trend, "incidence": w_inc, "cfr": w_cfr, "timeliness": w_time, "completeness": w_comp}
+        if sum(w_user.values()) == 0:
+            st.warning("Tous les poids sont à 0. Réinitialisation aux valeurs par défaut.")
+            w_user = {"trend": 0.30, "incidence": 0.25, "cfr": 0.20, "timeliness": 0.15, "completeness": 0.10}
+
+        current_week = st.selectbox(
+            "Semaine courante",
+            options=week_vals,
+            index=len(week_vals) - 1
+        )
+
+        # Seuil de promptitude (réutilise celui de la sidebar si présent)
+        try:
+            threshold_days = int(seuil_jours) if "seuil_jours" in globals() else 2
+        except Exception:
+            threshold_days = 2
+
+        # -----------------------------
+        # 4) Préparation minimale des colonnes cas/décès si besoin (line list)
+        # -----------------------------
+        df_irep = df.copy()
+
+        if "Total_cas" not in df_irep.columns:
+            df_irep["Total_cas"] = 1
+
+        if "Total_deces" not in df_irep.columns:
+            if COL_ISSUE in df_irep.columns:
+                df_irep["Total_deces"] = df_irep[COL_ISSUE].apply(lambda x: 1 if is_death(x) else 0)
+            else:
+                df_irep["Total_deces"] = 0
+
+        # -----------------------------
+        # 5) Calcul IREP
+        # -----------------------------
+        irep = compute_irep_province(
+            df_irep,
+            col_prov=COL_PROV if COL_PROV in df_irep.columns else "Province",
+            col_week=col_week_irep,
+            col_cases="Total_cas",
+            col_deaths="Total_deces",
+            current_week=str(current_week),
+            population_map=population_map,
+            date_onset=DATE_ONSET,
+            date_notif="Date_notification",
+            w=w_user,
+            threshold_days=threshold_days,
+        )
+
+        if irep is None or irep.empty:
+            st.info("IREP: aucun résultat (vérifie les colonnes Province / Semaine / Cas).")
+        else:
+            # KPIs synthèse
+            st.markdown("### Synthèse")
+            kA, kB, kC, kD = st.columns(4)
+            kA.metric("Provinces (IREP calculé)", str(irep[COL_PROV].nunique() if COL_PROV in irep.columns else len(irep)))
+            kB.metric("IREP moyen", f"{irep['IREP'].mean():.1f}" if 'IREP' in irep.columns else "-")
+            kC.metric("IREP max", f"{irep['IREP'].max():.1f}" if 'IREP' in irep.columns else "-")
+            kD.metric("Semaine", str(current_week))
+
+            # Top 5
+            st.markdown("### Top provinces à risque")
+            st.dataframe(irep.head(10), width="stretch", height=320)
+
+            # Graphique
+            try:
+                plot_df = irep.copy()
+                prov_col = COL_PROV if COL_PROV in plot_df.columns else plot_df.columns[0]
+                fig = px.bar(
+                    plot_df,
+                    x=prov_col,
+                    y="IREP",
+                    color="Risque_cat" if "Risque_cat" in plot_df.columns else None,
+                    title="IREP par province (plus haut = plus à risque)",
+                )
+                fig.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig, width="stretch")
+            except Exception:
+                pass
+
+            # Download
+            st.download_button(
+                "⬇️ Télécharger IREP (CSV)",
+                data=df_to_csv_bytes(irep),
+                file_name=f"IREP_provinces_{current_week}.csv",
+                mime="text/csv"
+            )
 
 # =========================
 # MAPS
