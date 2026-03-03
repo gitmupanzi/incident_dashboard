@@ -1551,9 +1551,9 @@ COL_ISSUE= "Issue"
 COL_CLASS= "Classification_finale"
 
 DATE_ONSET = "Date_debut_maladie"
+DATE_NOTIF = "Date_notification"
 DATE_ADM   = "Date_admission_au_CT"
 DATE_PREL  = "Date_prelevement"
-DATE_NOTIF = "Date_notification"
 
 # =========================
 # MALADIES (CONFIG / SPECS)
@@ -3314,10 +3314,17 @@ def tab_help(title: str, md: str, expanded: bool = False):
     with st.expander(f"ℹ️ {title}", expanded=expanded):
         st.markdown(md)
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9,tab10= st.tabs([
-    "1) Évolution", "2) Taux & CFR", "3) Délais (timeliness)", "4) Démographie",
-    "5) Complétude", "6) Données & Export", "7) Qualité & Alertes", "8) SITREP",
-    "9) IDSR","10) 📌 Indice de risque”"
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+    "📈 Surveillance épidémique",
+    "📊 Incidence & Létalité (CFR)",
+    "⏱️ Promptitude (Timeliness)",
+    "👥 Profil démographique",
+    "📋 Complétude des données",
+    "💾 Données & Export",
+    "🚨 Qualité & Alertes",
+    "📝 SITREP automatique",
+    "📚 IDSR (Hebdomadaire)",
+    "📌 Indice de Risque Épidémique (IREP)"
 ])
 
 
