@@ -3317,13 +3317,13 @@ def tab_help(title: str, md: str, expanded: bool = False):
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "📈 Surveillance épidémique",
     "📊 Incidence & Létalité (CFR)",
-    "⏱️ Promptitude (Timeliness)",
+    "⏱️ Promptitude",
     "👥 Profil démographique",
     "📋 Complétude des données",
     "💾 Données & Export",
     "🚨 Qualité & Alertes",
     "📝 SITREP automatique",
-    "📚 IDSR (Hebdomadaire)",
+    "📚 IDSR",
     "📌 Indice de Risque Épidémique (IREP)"
 ])
 
