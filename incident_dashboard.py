@@ -1515,6 +1515,90 @@ def plot_evolution_multi_auto(
     return fig
 
 
+def build_weekly_cases_cfr_combo(
+    df: pd.DataFrame,
+    week_col: str,
+    death_col: str = "is_death",
+    titre: str = "Cas et létalité par semaine épidémiologique",
+    rotation: int = 45,
+    annot_bars: bool = False,
+    annot_line: bool = False,
+    pas_x: Optional[int] = None,
+    taille_fig: Tuple[int, int] = (1500, 600),
+) -> Optional[go.Figure]:
+    """Graphique combiné: barres = cas hebdomadaires, courbe = létalité (%)."""
+    if not verifier_presence_colonnes(df, week_col):
+        return None
+
+    tmp = df.copy()
+    tmp = tmp[tmp[week_col].notna()].copy()
+    if tmp.empty:
+        return None
+
+    if death_col in tmp.columns:
+        death_vals = pd.to_numeric(tmp[death_col], errors="coerce").fillna(0)
+    elif COL_ISSUE in tmp.columns:
+        death_vals = tmp[COL_ISSUE].astype("string").str.lower().isin(["decede", "décédé", "decede(e)", "décès", "deces"]).astype(int)
+    else:
+        death_vals = pd.Series(0, index=tmp.index, dtype="int64")
+
+    tmp["_death_tmp_"] = death_vals
+
+    weekly = (
+        tmp.groupby(week_col, observed=True, as_index=False)
+           .agg(Cas=(week_col, "count"), Deces=("_death_tmp_", "sum"))
+    )
+    if weekly.empty:
+        return None
+
+    weekly["Létalité (%)"] = np.where(weekly["Cas"] > 0, (weekly["Deces"] / weekly["Cas"]) * 100.0, np.nan)
+    categories_x = sorted(weekly[week_col].dropna().unique(), key=extraire_numero)
+    weekly[week_col] = pd.Categorical(weekly[week_col], categories=categories_x, ordered=True)
+    weekly = weekly.sort_values(week_col)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=weekly[week_col],
+        y=weekly["Cas"],
+        name="Cas",
+        yaxis="y1",
+        text=weekly["Cas"] if annot_bars else None,
+        textposition="outside" if annot_bars else None,
+        cliponaxis=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=weekly[week_col],
+        y=weekly["Létalité (%)"],
+        name="Létalité (%)",
+        mode="lines+markers+text" if annot_line else "lines+markers",
+        yaxis="y2",
+        text=weekly["Létalité (%)"].round(2).astype(str) + "%" if annot_line else None,
+        textposition="top center" if annot_line else None,
+    ))
+
+    fig.update_layout(
+        title=titre,
+        template="plotly_white",
+        width=taille_fig[0],
+        height=taille_fig[1],
+        bargap=0.15,
+        xaxis=dict(title="Semaine épidémiologique", tickangle=-rotation),
+        yaxis=dict(title="Nombre de cas", rangemode="tozero"),
+        yaxis2=dict(title="Létalité (%)", overlaying="y", side="right", rangemode="tozero"),
+        legend=dict(orientation="h", y=1.08, x=0),
+        margin=dict(t=80, b=60, l=70, r=70),
+    )
+
+    if pas_x is not None:
+        try:
+            tickvals = [categories_x[i] for i in range(0, len(categories_x), pas_x)]
+            fig.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=tickvals)
+        except Exception:
+            pass
+
+    return fig
+
+
 # ✅ Comme les fonctions sont dans CE fichier, on force:
 HAS_CUSTOM_VIZ = True
 
@@ -3384,15 +3468,15 @@ with tab1:
         )
         
         st.subheader("Évolution hebdomadaire")
-        
-        # --- Graphes existants (YW) ---
+
+        # --- Graphes initiaux conservés (priorité à YW) ---
         if "YW" in df_f.columns and df_f["YW"].notna().any():
             weekly = df_f.groupby("YW", as_index=False).agg(
                 Cas=("YW", "count"),
                 Deces=("is_death", "sum")
             )
             weekly["CFR_%"] = np.where(weekly["Cas"] > 0, weekly["Deces"] / weekly["Cas"] * 100, np.nan)
-        
+
             cA, cB = st.columns([2, 1])
             with cA:
                 fig = px.line(weekly, x="YW", y="Cas", markers=True, title="Cas par semaine (YW)")
@@ -3402,12 +3486,37 @@ with tab1:
                 fig2 = px.bar(weekly, x="YW", y="Deces", title="Décès par semaine")
                 fig2 = apply_plotly_value_annotations(fig2, annot_vals)
                 st.plotly_chart(fig2, width="stretch")
-        
+
             fig3 = px.line(weekly, x="YW", y="CFR_%", markers=True, title="CFR (%) par semaine")
             fig3 = apply_plotly_value_annotations(fig3, annot_vals)
             st.plotly_chart(fig3, width="stretch")
         else:
             st.info("Pas de clé YW disponible (Annee_epid / Num_semaine_epid manquants).")
+
+        st.markdown("**Graphique combiné : barres + létalité**")
+        week_col_epi = None
+        if COL_WNUM in df_f.columns and df_f[COL_WNUM].notna().any():
+            week_col_epi = COL_WNUM
+        elif "YW" in df_f.columns and df_f["YW"].notna().any():
+            week_col_epi = "YW"
+        elif COL_WEEK in df_f.columns and df_f[COL_WEEK].notna().any():
+            week_col_epi = COL_WEEK
+
+        if week_col_epi is not None:
+            fig_combo = build_weekly_cases_cfr_combo(
+                df=df_f,
+                week_col=week_col_epi,
+                death_col="is_death",
+                titre="Cas hebdomadaires et létalité par semaine épidémiologique",
+                rotation=45,
+                annot_bars=annot_vals,
+                annot_line=annot_vals,
+                pas_x=int(pas_x) if week_col_epi in [COL_WNUM, "YW"] else None,
+                taille_fig=(1500, 600),
+            )
+            st_plot(fig_combo, key="week_cases_cfr_combo")
+        else:
+            st.info("Pas de variable semaine disponible (Num_semaine_epid / YW / Semaine_epid manquants).")
         
         st.divider()
         st.subheader("Visualisations")
@@ -4086,22 +4195,46 @@ with tab4:
             st.info("Camemberts: nécessite visualisations custom (HAS_CUSTOM_VIZ=True).")
 
         st.divider()
-        
-        st.subheader("Pyramide âge / sexe")
-        if use_custom_viz and HAS_CUSTOM_VIZ and age_col and COL_SEX in df_f.columns:
-            fig = plot_pyramide_symetrique(
-                df=df_f,
-                col_categorie=age_col,
-                col_groupe=COL_SEX,
-                valeurs_neg=["Masculin", "Homme", "M"],
-                titre="Pyramide des âges (Masculin à gauche, Féminin à droite)",
-                seuil_min=int(seuil_min_count),
-                croissant=False,
-                afficher_signe_negatif_dans_label=False
-            )
-            st_plot(fig, key="pyr_global")
+
+        st.subheader("Pyramides âge / sexe")
+        if use_custom_viz and HAS_CUSTOM_VIZ and COL_SEX in df_pie.columns:
+            py1, py2 = st.columns(2)
+
+            with py1:
+                st.caption("**Pyramide âge / sexe : Tranche_age (4 catégories)**")
+                if df_pie["Tranche_age_4cat"].notna().any():
+                    fig = plot_pyramide_symetrique(
+                        df=df_pie,
+                        col_categorie="Tranche_age_4cat",
+                        col_groupe=COL_SEX,
+                        valeurs_neg=["Masculin", "Homme", "M"],
+                        titre="Pyramide âge / sexe – Tranche_age (4 catégories)",
+                        seuil_min=0,
+                        croissant=True,
+                        afficher_signe_negatif_dans_label=False
+                    )
+                    st_plot(fig, key="pyr_age_4cat")
+                else:
+                    st.info("Impossible de construire la pyramide 4 catégories.")
+
+            with py2:
+                st.caption("**Pyramide âge / sexe : Tranche_age_en_ans (classes 5 ans)**")
+                if df_pie["Tranche_age_en_ans_5ans"].notna().any():
+                    fig = plot_pyramide_symetrique(
+                        df=df_pie,
+                        col_categorie="Tranche_age_en_ans_5ans",
+                        col_groupe=COL_SEX,
+                        valeurs_neg=["Masculin", "Homme", "M"],
+                        titre="Pyramide âge / sexe – Tranche_age_en_ans (5 ans)",
+                        seuil_min=0,
+                        croissant=True,
+                        afficher_signe_negatif_dans_label=False
+                    )
+                    st_plot(fig, key="pyr_age_5ans")
+                else:
+                    st.info("Impossible de construire la pyramide 5 ans.")
         else:
-            st.info("Pyramide: nécessite Tranche âge + Sexe + visualisations custom.")
+            st.info("Pyramides: nécessitent Sexe + visualisations custom.")
         
         st.subheader("Pyramides par province (facettes)")
         if use_custom_viz and HAS_CUSTOM_VIZ and age_col and COL_SEX in df_f.columns and COL_PROV in df_f.columns:
