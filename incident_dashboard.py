@@ -3429,11 +3429,136 @@ def tab_help(title: str, md: str, expanded: bool = False):
     with st.expander(f"ℹ️ {title}", expanded=expanded):
         st.markdown(md)
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+
+def _normalize_text_series(s: pd.Series) -> pd.Series:
+    return s.astype("string").str.strip()
+
+
+def infer_age_years_generic(df_: pd.DataFrame) -> pd.Series:
+    age_raw = df_[COL_AGE] if (COL_AGE in df_.columns) else pd.Series([pd.NA] * len(df_), index=df_.index)
+    age_num = pd.to_numeric(age_raw, errors="coerce")
+
+    if COL_UNIT in df_.columns:
+        unit_raw = df_[COL_UNIT].astype("string").str.lower().str.strip()
+    else:
+        unit_raw = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
+
+    age_txt = age_raw.astype("string").str.lower()
+    extracted_num = age_txt.str.extract(r"(?P<num>\d+(?:[\.,]\d+)?)")["num"].str.replace(",", ".", regex=False)
+    extracted_num = pd.to_numeric(extracted_num, errors="coerce")
+    age_val = age_num.combine_first(extracted_num)
+
+    unit_from_age = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
+    unit_from_age = unit_from_age.mask(age_txt.str.contains(r"(?:mois|month)s?", na=False), "mois")
+    unit_from_age = unit_from_age.mask(age_txt.str.contains(r"(?:semaine|week)s?|sem", na=False), "semaine")
+    unit_from_age = unit_from_age.mask(age_txt.str.contains(r"(?:jour|day)s?", na=False), "jour")
+    unit_from_age = unit_from_age.mask(age_txt.str.contains(r"(?:an|ans|annee|ann[eé]es|year|yr|yrs)", na=False), "an")
+
+    unit = unit_raw.combine_first(unit_from_age)
+
+    years = pd.Series(np.nan, index=df_.index, dtype="float")
+    years = years.mask(unit.str.contains(r"(?:mois|month)s?", na=False), age_val / 12.0)
+    years = years.mask(unit.str.contains(r"(?:semaine|week)s?|sem", na=False), age_val / 52.0)
+    years = years.mask(unit.str.contains(r"(?:jour|day)s?", na=False), age_val / 365.25)
+    years = years.mask(unit.str.contains(r"(?:an|ans|annee|ann[eé]es|year|yr|yrs)", na=False), age_val)
+    years = years.mask(years.isna() & age_val.notna(), age_val)
+    return pd.to_numeric(years, errors="coerce")
+
+
+def derive_age_4cat_generic(df_: pd.DataFrame) -> pd.Series:
+    years = infer_age_years_generic(df_)
+    out = pd.Series(pd.NA, index=df_.index, dtype="string")
+    out = out.mask((years >= 0) & (years < 1), "0-11 mois")
+    out = out.mask((years >= 1) & (years < 5), "12-59 mois")
+    out = out.mask((years >= 5) & (years <= 15), "5-15 ans")
+    out = out.mask(years > 15, ">15 ans")
+    return out
+
+
+def derive_age_5yr_generic(df_: pd.DataFrame) -> pd.Series:
+    years = infer_age_years_generic(df_)
+    bins = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, np.inf]
+    labels = ["0-4", "5-9", "10-14", "15-19", "20-24", "25-29", "30-34", "35-39", "40-44", "45-49", "50-54", "55-59", "60+"]
+    return pd.cut(years, bins=bins, labels=labels, right=False).astype("string")
+
+
+def build_global_summary_table(df_: pd.DataFrame) -> pd.DataFrame:
+    n_cases = int(len(df_))
+    n_deaths = int(df_["is_death"].sum()) if "is_death" in df_.columns else 0
+    cfr = (n_deaths / n_cases * 100.0) if n_cases else np.nan
+    rows = [("Nombre total de cas", n_cases), ("Nombre total de décès", n_deaths), ("Létalité (%)", None if pd.isna(cfr) else round(cfr, 2))]
+    for col, label in [(COL_PROV, "Nombre de provinces touchées"), (COL_ZS, "Nombre de zones de santé touchées"), (COL_AS, "Nombre d'aires de santé touchées")]:
+        if col in df_.columns:
+            rows.append((label, int(df_[col].dropna().nunique())))
+    for col, label in [(DATE_NOTIF, "Période de notification"), (DATE_ONSET, "Période début maladie")]:
+        if col in df_.columns and df_[col].notna().any():
+            dmin = pd.to_datetime(df_[col], errors="coerce").min()
+            dmax = pd.to_datetime(df_[col], errors="coerce").max()
+            if pd.notna(dmin) and pd.notna(dmax):
+                rows.append((label, f"{dmin:%Y-%m-%d} à {dmax:%Y-%m-%d}"))
+                break
+    if "YW" in df_.columns and df_["YW"].notna().any():
+        rows.append(("Semaines épidémiologiques couvertes", f"{df_['YW'].dropna().astype(str).min()} à {df_['YW'].dropna().astype(str).max()}"))
+    elif COL_WNUM in df_.columns and df_[COL_WNUM].notna().any():
+        rows.append(("Semaines épidémiologiques couvertes", f"SE{int(df_[COL_WNUM].min()):02d} à SE{int(df_[COL_WNUM].max()):02d}"))
+    return pd.DataFrame(rows, columns=["Indicateur", "Valeur"])
+
+
+def build_frequency_table(df_: pd.DataFrame, col: str, top_n: int | None = None) -> pd.DataFrame:
+    if col not in df_.columns:
+        return pd.DataFrame(columns=[col, 'n', '%'])
+    freq = df_[col].fillna('Inconnu').astype(str).str.strip().replace('', 'Inconnu').value_counts(dropna=False).reset_index()
+    freq.columns = [col, 'n']
+    freq['%'] = (freq['n'] / max(len(df_), 1) * 100).round(1)
+    if top_n is not None:
+        freq = freq.head(int(top_n))
+    return freq
+
+
+def build_simple_lab_table(df_: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    n_cases = int(len(df_))
+    if COL_PREL in df_.columns:
+        n_prel = int(_is_yes_series(df_[COL_PREL]).sum())
+        rows.append(("Prélèvement réalisé", n_prel, round(n_prel / n_cases * 100, 1) if n_cases else np.nan))
+    if COL_TDR in df_.columns:
+        n_tdr = int(_is_yes_series(df_[COL_TDR]).sum())
+        rows.append(("TDR réalisé", n_tdr, round(n_tdr / n_cases * 100, 1) if n_cases else np.nan))
+    if COL_TDRR in df_.columns:
+        res_n = _tdr_result_norm(df_[COL_TDRR])
+        n_pos = int(res_n.isin(TDR_POS_SET).sum())
+        n_neg = int(res_n.isin(TDR_NEG_SET).sum())
+        n_valid = n_pos + n_neg
+        rows.append(("Résultat valide (Pos/Nég)", n_valid, round(n_valid / n_cases * 100, 1) if n_cases else np.nan))
+        rows.append(("TDR positif", n_pos, round(n_pos / n_valid * 100, 1) if n_valid else np.nan))
+        rows.append(("TDR négatif", n_neg, round(n_neg / n_valid * 100, 1) if n_valid else np.nan))
+    return pd.DataFrame(rows, columns=["Indicateur labo", "n", "%"])
+
+
+def build_delay_summary_table(df_: pd.DataFrame, delay_cols: list[str]) -> pd.DataFrame:
+    rows = []
+    for col in delay_cols:
+        s = pd.to_numeric(df_.get(col), errors='coerce')
+        s = s[s >= 0]
+        if len(s) == 0:
+            continue
+        rows.append({
+            'Délai': col,
+            'n': int(s.notna().sum()),
+            'Moyenne': round(float(s.mean()), 1),
+            'Médiane': round(float(s.median()), 1),
+            'Min': round(float(s.min()), 1),
+            'Max': round(float(s.max()), 1),
+            f'% ≤ {seuil_jours} jours': round(float((s <= seuil_jours).mean() * 100), 1),
+        })
+    return pd.DataFrame(rows)
+
+tab1, tab2, tab3, tab4, tab4b, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "📈 Surveillance épidémique",
     "📊 Incidence & Létalité (CFR)",
     "⏱️ Promptitude",
     "👥 Profil démographique",
+    "🧾 Analyse descriptive standard",
     "📋 Complétude des données",
     "💾 Données & Export",
     "🚨 Qualité & Alertes",
@@ -4258,6 +4383,211 @@ with tab4:
         else:
             st.info("Pyramides facettées: nécessite Province + Sexe + tranche âge + visualisations custom.")
         
+    # =========================
+    # TAB 4B: Analyse descriptive standard
+    # =========================
+with tab4b:
+    if IDSR_MODE:
+        st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
+    else:
+        tab_help(
+            "Comment lire cet onglet",
+            """
+            **🎯 Objectif** : produire une analyse descriptive standard, réutilisable pour toute liste linéaire.
+
+            **📖 Contenu**
+            - Tableau résumé global
+            - Cas, décès et létalité par semaine
+            - Répartition par sexe et âge
+            - Deux pyramides âge/sexe
+            - Répartition par province / zone de santé / aire de santé
+            - Tableaux des variables catégorielles
+            - Bloc labo simple
+            - Bloc délais si les dates existent
+            """,
+            expanded=False
+        )
+
+        st.subheader("Tableau résumé global")
+        st_dataframe_safe(build_global_summary_table(df_f))
+
+        st.divider()
+        st.subheader("Cas, décès et létalité par semaine")
+        week_col_desc = None
+        if "YW" in df_f.columns and df_f["YW"].notna().any():
+            week_col_desc = "YW"
+        elif COL_WNUM in df_f.columns and df_f[COL_WNUM].notna().any():
+            week_col_desc = COL_WNUM
+        elif COL_WEEK in df_f.columns and df_f[COL_WEEK].notna().any():
+            week_col_desc = COL_WEEK
+
+        if week_col_desc is not None:
+            weekly_desc = df_f.groupby(week_col_desc, as_index=False).agg(Cas=(week_col_desc, 'count'), Deces=('is_death', 'sum'))
+            weekly_desc['Letalite_%'] = np.where(weekly_desc['Cas'] > 0, weekly_desc['Deces'] / weekly_desc['Cas'] * 100.0, np.nan)
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                fig = px.bar(weekly_desc, x=week_col_desc, y='Cas', title='Cas par semaine')
+                fig = apply_plotly_value_annotations(fig, annot_vals)
+                st.plotly_chart(fig, width='stretch', key='std_week_cases_bar')
+            with c2:
+                fig = px.bar(weekly_desc, x=week_col_desc, y='Deces', title='Décès par semaine')
+                fig = apply_plotly_value_annotations(fig, annot_vals)
+                st.plotly_chart(fig, width='stretch', key='std_week_deaths_bar')
+
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=weekly_desc[week_col_desc], y=weekly_desc['Cas'], name='Cas'))
+            fig.add_trace(go.Scatter(x=weekly_desc[week_col_desc], y=weekly_desc['Letalite_%'], name='Létalité (%)', mode='lines+markers', yaxis='y2'))
+            fig.update_layout(
+                title='Cas hebdomadaires et létalité',
+                xaxis_title='Semaine',
+                yaxis_title='Cas',
+                yaxis2=dict(title='Létalité (%)', overlaying='y', side='right')
+            )
+            st.plotly_chart(fig, width='stretch', key='std_week_cases_cfr_combo')
+            with st.expander('Table hebdomadaire'):
+                st_dataframe_safe(weekly_desc)
+        else:
+            st.info("Aucune variable semaine exploitable détectée.")
+
+        st.divider()
+        st.subheader("Répartition par sexe et âge")
+        a1, a2 = st.columns(2)
+        with a1:
+            if COL_SEX in df_f.columns:
+                sex_tbl = build_frequency_table(df_f, COL_SEX)
+                fig = px.pie(sex_tbl, names=COL_SEX, values='n', title='Répartition par sexe')
+                st.plotly_chart(fig, width='stretch', key='std_sex_pie')
+                st_dataframe_safe(sex_tbl)
+            else:
+                st.info("Colonne sexe absente.")
+        with a2:
+            age_display_col = None
+            if COL_AGEG2 in df_f.columns and df_f[COL_AGEG2].notna().any():
+                age_display_col = COL_AGEG2
+            elif COL_AGEG in df_f.columns and df_f[COL_AGEG].notna().any():
+                age_display_col = COL_AGEG
+            if age_display_col is not None:
+                age_tbl = build_frequency_table(df_f, age_display_col)
+                fig = px.bar(age_tbl, x=age_display_col, y='n', title=f'Répartition par {age_display_col}')
+                fig.update_layout(xaxis_tickangle=-45)
+                fig = apply_plotly_value_annotations(fig, annot_vals)
+                st.plotly_chart(fig, width='stretch', key='std_age_bar')
+                st_dataframe_safe(age_tbl)
+            else:
+                years = infer_age_years_generic(df_f)
+                if years.notna().any():
+                    age_num = pd.DataFrame({'Age_en_ans': years.dropna()})
+                    fig = px.histogram(age_num, x='Age_en_ans', nbins=20, title="Distribution de l'âge (années)")
+                    st.plotly_chart(fig, width='stretch', key='std_age_hist')
+                    st.dataframe(age_num.describe().T, width='stretch')
+                else:
+                    st.info("Aucune information d'âge exploitable.")
+
+        st.divider()
+        st.subheader("Deux pyramides âge / sexe")
+        df_desc = df_f.copy()
+        df_desc['Tranche_age_4cat_std'] = derive_age_4cat_generic(df_desc)
+        df_desc['Tranche_age_5ans_std'] = derive_age_5yr_generic(df_desc)
+        p1, p2 = st.columns(2)
+        if use_custom_viz and HAS_CUSTOM_VIZ and COL_SEX in df_desc.columns:
+            with p1:
+                if df_desc['Tranche_age_4cat_std'].notna().any():
+                    fig = plot_pyramide_symetrique(
+                        df=df_desc,
+                        col_categorie='Tranche_age_4cat_std',
+                        col_groupe=COL_SEX,
+                        valeurs_neg=['Masculin', 'Homme', 'M'],
+                        titre='Pyramide âge / sexe – 4 catégories',
+                        seuil_min=0,
+                        croissant=True,
+                        afficher_signe_negatif_dans_label=False
+                    )
+                    st_plot(fig, key='pyr_std_4cat')
+                else:
+                    st.info("Impossible de construire la pyramide 4 catégories.")
+            with p2:
+                if df_desc['Tranche_age_5ans_std'].notna().any():
+                    fig = plot_pyramide_symetrique(
+                        df=df_desc,
+                        col_categorie='Tranche_age_5ans_std',
+                        col_groupe=COL_SEX,
+                        valeurs_neg=['Masculin', 'Homme', 'M'],
+                        titre='Pyramide âge / sexe – classes de 5 ans',
+                        seuil_min=0,
+                        croissant=True,
+                        afficher_signe_negatif_dans_label=False
+                    )
+                    st_plot(fig, key='pyr_std_5ans')
+                else:
+                    st.info("Impossible de construire la pyramide 5 ans.")
+        else:
+            st.info("Pyramides non disponibles : il faut Sexe + visualisations custom.")
+
+        st.divider()
+        st.subheader("Répartition par province / ZS / AS")
+        geo_cols = [c for c in [COL_PROV, COL_ZS, COL_AS] if c in df_f.columns]
+        if geo_cols:
+            geo_choice = st.selectbox('Niveau géographique', geo_cols, key='geo_choice_std')
+            top_n_geo = st.slider('Top N à afficher', 5, 30, 15, key='top_geo_std')
+            geo_tbl = build_frequency_table(df_f, geo_choice, top_n=top_n_geo)
+            fig = px.bar(geo_tbl, x=geo_choice, y='n', title=f'Répartition des cas par {geo_choice}')
+            fig.update_layout(xaxis_tickangle=-45)
+            fig = apply_plotly_value_annotations(fig, annot_vals)
+            st.plotly_chart(fig, width='stretch', key='std_geo_bar')
+            st_dataframe_safe(geo_tbl)
+        else:
+            st.info("Aucune variable géographique standard détectée.")
+
+        st.divider()
+        st.subheader("Tableau des variables catégorielles")
+        default_cat_candidates = [COL_SEX, COL_PROV, COL_ZS, COL_AS, COL_AGEG2, COL_AGEG, COL_ISSUE, COL_PREL, COL_TDR, COL_TDRR, COL_HOSP, COL_CLASS]
+        cat_candidates = [c for c in default_cat_candidates if c in df_f.columns]
+        extra_candidates = [c for c in df_f.columns if (not is_numeric_dtype(df_f[c])) and c not in cat_candidates]
+        cat_options = cat_candidates + extra_candidates[:20]
+        if cat_options:
+            cat_choice = st.multiselect('Variables catégorielles à décrire', cat_options, default=cat_candidates[:4], key='cat_choice_std')
+            for c in cat_choice:
+                with st.expander(f'Fréquences – {c}', expanded=False):
+                    st_dataframe_safe(build_frequency_table(df_f, c))
+        else:
+            st.info("Aucune variable catégorielle exploitable détectée.")
+
+        st.divider()
+        st.subheader("Bloc labo simple")
+        lab_tbl = build_simple_lab_table(df_f)
+        if not lab_tbl.empty:
+            l1, l2 = st.columns([1, 1])
+            with l1:
+                st_dataframe_safe(lab_tbl)
+            with l2:
+                fig = px.bar(lab_tbl, x='Indicateur labo', y='n', title='Résumé labo simple')
+                fig.update_layout(xaxis_tickangle=-45)
+                fig = apply_plotly_value_annotations(fig, annot_vals)
+                st.plotly_chart(fig, width='stretch', key='std_lab_bar')
+        else:
+            st.info("Aucune variable labo simple détectée (prélèvement / TDR / résultat).")
+
+        st.divider()
+        st.subheader("Bloc délais si les dates existent")
+        delay_cols_std = [c for c in ['delai_onset_to_adm', 'delai_onset_to_prel'] if c in df_f.columns]
+        delay_tbl = build_delay_summary_table(df_f, delay_cols_std)
+        if not delay_tbl.empty:
+            d1, d2 = st.columns([1, 1])
+            with d1:
+                st_dataframe_safe(delay_tbl)
+            with d2:
+                delay_long = (
+                    df_f[delay_cols_std]
+                    .apply(pd.to_numeric, errors='coerce')
+                    .melt(var_name='Type_delai', value_name='Jours')
+                    .dropna()
+                )
+                delay_long = delay_long[delay_long['Jours'] >= 0]
+                fig = px.box(delay_long, x='Type_delai', y='Jours', points='outliers', title='Distribution des délais')
+                st.plotly_chart(fig, width='stretch', key='std_delay_box')
+        else:
+            st.info("Délais indisponibles : dates nécessaires absentes ou non exploitables.")
+
     # =========================
     # TAB 5: Complétude
     # =========================
