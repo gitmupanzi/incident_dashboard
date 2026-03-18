@@ -1652,6 +1652,37 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
         "adm_candidates": [],
         "prel_candidates": [],
     },
+    "meningite": {
+        "label": "Méningite (line list)",
+        "default_sheet": "LL_Meningite",
+        "rename_map": {},
+        "onset_candidates": ["Date_debut_maladie", "Date_debut_symptomes"],
+        "notif_candidates": ["Date_notification", "Date_consultation"],
+        "adm_candidates": ["Date_admission_au_CT", "Date_admission"],
+        "prel_candidates": ["Date_prelevement"],
+    },
+    "autre": {
+        "label": "Autre (line list générique)",
+        "default_sheet": "",
+        "rename_map": {},
+        "onset_candidates": [
+            "Date_debut_maladie",
+            "Date_debut_symptomes",
+            "Date_apparition_signes",
+        ],
+        "notif_candidates": [
+            "Date_notification",
+            "Date_consultation",
+        ],
+        "adm_candidates": [
+            "Date_admission_au_CT",
+            "Date_admission",
+        ],
+        "prel_candidates": [
+            "Date_prelevement",
+            "Date_prelevement_clean",
+        ],
+    },
 }
 
 def _coalesce_first(df: pd.DataFrame, candidates: List[str]) -> pd.Series:
