@@ -1666,6 +1666,11 @@ DATE_ONSET = "Date_debut_maladie"
 DATE_NOTIF = "Date_notification"
 DATE_ADM   = "Date_admission_au_CT"
 DATE_PREL  = "Date_prelevement"
+DATE_CONS  = "Date_consultation"
+DATE_INV   = "Date_investigation"
+DATE_RES   = "Date_resultat"
+DATE_RECEP = "Date_reception_labo"
+DATE_ISSUE = "Date_issue"
 
 # =========================
 # MALADIES (CONFIG / SPECS)
@@ -2351,7 +2356,8 @@ def standardize_df(df):
             df[c] = df[c].apply(norm_yesno)
 
     # Dates
-    df = safe_to_datetime(df, [DATE_ONSET, DATE_ADM, DATE_PREL])
+    date_candidates = [DATE_ONSET, DATE_NOTIF, DATE_ADM, DATE_PREL, DATE_CONS, DATE_INV, DATE_RES, DATE_RECEP, DATE_ISSUE, "Date_sortie_au_CT", "Date_confirmation", "Date_de_guerie"]
+    df = safe_to_datetime(df, [c for c in date_candidates if c in df.columns])
 
     # Year/week
     df = make_yw(df)
@@ -2360,11 +2366,137 @@ def standardize_df(df):
     df["is_death"] = df[COL_ISSUE].apply(is_death) if COL_ISSUE in df.columns else False
 
     # positivité
-    df["is_tdr_pos"] = df[COL_TDRR].apply(is_positive) if COL_TDRR in df.columns else False
+    if COL_TDRR in df.columns:
+        df["is_tdr_pos"] = df[COL_TDRR].apply(is_positive)
+    elif "Resultat_labo" in df.columns:
+        df["is_tdr_pos"] = df["Resultat_labo"].apply(is_positive)
+    else:
+        df["is_tdr_pos"] = False
 
-    # délais
+    # harmonisations standards
+    if COL_CLASS in df.columns:
+        df["Classification_finale_std"] = (
+            df[COL_CLASS].astype("string").str.strip().str.lower()
+            .map({
+                "confirme": "Confirmé", "confirmé": "Confirmé", "confirme par labo": "Confirmé",
+                "probable": "Probable", "suspect": "Suspect", "compatible": "Compatible",
+                "non cas": "Non cas", "non_cas": "Non cas", "discarded": "Non cas"
+            })
+            .fillna(df[COL_CLASS])
+        )
+    if COL_ISSUE in df.columns:
+        df["Issue_std"] = (
+            df[COL_ISSUE].astype("string").str.strip().str.lower()
+            .map({
+                "decede": "Décédé", "décédé": "Décédé", "deces": "Décédé", "décès": "Décédé",
+                "gueri": "Guéri", "guéri": "Guéri", "sorti gueri": "Guéri",
+                "en traitement": "En traitement", "transfere": "Transféré", "transféré": "Transféré"
+            })
+            .fillna(df[COL_ISSUE])
+        )
+
+    # indicateurs standards
+    df["preleve_oui_non"] = _is_yes_series(df[COL_PREL]) if COL_PREL in df.columns else False
+    df["tdr_realise_oui_non"] = _is_yes_series(df[COL_TDR]) if COL_TDR in df.columns else False
+    df["hospitalise_oui_non"] = _is_yes_series(df[COL_HOSP]) if COL_HOSP in df.columns else False
+    if "Resultat_labo" in df.columns:
+        df["confirme_labo_oui_non"] = df["Resultat_labo"].apply(is_positive)
+    else:
+        df["confirme_labo_oui_non"] = df["is_tdr_pos"]
+
+    # délais standards
+    df = delay_days(df, DATE_CONS, DATE_ONSET, "delai_onset_to_consult")
+    df = delay_days(df, DATE_NOTIF, DATE_ONSET, "delai_onset_to_notif")
     df = delay_days(df, DATE_ADM, DATE_ONSET, "delai_onset_to_adm")
     df = delay_days(df, DATE_PREL, DATE_ONSET, "delai_onset_to_prel")
+    df = delay_days(df, DATE_RES, DATE_PREL, "delai_prel_to_result")
+    df = delay_days(df, DATE_INV, DATE_NOTIF, "delai_notif_to_invest")
+    df = delay_days(df, DATE_ISSUE, DATE_ADM, "delai_adm_to_issue")
+
+    # alias explicites demandés pour les analyses standards
+    delay_aliases = {
+        "delai_onset_to_consult": "Delai_debut_consultation_j",
+        "delai_onset_to_notif": "Delai_debut_notification_j",
+        "delai_onset_to_adm": "Delai_debut_admission_j",
+        "delai_onset_to_prel": "Delai_debut_prelevement_j",
+        "delai_prel_to_result": "Delai_prelevement_resultat_j",
+        "delai_notif_to_invest": "Delai_notification_investigation_j",
+        "delai_adm_to_issue": "Delai_admission_issue_j",
+    }
+    for src, dst in delay_aliases.items():
+        if src in df.columns:
+            df[dst] = pd.to_numeric(df[src], errors="coerce")
+
+    # validations utiles pour dashboard
+    if "Age_en_ans" in df.columns:
+        agey = pd.to_numeric(df["Age_en_ans"], errors="coerce")
+    elif COL_AGE in df.columns:
+        agey = pd.to_numeric(df[COL_AGE], errors="coerce")
+    else:
+        agey = pd.Series(np.nan, index=df.index)
+    df["age_valid"] = agey.between(0, 120, inclusive="both")
+
+    if COL_SEX in df.columns:
+        sx = df[COL_SEX].astype("string").str.strip().str.lower()
+        sx = sx.str.normalize("NFKD").str.encode("ascii", "ignore").str.decode("ascii")
+        df["sexe_valid"] = sx.isin(["m", "masculin", "male", "homme", "h", "f", "feminin", "female", "femme"])
+    else:
+        df["sexe_valid"] = False
+
+    df["geo_valid"] = True
+    if COL_ZS in df.columns and COL_PROV in df.columns:
+        df["geo_valid"] = ~(df[COL_ZS].notna() & df[COL_PROV].isna())
+    if COL_AS in df.columns and COL_ZS in df.columns:
+        df["geo_valid"] = df["geo_valid"] & ~(df[COL_AS].notna() & df[COL_ZS].isna())
+
+    # flags de qualité explicites
+    df["missing_parent_geo_flag"] = ~df["geo_valid"]
+
+    df["chrono_valid"] = True
+    for c in ["delai_onset_to_consult", "delai_onset_to_notif", "delai_onset_to_adm", "delai_onset_to_prel", "delai_prel_to_result", "delai_notif_to_invest", "delai_adm_to_issue"]:
+        if c in df.columns:
+            df["chrono_valid"] = df["chrono_valid"] & (pd.to_numeric(df[c], errors="coerce").fillna(0) >= 0)
+    df["chronologie_invalide"] = ~df["chrono_valid"]
+    df["age_hors_limites"] = ~pd.Series(df["age_valid"], index=df.index).fillna(False)
+
+    if COL_ISSUE in df.columns and DATE_ISSUE in df.columns:
+        df["deces_sans_date_issue"] = df[COL_ISSUE].apply(is_death) & df[DATE_ISSUE].isna()
+    else:
+        df["deces_sans_date_issue"] = False
+
+    if (COL_PREL in df.columns) and (COL_TDR in df.columns):
+        prelev_non = df[COL_PREL].astype("string").str.strip().str.lower().eq("non")
+        tdr_oui = df[COL_TDR].astype("string").str.strip().str.lower().eq("oui")
+        df["prelev_tdr_incoherent"] = prelev_non & tdr_oui
+    else:
+        df["prelev_tdr_incoherent"] = False
+
+    # clé de doublon potentiel
+    dup_parts = []
+    for c in ["Nom_complet", COL_SEX, "Age_en_ans", DATE_ONSET, COL_PROV, COL_ZS]:
+        if c in df.columns:
+            ser = df[c]
+            if "Date" in c:
+                ser = pd.to_datetime(ser, errors="coerce").dt.strftime("%Y-%m-%d")
+            dup_parts.append(ser.astype("string").fillna(""))
+    if dup_parts:
+        fp = pd.concat(dup_parts, axis=1).agg("|".join, axis=1)
+        fp = fp.str.replace(r"\s+", " ", regex=True).str.strip().str.lower()
+        df["duplicate_fingerprint"] = fp
+        df["duplicate_potential"] = fp.duplicated(keep=False) & fp.ne("")
+    else:
+        df["duplicate_fingerprint"] = pd.NA
+        df["duplicate_potential"] = False
+
+    # alias booléens explicites pour le bloc qualité
+    df["doublons_potentiels"] = df["duplicate_potential"]
+
+    # score de complétude simple (champs clés)
+    core_fields = [c for c in [COL_PROV, COL_ZS, COL_AS, COL_SEX, "Age_en_ans", DATE_ONSET, DATE_NOTIF, COL_PREL, COL_ISSUE, COL_CLASS] if c in df.columns]
+    if core_fields:
+        df["score_completude_core_%"] = df[core_fields].notna().mean(axis=1).mul(100).round(1)
+    else:
+        df["score_completude_core_%"] = np.nan
 
     return df
 
@@ -2382,34 +2514,52 @@ def qc_flags(df: pd.DataFrame) -> pd.DataFrame:
         if len(idx):
             out.extend([{"row_id": int(i), "flag": flag_name} for i in idx])
 
-    # Dates incohérentes (délais négatifs)
-    if "delai_onset_to_adm" in df.columns:
-        _add(df["delai_onset_to_adm"] < 0, "Date admission < début maladie")
-    if "delai_onset_to_prel" in df.columns:
-        _add(df["delai_onset_to_prel"] < 0, "Date prélèvement < début maladie")
+    for c, lab in [
+        ("delai_onset_to_adm", "Date admission < début maladie"),
+        ("delai_onset_to_prel", "Date prélèvement < début maladie"),
+        ("delai_onset_to_consult", "Date consultation < début maladie"),
+        ("delai_onset_to_notif", "Date notification < début maladie"),
+        ("delai_adm_to_issue", "Date issue < admission"),
+        ("delai_prel_to_result", "Date résultat < prélèvement"),
+        ("delai_notif_to_invest", "Date investigation < notification"),
+    ]:
+        if c in df.columns:
+            _add(pd.to_numeric(df[c], errors="coerce") < 0, lab)
 
-    # TDR non réalisé mais résultat rempli
     if (COL_TDR in df.columns) and (COL_TDRR in df.columns):
         _add((df[COL_TDR].astype("string") == "Non") & (df[COL_TDRR].notna()), "TDR=Non mais résultat renseigné")
-
-    # TDR résultat mais TDR réalisé manquant
-    if (COL_TDR in df.columns) and (COL_TDRR in df.columns):
         _add((df[COL_TDR].isna()) & (df[COL_TDRR].notna()), "Résultat TDR sans statut TDR")
 
-    # Grossesse incohérente (si colonne existe)
+    if (COL_PREL in df.columns) and ("Resultat_labo" in df.columns):
+        _add((df[COL_PREL].astype("string") == "Non") & (df["Resultat_labo"].notna()), "Prélèvement=Non mais résultat labo renseigné")
+    if (COL_PREL in df.columns) and (DATE_PREL in df.columns):
+        _add((df[COL_PREL].astype("string") == "Non") & (df[DATE_PREL].notna()), "Prélèvement=Non mais date prélèvement renseignée")
+
     if ("Femme_enceinte" in df.columns) and (COL_SEX in df.columns):
         s_sex = df[COL_SEX].astype("string").str.lower()
         s_preg = df["Femme_enceinte"].astype("string").str.lower()
         _add((s_preg == "oui") & (~s_sex.str.contains("fem")), "Femme_enceinte=Oui mais sexe ≠ féminin")
 
-    # Âge impossible (si Age existe)
     if (COL_AGE in df.columns):
         age_num = pd.to_numeric(df[COL_AGE], errors="coerce")
         _add((age_num < 0) | (age_num > 120), "Âge hors limites (0–120)")
+    if "Age_en_ans" in df.columns:
+        age_num = pd.to_numeric(df["Age_en_ans"], errors="coerce")
+        _add((age_num < 0) | (age_num > 120), "Âge_en_ans hors limites (0–120)")
 
-    # Issue manquante (utile pour CFR fiable)
+    if (COL_ZS in df.columns) and (COL_PROV in df.columns):
+        _add(df[COL_ZS].notna() & df[COL_PROV].isna(), "ZS renseignée mais province manquante")
+    if (COL_AS in df.columns) and (COL_ZS in df.columns):
+        _add(df[COL_AS].notna() & df[COL_ZS].isna(), "AS renseignée mais ZS manquante")
+
+    if COL_ISSUE in df.columns and DATE_ISSUE in df.columns:
+        _add(df[COL_ISSUE].apply(is_death) & df[DATE_ISSUE].isna(), "Décès sans date issue")
+
     if COL_ISSUE in df.columns:
         _add(df[COL_ISSUE].isna(), "Issue manquante")
+
+    if "duplicate_potential" in df.columns:
+        _add(df["duplicate_potential"] == True, "Doublon potentiel")
 
     if not out:
         return pd.DataFrame(columns=["row_id", "flag"])
@@ -2450,6 +2600,104 @@ def completeness_table(df: pd.DataFrame, cols_required: list[str], by: str) -> p
 
     g["score_completude_%"] = g[cols].mean(axis=1).round(1)
     return g.sort_values("score_completude_%", ascending=True)
+
+def standard_data_quality_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Résumé standard de qualité des données sur les line lists filtrées."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Indicateur", "Valeur"])
+
+    rows = [{"Indicateur": "Cas (n)", "Valeur": int(len(df))}]
+    if "score_completude_core_%" in df.columns:
+        ser = pd.to_numeric(df["score_completude_core_%"], errors="coerce")
+        rows.append({"Indicateur": "Complétude médiane champs clés (%)", "Valeur": round(float(ser.median()), 1)})
+        rows.append({"Indicateur": "Complétude moyenne champs clés (%)", "Valeur": round(float(ser.mean()), 1)})
+
+    for col, label in [
+        ("duplicate_potential", "Doublons potentiels (%)"),
+        ("chronologie_invalide", "Chronologie invalide (%)"),
+        ("chrono_valid", "Chronologie valide (%)"),
+        ("age_hors_limites", "Âge hors limites (%)"),
+        ("age_valid", "Âge valide (%)"),
+        ("sexe_valid", "Sexe valide (%)"),
+        ("missing_parent_geo_flag", "ZS/AS sans niveau supérieur (%)"),
+        ("geo_valid", "Géographie valide (%)"),
+        ("deces_sans_date_issue", "Décès sans date d’issue (%)"),
+        ("prelev_tdr_incoherent", "Prélèvement/TDR incohérents (%)"),
+        ("preleve_oui_non", "Prélèvement oui (%)"),
+        ("tdr_realise_oui_non", "TDR réalisé oui (%)"),
+        ("hospitalise_oui_non", "Hospitalisation oui (%)"),
+        ("confirme_labo_oui_non", "Confirmation/positivité labo (%)"),
+        ("is_death", "Décès (%)"),
+    ]:
+        if col in df.columns:
+            rows.append({"Indicateur": label, "Valeur": round(float(pd.Series(df[col]).fillna(False).mean() * 100), 1)})
+    return pd.DataFrame(rows)
+
+def duplicate_candidates_table(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "duplicate_fingerprint" not in df.columns or "duplicate_potential" not in df.columns:
+        return pd.DataFrame()
+    tmp = df[df["duplicate_potential"] == True].copy()
+    if tmp.empty:
+        return pd.DataFrame()
+    grouped = tmp.groupby("duplicate_fingerprint", dropna=False)
+    out = grouped.size().reset_index(name="Occurrences")
+    if "Nom_complet" in tmp.columns:
+        out["Nom_complet"] = grouped["Nom_complet"].apply(lambda x: " | ".join(pd.Series(x).dropna().astype(str).unique()[:3])).values
+    if COL_PROV in tmp.columns:
+        out[COL_PROV] = grouped[COL_PROV].apply(lambda x: " | ".join(pd.Series(x).dropna().astype(str).unique()[:3])).values
+    if COL_ZS in tmp.columns:
+        out[COL_ZS] = grouped[COL_ZS].apply(lambda x: " | ".join(pd.Series(x).dropna().astype(str).unique()[:3])).values
+    return out.sort_values(["Occurrences"], ascending=False)
+
+def build_standard_delay_summary(df: pd.DataFrame) -> pd.DataFrame:
+    delay_map = {
+        "delai_onset_to_consult": "Début → consultation",
+        "delai_onset_to_notif": "Début → notification",
+        "delai_onset_to_adm": "Début → admission",
+        "delai_onset_to_prel": "Début → prélèvement",
+        "delai_prel_to_result": "Prélèvement → résultat",
+        "delai_notif_to_invest": "Notification → investigation",
+        "delai_adm_to_issue": "Admission → issue",
+    }
+    rows = []
+    for c, label in delay_map.items():
+        if c in df.columns:
+            s = pd.to_numeric(df[c], errors="coerce")
+            s = s[s >= 0].dropna()
+            if len(s):
+                rows.append({
+                    "Type_delai": label,
+                    "n": int(len(s)),
+                    "Médiane_j": round(float(s.median()), 1),
+                    "P25_j": round(float(s.quantile(0.25)), 1),
+                    "P75_j": round(float(s.quantile(0.75)), 1),
+                    "Min_j": round(float(s.min()), 1),
+                    "Max_j": round(float(s.max()), 1),
+                })
+    return pd.DataFrame(rows)
+
+def build_recommended_fields_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    """Matrice simple de disponibilité des champs standards recommandés."""
+    field_groups = {
+        "Identification": ["Nom_complet", "N_epid", "N", "N_labo"],
+        "Géographie": [COL_PROV, COL_ZS, COL_AS],
+        "Personne": [COL_SEX, "Age_en_ans", "Tranche_age"],
+        "Temps": [DATE_ONSET, DATE_CONS, DATE_NOTIF, DATE_INV, DATE_ADM, DATE_PREL, DATE_RES, DATE_ISSUE],
+        "Issue": [COL_ISSUE, DATE_ISSUE, "Date_sortie_au_CT"],
+        "Labo": [COL_PREL, COL_TDR, COL_TDRR, "Resultat_labo", "Type_de_prelevement"],
+        "Vaccination": ["Statut_vaccinal", "Vaccin_precedemment", "Nombre_dose", "Nombre_dose_recues", "Date_derniere_vaccination"],
+        "Lien épid / cluster": ["Lien_epid_avec_un_cas", "Cas_source_id", "Facteur_exposition", "Type_de_lien"],
+    }
+    rows = []
+    for grp, cols in field_groups.items():
+        for c in cols:
+            rows.append({
+                "Bloc": grp,
+                "Variable": c,
+                "Disponible": "Oui" if c in df.columns else "Non",
+                "Complétude_%": round(float(df[c].notna().mean() * 100), 1) if c in df.columns else np.nan,
+            })
+    return pd.DataFrame(rows)
 
 def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -5327,7 +5575,29 @@ with tab7:
         
         with st.expander("🔎 Détail cascade labo (entonnoir) + incohérences", expanded=False):
             st_dataframe_safe(casc_global)
-        
+
+        # ==========================================================
+        # 0b) Résumé standard qualité / délais / disponibilité des champs
+        # ==========================================================
+        with st.expander("🔎 Résumé standard qualité / délais / disponibilité des champs", expanded=False):
+            qsum = standard_data_quality_summary(df_f)
+            if not qsum.empty:
+                st_dataframe_safe(qsum)
+            dsum = build_standard_delay_summary(df_f)
+            if not dsum.empty:
+                st.markdown("**Résumé standard des délais**")
+                st_dataframe_safe(dsum)
+            dup_tbl = duplicate_candidates_table(df_f)
+            if not dup_tbl.empty:
+                st.markdown("**Doublons potentiels à vérifier**")
+                st_dataframe_safe(dup_tbl.head(100), height=320)
+            fields_matrix = build_recommended_fields_matrix(df_f)
+            if not fields_matrix.empty:
+                st.markdown("**Disponibilité des champs standards recommandés**")
+                bloc_sel = st.selectbox("Filtrer la matrice par bloc", ["Tous"] + sorted(fields_matrix["Bloc"].dropna().unique().tolist()), index=0, key="fields_matrix_bloc")
+                if bloc_sel != "Tous":
+                    fields_matrix = fields_matrix[fields_matrix["Bloc"] == bloc_sel]
+                st_dataframe_safe(fields_matrix, height=360)
         
         # ==========================================================
         # 1) QC Flags (incohérences)
