@@ -509,6 +509,23 @@ logger = logging.getLogger(__name__)
 if not logger.hasHandlers():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 
+# Palette harmonisée (mêmes couleurs d'un onglet à l'autre)
+COLOR_CASES = "#1F77B4"
+COLOR_DEATHS = "#7F7F7F"
+COLOR_CFR = "#D62728"
+COLOR_MASCULIN = "#1A1E2B"
+COLOR_FEMININ = "#E70B0B"
+COLOR_INCONNU = "#9E9E9E"
+
+SEX_COLOR_MAP = {
+    "Masculin": COLOR_MASCULIN,
+    "Feminin": COLOR_FEMININ,
+    "Féminin": COLOR_FEMININ,
+    "Inconnu": COLOR_INCONNU,
+    "Inconue": COLOR_INCONNU,
+    "Autre": "#8C564B",
+}
+
 
 # =========================================================
 # ✅ BLOC VISUALISATIONS (INTÉGRÉ) – AUTONOME
@@ -959,7 +976,7 @@ def plot_camembert_interactif(
     afficher_legende: bool = True,
     annot: bool = True,
     taille_fig: Tuple[int, int] = (700, 500),
-    palette_couleurs: Optional[List[str]] = None,
+    palette_couleurs: Optional[Union[List[str], Dict[str, str]]] = None,
 ) -> Optional[go.Figure]:
 
     if isinstance(colonne, list):
@@ -985,15 +1002,23 @@ def plot_camembert_interactif(
     labels = counts.index.tolist()
     valeurs = counts.values.tolist()
 
+    couleurs_pie = None
+    if isinstance(palette_couleurs, dict):
+        couleurs_pie = [palette_couleurs.get(lbl, COLOR_INCONNU) for lbl in labels]
+    elif palette_couleurs:
+        couleurs_pie = palette_couleurs
+    elif (isinstance(colonne, str) and colonne == COL_SEX) or nom_analyse.lower() == str(COL_SEX).lower():
+        couleurs_pie = [SEX_COLOR_MAP.get(str(lbl), COLOR_INCONNU) for lbl in labels]
+
     fig = go.Figure(data=[go.Pie(
         labels=labels,
         values=valeurs,
         hole=0.4,
-        textinfo="percent+label" if annot else "label",
+        textinfo="label+percent+value" if annot else "label",
         hoverinfo="label+value+percent",
         marker=dict(
             line=dict(color="#FFFFFF", width=2),
-            colors=palette_couleurs if palette_couleurs else None,
+            colors=couleurs_pie,
         ),
     )])
 
@@ -1248,7 +1273,7 @@ def graphique_pyramide_age(
         fig.update_layout(barmode="relative")
 
 
-    max_val =    max_val = max(abs(agg_df[col_valeur])) if not agg_df.empty else 0
+    max_val = max(abs(agg_df[col_valeur])) if not agg_df.empty else 0
     fig.update_layout(
         template="plotly_white",
         xaxis=dict(
@@ -1561,6 +1586,7 @@ def build_weekly_cases_cfr_combo(
         x=weekly[week_col],
         y=weekly["Cas"],
         name="Cas",
+        marker_color=COLOR_CASES,
         yaxis="y1",
         text=weekly["Cas"] if annot_bars else None,
         textposition="outside" if annot_bars else None,
@@ -1571,6 +1597,8 @@ def build_weekly_cases_cfr_combo(
         y=weekly["Létalité (%)"],
         name="Létalité (%)",
         mode="lines+markers+text" if annot_line else "lines+markers",
+        line=dict(color=COLOR_CFR),
+        marker=dict(color=COLOR_CFR),
         yaxis="y2",
         text=weekly["Létalité (%)"].round(2).astype(str) + "%" if annot_line else None,
         textposition="top center" if annot_line else None,
@@ -1873,6 +1901,8 @@ def st_plot(fig, key=None, height=None, stretch=True):
         st.info("Aucune donnée à afficher (figure vide / colonnes manquantes).")
         return
 
+    fig = apply_plotly_value_annotations(fig, bool(globals().get("annot_vals", False)))
+
     kwargs = {}
 
     # ✅ Nouveau standard Streamlit
@@ -1889,39 +1919,78 @@ def st_plot(fig, key=None, height=None, stretch=True):
 
 
 def apply_plotly_value_annotations(fig: Optional[go.Figure], enabled: bool) -> Optional[go.Figure]:
-    """Ajoute des annotations (valeurs) sur les graphiques Plotly, de façon générique.
-    - Bar: valeurs au-dessus des barres
-    - Line/Scatter: valeurs au-dessus des points (si markers)
-    """
-    if fig is None or not enabled:
+    """Harmonise les couleurs et, si demandé, affiche les annotations sur les graphiques Plotly."""
+    if fig is None:
         return fig
 
     try:
         for tr in fig.data:
-            # Bar charts
-            if isinstance(tr, go.Bar):
-                # Si text déjà présent, on le respecte
-                if tr.text is None:
-                    tr.text = tr.y
-                # Position/format
-                tr.texttemplate = "%{text}"
-                tr.textposition = "outside"
-                tr.cliponaxis = False
+            name = str(getattr(tr, "name", "") or "").strip()
+            name_lower = name.lower()
 
-            # Line charts / scatter
+            # Harmonisation des couleurs entre graphiques
+            if isinstance(tr, go.Bar):
+                if "létalit" in name_lower or "letalit" in name_lower or "cfr" in name_lower:
+                    tr.marker.color = COLOR_CFR
+                elif "déc" in name_lower or "dece" in name_lower or "deat" in name_lower:
+                    tr.marker.color = COLOR_DEATHS
+                elif name_lower in {"masculin", "male", "m"}:
+                    tr.marker.color = COLOR_MASCULIN
+                elif name_lower in {"feminin", "féminin", "female", "f"}:
+                    tr.marker.color = COLOR_FEMININ
+                elif "cas" in name_lower:
+                    tr.marker.color = COLOR_CASES
+
+                if enabled:
+                    if tr.text is None:
+                        tr.text = tr.y
+                    tr.texttemplate = "%{text}"
+                    tr.textposition = "outside"
+                    tr.cliponaxis = False
+
+            elif isinstance(tr, go.Histogram):
+                if enabled:
+                    tr.texttemplate = "%{y}"
+                    tr.textposition = "outside"
+                    tr.cliponaxis = False
+
             elif isinstance(tr, go.Scatter):
-                # N'annoter que si on a des y numériques
-                if tr.y is None:
-                    continue
-                # Ajoute le texte uniquement si pas déjà en mode text
-                mode = tr.mode or ""
-                if "text" not in mode:
-                    tr.mode = (mode + "+text") if mode else "lines+markers+text"
-                if tr.text is None:
-                    tr.text = tr.y
-                tr.textposition = "top center"
+                if "létalit" in name_lower or "letalit" in name_lower or "cfr" in name_lower:
+                    tr.line.color = COLOR_CFR
+                    tr.marker.color = COLOR_CFR
+                elif "déc" in name_lower or "dece" in name_lower or "deat" in name_lower:
+                    tr.line.color = COLOR_DEATHS
+                    tr.marker.color = COLOR_DEATHS
+                elif name_lower in {"masculin", "male", "m"}:
+                    tr.line.color = COLOR_MASCULIN
+                    tr.marker.color = COLOR_MASCULIN
+                elif name_lower in {"feminin", "féminin", "female", "f"}:
+                    tr.line.color = COLOR_FEMININ
+                    tr.marker.color = COLOR_FEMININ
+                elif "cas" in name_lower:
+                    tr.line.color = COLOR_CASES
+                    tr.marker.color = COLOR_CASES
+
+                if enabled:
+                    if tr.y is None:
+                        continue
+                    mode = tr.mode or ""
+                    if "text" not in mode:
+                        tr.mode = (mode + "+text") if mode else "lines+markers+text"
+                    if tr.text is None:
+                        tr.text = tr.y
+                    tr.textposition = "top center"
+
+            elif isinstance(tr, go.Pie):
+                labels = [str(x) for x in (tr.labels or [])]
+                if labels:
+                    pie_colors = [SEX_COLOR_MAP.get(lbl, None) for lbl in labels]
+                    if any(c is not None for c in pie_colors):
+                        tr.marker.colors = [c or COLOR_INCONNU for c in pie_colors]
+                if enabled:
+                    tr.textinfo = "label+percent+value"
+
     except Exception:
-        # On ne casse jamais l'app si Plotly refuse une propriété
         return fig
 
     return fig
@@ -3670,6 +3739,7 @@ with tab1:
                 st.plotly_chart(fig2, width="stretch")
 
             fig3 = px.line(weekly, x="YW", y="CFR_%", markers=True, title="CFR (%) par semaine")
+            fig3.update_traces(line=dict(color=COLOR_CFR), marker=dict(color=COLOR_CFR), name="Létalité (%)")
             fig3 = apply_plotly_value_annotations(fig3, annot_vals)
             st.plotly_chart(fig3, width="stretch")
         else:
@@ -4350,7 +4420,7 @@ with tab4:
                         titre="Proportion des cas – Tranche_age (4 catégories)",
                         seuil_min=int(seuil_min_count),
                         afficher_legende=True,
-                        annot=True,
+                        annot=annot_vals,
                         taille_fig=(700, 500),
                     )
                     st_plot(fig, key="pie_age_4cat")
@@ -4366,7 +4436,7 @@ with tab4:
                         titre="Proportion des cas – Tranche_age_en_ans (5 ans)",
                         seuil_min=int(seuil_min_count),
                         afficher_legende=True,
-                        annot=True,
+                        annot=annot_vals,
                         taille_fig=(700, 500),
                     )
                     st_plot(fig, key="pie_age_5ans")
@@ -4494,7 +4564,8 @@ with tab4b:
 
             fig = go.Figure()
             fig.add_trace(go.Bar(x=weekly_desc[week_col_desc], y=weekly_desc['Cas'], name='Cas'))
-            fig.add_trace(go.Scatter(x=weekly_desc[week_col_desc], y=weekly_desc['Létalité (%)'], name='Létalité (%)', mode='lines+markers', yaxis='y2'))
+            fig.add_trace(go.Scatter(x=weekly_desc[week_col_desc], y=weekly_desc['Létalité (%)'], name='Létalité (%)', mode='lines+markers', line=dict(color=COLOR_CFR), marker=dict(color=COLOR_CFR), yaxis='y2'))
+            fig = apply_plotly_value_annotations(fig, annot_vals)
             fig.update_layout(
                 title='Cas hebdomadaires et létalité',
                 xaxis_title='Semaine épidémiologique',
@@ -4513,7 +4584,8 @@ with tab4b:
         with a1:
             if COL_SEX in df_f.columns:
                 sex_tbl = build_frequency_table(df_f, COL_SEX)
-                fig = px.pie(sex_tbl, names=COL_SEX, values='n', title='Répartition des cas par sexe')
+                fig = px.pie(sex_tbl, names=COL_SEX, values='n', title='Répartition des cas par sexe', color=COL_SEX, color_discrete_map=SEX_COLOR_MAP)
+                fig = apply_plotly_value_annotations(fig, annot_vals)
                 st.plotly_chart(fig, width='stretch', key='oms_sex_pie')
                 st_dataframe_safe(sex_tbl)
             else:
@@ -4536,6 +4608,7 @@ with tab4b:
                 if years.notna().any():
                     age_num = pd.DataFrame({'Age_en_ans': years.dropna()})
                     fig = px.histogram(age_num, x='Age_en_ans', nbins=20, title="Distribution de l'âge (années)")
+                    fig = apply_plotly_value_annotations(fig, annot_vals)
                     st.plotly_chart(fig, width='stretch', key='oms_age_hist')
                     st.dataframe(age_num.describe().T, width='stretch')
                 else:
@@ -4626,6 +4699,7 @@ with tab4b:
                 )
                 delay_long = delay_long[delay_long['Jours'] >= 0]
                 fig = px.box(delay_long, x='Type_delai', y='Jours', points='outliers', title='Distribution des délais')
+                fig = apply_plotly_value_annotations(fig, annot_vals)
                 st.plotly_chart(fig, width='stretch', key='oms_delay_box')
         else:
             st.info("Délais indisponibles : dates nécessaires absentes ou non exploitables.")
@@ -4639,7 +4713,44 @@ with tab4b:
             cat_choice = st.multiselect('Variables catégorielles à décrire', cat_options, default=cat_candidates[:4], key='oms_cat_choice')
             for c in cat_choice:
                 with st.expander(f'Fréquences — {c}', expanded=False):
-                    st_dataframe_safe(build_frequency_table(df_f, c))
+                    if c == COL_ZS and COL_PROV in df_f.columns:
+                        tbl = (
+                            df_f.assign(
+                                _province=df_f[COL_PROV].fillna('Inconnu').astype(str).str.strip().replace('', 'Inconnu'),
+                                _modalite=df_f[COL_ZS].fillna('Inconnu').astype(str).str.strip().replace('', 'Inconnu'),
+                            )
+                            .groupby(['_province', '_modalite'], dropna=False)
+                            .size()
+                            .reset_index(name='n')
+                            .rename(columns={
+                                '_province': 'Province de notification',
+                                '_modalite': 'Zone_de_sante_notification',
+                            })
+                        )
+                        tbl['%'] = (tbl['n'] / max(len(df_f), 1) * 100).round(1)
+                        tbl = tbl.sort_values(['n', 'Province de notification', 'Zone_de_sante_notification'], ascending=[False, True, True])
+                        st_dataframe_safe(tbl)
+                    elif c == COL_AS and COL_PROV in df_f.columns and COL_ZS in df_f.columns:
+                        tbl = (
+                            df_f.assign(
+                                _province=df_f[COL_PROV].fillna('Inconnu').astype(str).str.strip().replace('', 'Inconnu'),
+                                _zone=df_f[COL_ZS].fillna('Inconnu').astype(str).str.strip().replace('', 'Inconnu'),
+                                _modalite=df_f[COL_AS].fillna('Inconnu').astype(str).str.strip().replace('', 'Inconnu'),
+                            )
+                            .groupby(['_province', '_zone', '_modalite'], dropna=False)
+                            .size()
+                            .reset_index(name='n')
+                            .rename(columns={
+                                '_province': 'Province de notification',
+                                '_zone': 'Zone de notification',
+                                '_modalite': 'Aire_de_sante_notification',
+                            })
+                        )
+                        tbl['%'] = (tbl['n'] / max(len(df_f), 1) * 100).round(1)
+                        tbl = tbl.sort_values(['n', 'Province de notification', 'Zone de notification', 'Aire_de_sante_notification'], ascending=[False, True, True, True])
+                        st_dataframe_safe(tbl)
+                    else:
+                        st_dataframe_safe(build_frequency_table(df_f, c))
         else:
             st.info("Aucune variable catégorielle exploitable détectée.")
 
@@ -5864,6 +5975,7 @@ with tab8:
                 st.markdown("### Évolution hebdomadaire (scope filtré)")
                 fig = px.line(wk, x="YW", y=["Cas", "Décès"], markers=True, title="Cas et décès par semaine")
                 fig.update_layout(xaxis_title="Semaine (YW)", yaxis_title="Nombre")
+                fig = apply_plotly_value_annotations(fig, annot_vals)
                 st.plotly_chart(fig, width="stretch")
 
         with st.expander("3) Labo / qualité / signaux", expanded=False):
@@ -8118,6 +8230,7 @@ with tab10:
                     title="IREP par province (plus haut = plus à risque)",
                 )
                 fig.update_layout(xaxis_tickangle=-45)
+                fig = apply_plotly_value_annotations(fig, annot_vals)
                 st.plotly_chart(fig, width="stretch")
             except Exception:
                 pass
