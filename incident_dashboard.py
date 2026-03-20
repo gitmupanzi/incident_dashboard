@@ -1672,6 +1672,7 @@ DATE_RES   = "Date_resultat"
 DATE_RECEP = "Date_reception_labo"
 DATE_ISSUE = "Date_issue"
 
+
 # =========================
 # MALADIES (CONFIG / SPECS)
 # Objectif: rendre le dashboard "multi-line list" (Choléra, Rougeole, Mpox, Ebola, Intox, IDSR)
@@ -1696,7 +1697,10 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     "rougeole": {
         "label": "Rougeole (line list)",
         "default_sheet": "LL_Rougeole",
-        "rename_map": {},
+        "rename_map": {
+            "Evolution": "Issue",
+            "Echantillon_preleve": "Prelevement"            
+        },
         "onset_candidates": ["Date_debut_maladie", "Date_debut_symptomes"],
         "notif_candidates": ["Date_notification"],
         "adm_candidates": ["Date_admission_au_CT", "Date_admission"],
