@@ -3428,6 +3428,7 @@ supp_doublons = st.sidebar.checkbox("Supprimer les doublons (simple)", value=Fal
 show_maps = st.sidebar.checkbox("Activer cartes (GeoJSON)", value=False)
 
 st.sidebar.header("Période")
+year_filter_slot = st.sidebar.container()
 use_week_filter = st.sidebar.checkbox("Filtrer sur Num_semaine_epid", value=True)
 week_min = st.sidebar.number_input("Semaine min", min_value=1, max_value=53, value=1, step=1)
 week_max = st.sidebar.number_input("Semaine max", min_value=1, max_value=53, value=1, step=1)
@@ -3501,6 +3502,39 @@ if not IDSR_MODE:
 
     # ✅ 2) Standardisation spécifique choléra (les indicateurs/timeliness/etc.)
     df = standardize_df(raw)
+
+    # Filtre Année (sidebar > Période)
+    years_selected_main = []
+    if COL_YEAR in df.columns:
+        years_available_main = (
+            pd.to_numeric(df[COL_YEAR], errors="coerce")
+            .dropna()
+            .astype(int)
+            .sort_values()
+            .unique()
+            .tolist()
+        )
+        if years_available_main:
+            # Initialiser une seule fois avec toutes les années, puis conserver l'état utilisateur.
+            if "year_sel_main" not in st.session_state:
+                st.session_state["year_sel_main"] = years_available_main.copy()
+            else:
+                # Nettoyer l'état si la liste des années disponibles change.
+                st.session_state["year_sel_main"] = [
+                    y for y in st.session_state["year_sel_main"] if y in years_available_main
+                ]
+
+            years_selected_main = year_filter_slot.multiselect(
+                "Année",
+                options=years_available_main,
+                key="year_sel_main",
+                placeholder="Toutes les années",
+                help="Si aucune année n'est sélectionnée, le filtre Année n'est pas appliqué."
+            )
+            if years_selected_main:
+                df = df[pd.to_numeric(df[COL_YEAR], errors="coerce").isin(years_selected_main)]
+        else:
+            year_filter_slot.info("Aucune année exploitable trouvée.")
 
     # Filtre semaine
     if use_week_filter and COL_WNUM in df.columns:
