@@ -1696,7 +1696,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "rougeole": {
         "label": "Rougeole (line list)",
-        "default_sheet": "LL_Rougeole",
+        "default_sheet": "LL_Rougeole_Rubeole",
         "rename_map": {
             "Evolution": "Issue",
             "Echantillon_preleve": "Prelevement"            
