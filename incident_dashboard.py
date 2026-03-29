@@ -1343,19 +1343,35 @@ def graphique_pyramide_age(
     if facette_col:
         fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
 
-    for axis in fig.layout:
-        if isinstance(fig.layout[axis], go.layout.XAxis) and "domain" in fig.layout[axis]:
-            yaxis_name = axis.replace("xaxis", "yaxis")
-            if yaxis_name in fig.layout and "domain" in fig.layout[yaxis_name]:
-                x0, x1 = fig.layout[axis].domain
-                y0, y1 = fig.layout[yaxis_name].domain
-                fig.add_shape(
-                    type="rect",
-                    x0=x0, x1=x1, y0=y0, y1=y1,
-                    xref="paper", yref="paper",
-                    line=dict(color=couleur_contour_facette, width=1),
-                    fillcolor="rgba(0,0,0,0)",
-                )
+        # Encadrer uniquement les vraies facettes. Sur une figure simple,
+        # certains axes peuvent avoir domain=None, ce qui provoque une erreur.
+        for axis_name in fig.layout:
+            axis_obj = fig.layout[axis_name]
+            if not isinstance(axis_obj, go.layout.XAxis):
+                continue
+
+            x_domain = getattr(axis_obj, "domain", None)
+            if x_domain is None or len(x_domain) != 2:
+                continue
+
+            yaxis_name = axis_name.replace("xaxis", "yaxis")
+            if yaxis_name not in fig.layout:
+                continue
+
+            yaxis_obj = fig.layout[yaxis_name]
+            y_domain = getattr(yaxis_obj, "domain", None)
+            if y_domain is None or len(y_domain) != 2:
+                continue
+
+            x0, x1 = x_domain
+            y0, y1 = y_domain
+            fig.add_shape(
+                type="rect",
+                x0=x0, x1=x1, y0=y0, y1=y1,
+                xref="paper", yref="paper",
+                line=dict(color=couleur_contour_facette, width=1),
+                fillcolor="rgba(0,0,0,0)",
+            )
 
     return fig if return_fig else fig
 
@@ -7784,6 +7800,365 @@ with tab5:
                 else:
                     st.info("Aucune donnée n’est disponible après filtrage pour produire la répartition par âge.")
 
+
+            # 14.2.b) Analyses descriptives IDSR inspirées des listes linéaires
+            with st.expander("👥 Profil descriptif IDSR", expanded=False):
+                st.caption(
+                    "Ces analyses reprennent la logique descriptive des listes linéaires, mais en l’adaptant au format agrégé IDSR. "
+                    "Elles portent surtout sur la maladie, l’âge, le lieu et la distribution hebdomadaire."
+                )
+
+                # -------------------------------------------------------------
+                # A) Profil par maladie
+                # -------------------------------------------------------------
+                st.markdown("#### A. Répartition des cas par maladie")
+                if (COL_MAL in df9.columns) and ("Total_cas" in df9.columns):
+                    df_mal_profile = (
+                        df9.groupby(COL_MAL, as_index=False)
+                        .agg(Cas=("Total_cas", "sum"), Deces=("Total_deces", "sum") if "Total_deces" in df9.columns else ("Total_cas", "size"))
+                    )
+                    if "Total_deces" not in df9.columns:
+                        df_mal_profile["Deces"] = 0
+                    df_mal_profile["CFR_%"] = np.where(
+                        df_mal_profile["Cas"] > 0,
+                        (df_mal_profile["Deces"] / df_mal_profile["Cas"]) * 100.0,
+                        np.nan,
+                    )
+                    df_mal_profile = df_mal_profile.sort_values("Cas", ascending=False)
+
+                    c_m1, c_m2 = st.columns([1.2, 1])
+                    with c_m1:
+                        fig_mal = px.bar(
+                            df_mal_profile,
+                            x=COL_MAL,
+                            y="Cas",
+                            title="Cas cumulés par maladie",
+                            text="Cas",
+                        )
+                        fig_mal.update_layout(template="plotly_white", xaxis_tickangle=-35, height=420)
+                        fig_mal = apply_plotly_value_annotations(fig_mal, annot_vals)
+                        st.plotly_chart(fig_mal, width="stretch", key="idsr_profile_maladie")
+                    with c_m2:
+                        st.dataframe(
+                            df_mal_profile.assign(**{"CFR_%": df_mal_profile["CFR_%"].round(2)}),
+                            width="stretch",
+                            height=420,
+                            hide_index=True,
+                        )
+                else:
+                    st.info("Le profil par maladie est indisponible : colonnes Maladie ou Total_cas absentes.")
+
+                st.divider()
+
+                # -------------------------------------------------------------
+                # B) Structure d'âge par maladie (équivalent profil population)
+                # -------------------------------------------------------------
+                st.markdown("#### B. Structure des cas par tranche d’âge selon la maladie")
+                age_case_cols = [c for c in ["Cas_tnn", "Cas_0_11mois", "Cas_12_59mois", "Cas_5_14ans", "Cas_15plus"] if c in df9.columns]
+                age_label_map = {
+                    "Cas_tnn": "<1 mois",
+                    "Cas_0_11mois": "0–11 mois",
+                    "Cas_12_59mois": "12–59 mois",
+                    "Cas_5_14ans": "5–14 ans",
+                    "Cas_15plus": "≥15 ans",
+                }
+                if (COL_MAL in df9.columns) and age_case_cols:
+                    age_mal = (
+                        df9.groupby(COL_MAL, as_index=False)[age_case_cols]
+                        .sum(min_count=1)
+                    )
+                    age_mal_long = age_mal.melt(
+                        id_vars=[COL_MAL],
+                        value_vars=age_case_cols,
+                        var_name="Tranche_source",
+                        value_name="Cas",
+                    )
+                    age_mal_long["Tranche_age"] = age_mal_long["Tranche_source"].map(age_label_map)
+                    age_mal_long["Cas"] = pd.to_numeric(age_mal_long["Cas"], errors="coerce").fillna(0)
+                    age_mal_long = age_mal_long[age_mal_long["Cas"] > 0]
+
+                    if not age_mal_long.empty:
+                        ordre_age = ["<1 mois", "0–11 mois", "12–59 mois", "5–14 ans", "≥15 ans"]
+                        age_mal_long["Tranche_age"] = pd.Categorical(age_mal_long["Tranche_age"], categories=ordre_age, ordered=True)
+
+                        c_a1, c_a2 = st.columns([1.3, 1])
+                        with c_a1:
+                            fig_age_mal = px.bar(
+                                age_mal_long.sort_values([COL_MAL, "Tranche_age"]),
+                                x=COL_MAL,
+                                y="Cas",
+                                color="Tranche_age",
+                                barmode="stack",
+                                title="Cas par maladie et tranche d’âge",
+                            )
+                            fig_age_mal.update_layout(template="plotly_white", xaxis_tickangle=-35, height=460)
+                            st.plotly_chart(fig_age_mal, width="stretch", key="idsr_profile_age_maladie")
+                        with c_a2:
+                            age_mal_tab = (
+                                age_mal_long.pivot_table(
+                                    index=COL_MAL,
+                                    columns="Tranche_age",
+                                    values="Cas",
+                                    aggfunc="sum",
+                                    fill_value=0,
+                                )
+                                .reset_index()
+                            )
+                            st.dataframe(age_mal_tab, width="stretch", height=460, hide_index=True)
+                    else:
+                        st.info("Les colonnes d’âge existent mais ne contiennent pas de volume exploitable après filtrage.")
+                else:
+                    st.info("La structure par tranche d’âge selon la maladie est indisponible : colonnes Cas_* ou Maladie absentes.")
+
+                st.divider()
+
+                # -------------------------------------------------------------
+                # C) Pyramide d’âge IDSR (cas vs décès)
+                # -------------------------------------------------------------
+                st.markdown("#### C. Pyramide d’âge IDSR")
+                st.caption(
+                    "Dans l’IDSR agrégé, la pyramide classique par sexe n’est généralement pas disponible. "
+                    "La représentation ci-dessous compare donc les cas (à gauche) et les décès (à droite) "
+                    "par tranche d’âge, à partir des colonnes agrégées du fichier IDSR."
+                )
+
+                age_pairs_pyr = [
+                    ("Cas_tnn", "Deces_tnn", "<1 mois"),
+                    ("Cas_0_11mois", "Deces_0_11mois", "0–11 mois"),
+                    ("Cas_12_59mois", "Deces_12_59mois", "12–59 mois"),
+                    ("Cas_5_14ans", "Deces_5_14ans", "5–14 ans"),
+                    ("Cas_15plus", "Deces_15plus", "≥15 ans"),
+                ]
+
+                available_pairs_pyr = [
+                    (c_col, d_col, label)
+                    for c_col, d_col, label in age_pairs_pyr
+                    if (c_col in df9.columns) or (d_col in df9.columns)
+                ]
+
+                if available_pairs_pyr:
+                    rows_pyr = []
+                    for c_col, d_col, label in available_pairs_pyr:
+                        case_val = pd.to_numeric(df9[c_col], errors="coerce").fillna(0).sum() if c_col in df9.columns else 0
+                        death_val = pd.to_numeric(df9[d_col], errors="coerce").fillna(0).sum() if d_col in df9.columns else 0
+                        rows_pyr.append({
+                            "Tranche_age": label,
+                            "Cas": float(case_val),
+                            "Décès": float(death_val),
+                        })
+
+                    ordre_age_pyr = ["<1 mois", "0–11 mois", "12–59 mois", "5–14 ans", "≥15 ans"]
+                    pyr_display = pd.DataFrame(rows_pyr)
+
+                    if not pyr_display.empty:
+                        pyr_display["Tranche_age"] = pd.Categorical(
+                            pyr_display["Tranche_age"],
+                            categories=ordre_age_pyr,
+                            ordered=True,
+                        )
+                        pyr_display = (
+                            pyr_display.sort_values("Tranche_age")
+                            .drop_duplicates(subset=["Tranche_age"], keep="first")
+                            .reset_index(drop=True)
+                        )
+
+                    if (not pyr_display.empty) and (pyr_display[["Cas", "Décès"]].sum(axis=1) > 0).any():
+                        total_cases_age = float(pyr_display["Cas"].sum())
+                        total_deaths_age = float(pyr_display["Décès"].sum())
+                        total_cases_global = float(pd.to_numeric(df9.get("Total_cas"), errors="coerce").fillna(0).sum()) if "Total_cas" in df9.columns else np.nan
+                        total_deaths_global = float(pd.to_numeric(df9.get("Total_deces"), errors="coerce").fillna(0).sum()) if "Total_deces" in df9.columns else np.nan
+
+                        plot_df = pyr_display.copy()
+                        plot_df["Cas_plot"] = -plot_df["Cas"]
+                        plot_df["Décès_plot"] = plot_df["Décès"]
+
+                        fig_pyr_idsr = go.Figure()
+                        fig_pyr_idsr.add_trace(go.Bar(
+                            y=plot_df["Tranche_age"],
+                            x=plot_df["Cas_plot"],
+                            name="Cas",
+                            orientation="h",
+                            marker=dict(color="#E70B0B"),
+                            text=plot_df["Cas"].map(lambda v: f"{int(v):,}".replace(",", " ")),
+                            textposition="inside",
+                            insidetextanchor="middle",
+                            cliponaxis=False,
+                            hovertemplate="Tranche d'âge: %{y}<br>Cas: %{text}<extra></extra>",
+                        ))
+                        fig_pyr_idsr.add_trace(go.Bar(
+                            y=plot_df["Tranche_age"],
+                            x=plot_df["Décès_plot"],
+                            name="Décès",
+                            orientation="h",
+                            marker=dict(color="#4682B4"),
+                            text=plot_df["Décès"].map(lambda v: f"{int(v):,}".replace(",", " ")),
+                            textposition="inside",
+                            insidetextanchor="middle",
+                            cliponaxis=False,
+                            hovertemplate="Tranche d'âge: %{y}<br>Décès: %{text}<extra></extra>",
+                        ))
+
+                        max_cases = float(plot_df["Cas"].max()) if not plot_df["Cas"].empty else 0.0
+                        max_deaths = float(plot_df["Décès"].max()) if not plot_df["Décès"].empty else 0.0
+                        x_abs_max = max(max_cases, max_deaths)
+                        if x_abs_max <= 0:
+                            x_abs_max = 1.0
+
+                        fig_pyr_idsr.update_layout(
+                            barmode="relative",
+                            template="plotly_white",
+                            title="Pyramide d’âge IDSR (Cas vs Décès)",
+                            width=1100,
+                            height=480,
+                            margin=dict(t=70, b=50, l=80, r=40),
+                            legend=dict(orientation="h", y=1.08, x=0),
+                            xaxis=dict(
+                                title="Nombre",
+                                range=[-x_abs_max * 1.15, x_abs_max * 1.15],
+                                tickformat=",",
+                                tickvals=[-x_abs_max, -x_abs_max / 2, 0, x_abs_max / 2, x_abs_max],
+                                ticktext=[
+                                    f"{int(x_abs_max):,}".replace(",", " "),
+                                    f"{int(x_abs_max / 2):,}".replace(",", " "),
+                                    "0",
+                                    f"{int(x_abs_max / 2):,}".replace(",", " "),
+                                    f"{int(x_abs_max):,}".replace(",", " "),
+                                ],
+                                zeroline=True,
+                                zerolinewidth=2,
+                                zerolinecolor="LightGrey",
+                            ),
+                            yaxis=dict(
+                                title="Tranche d’âge",
+                                categoryorder="array",
+                                categoryarray=ordre_age_pyr[::-1],
+                            ),
+                        )
+
+                        c_p1, c_p2 = st.columns([1.15, 1])
+                        with c_p1:
+                            st.plotly_chart(fig_pyr_idsr, width="stretch", key="idsr_age_pyramid")
+
+                        with c_p2:
+                            pyr_display["Part_cas_%"] = np.where(
+                                total_cases_age > 0,
+                                (pyr_display["Cas"] / total_cases_age) * 100.0,
+                                np.nan,
+                            )
+                            pyr_display["Part_décès_%"] = np.where(
+                                total_deaths_age > 0,
+                                (pyr_display["Décès"] / total_deaths_age) * 100.0,
+                                np.nan,
+                            )
+                            st.dataframe(
+                                pyr_display.assign(**{
+                                    "Cas": pyr_display["Cas"].astype(int),
+                                    "Décès": pyr_display["Décès"].astype(int),
+                                    "Part_cas_%": pyr_display["Part_cas_%"].round(1),
+                                    "Part_décès_%": pyr_display["Part_décès_%"].round(1),
+                                }),
+                                width="stretch",
+                                height=380,
+                            )
+
+                            if np.isfinite(total_cases_global) and int(total_cases_age) != int(total_cases_global):
+                                st.warning(
+                                    f"Somme des cas par âge = {int(total_cases_age):,}".replace(",", " ")
+                                    + f", alors que Total_cas = {int(total_cases_global):,}".replace(",", " ")
+                                    + ". Cela indique un écart dans les données agrégées source."
+                                )
+                            if np.isfinite(total_deaths_global) and int(total_deaths_age) != int(total_deaths_global):
+                                st.warning(
+                                    f"Somme des décès par âge = {int(total_deaths_age):,}".replace(",", " ")
+                                    + f", alors que Total_deces = {int(total_deaths_global):,}".replace(",", " ")
+                                    + ". Cela indique un écart dans les données agrégées source."
+                                )
+                    else:
+                        st.info("Les colonnes d’âge existent mais ne contiennent pas de volume exploitable après filtrage.")
+                else:
+                    st.info("La pyramide d’âge IDSR est indisponible : colonnes Cas_* / Deces_* absentes.")
+                st.divider()
+
+                # -------------------------------------------------------------
+                # C) Répartition spatiale par maladie (équivalent personne/lieu)
+                # -------------------------------------------------------------
+                st.markdown("#### C. Répartition géographique des cas par maladie")
+                if (COL_MAL in df9.columns) and (COL_PROV_ID in df9.columns) and ("Total_cas" in df9.columns):
+                    geo_mal = (
+                        df9.groupby([COL_MAL, COL_PROV_ID], as_index=False)
+                        .agg(Cas=("Total_cas", "sum"), Deces=("Total_deces", "sum") if "Total_deces" in df9.columns else ("Total_cas", "size"))
+                    )
+                    if "Total_deces" not in df9.columns:
+                        geo_mal["Deces"] = 0
+                    geo_mal["CFR_%"] = np.where(geo_mal["Cas"] > 0, (geo_mal["Deces"] / geo_mal["Cas"]) * 100.0, np.nan)
+
+                    maladies_geo = geo_mal[COL_MAL].dropna().astype(str).unique().tolist()
+                    mal_geo_focus = st.selectbox(
+                        "Maladie à profiler géographiquement",
+                        options=maladies_geo,
+                        key="idsr_geo_focus_mal",
+                    )
+                    geo_focus = geo_mal[geo_mal[COL_MAL] == mal_geo_focus].sort_values("Cas", ascending=False)
+
+                    c_g1, c_g2 = st.columns([1.25, 1])
+                    with c_g1:
+                        fig_geo_focus = px.bar(
+                            geo_focus.head(15),
+                            x=COL_PROV_ID,
+                            y="Cas",
+                            title=f"Top provinces – {mal_geo_focus}",
+                            text="Cas",
+                        )
+                        fig_geo_focus.update_layout(template="plotly_white", xaxis_tickangle=-40, height=430)
+                        fig_geo_focus = apply_plotly_value_annotations(fig_geo_focus, annot_vals)
+                        st.plotly_chart(fig_geo_focus, width="stretch", key="idsr_geo_focus_bar")
+                    with c_g2:
+                        st.dataframe(
+                            geo_focus.assign(**{"CFR_%": geo_focus["CFR_%"].round(2)}),
+                            width="stretch",
+                            height=430,
+                            hide_index=True,
+                        )
+                else:
+                    st.info("La répartition géographique par maladie est indisponible : colonnes Province/Maladie/Total_cas absentes.")
+
+                st.divider()
+
+                # -------------------------------------------------------------
+                # D) Profil hebdomadaire par maladie (équivalent dynamique par groupe)
+                # -------------------------------------------------------------
+                st.markdown("#### D. Dynamique hebdomadaire par maladie")
+                if (COL_MAL in df9.columns) and ("Total_cas" in df9.columns) and ("TIME_LAB" in df9.columns) and ("TIME_KEY" in df9.columns):
+                    wk_mal = (
+                        df9.groupby(["TIME_LAB", "TIME_KEY", COL_MAL], as_index=False)
+                        .agg(Cas=("Total_cas", "sum"))
+                        .sort_values(["TIME_KEY", COL_MAL])
+                    )
+                    if not wk_mal.empty:
+                        fig_wk_mal = px.line(
+                            wk_mal,
+                            x="TIME_LAB",
+                            y="Cas",
+                            color=COL_MAL,
+                            markers=True,
+                            title="Évolution hebdomadaire des cas par maladie",
+                        )
+                        fig_wk_mal.update_layout(template="plotly_white", xaxis_tickangle=-45, height=460)
+                        st.plotly_chart(fig_wk_mal, width="stretch", key="idsr_weekly_by_disease")
+
+                        with st.expander("Tableau hebdomadaire par maladie", expanded=False):
+                            wk_mal_wide = wk_mal.pivot_table(
+                                index="TIME_LAB",
+                                columns=COL_MAL,
+                                values="Cas",
+                                aggfunc="sum",
+                                fill_value=0,
+                            ).reset_index()
+                            st.dataframe(wk_mal_wide, width="stretch", height=420, hide_index=True)
+                    else:
+                        st.info("Aucune série hebdomadaire exploitable n’est disponible pour les maladies après filtrage.")
+                else:
+                    st.info("La dynamique hebdomadaire par maladie est indisponible : colonnes TIME_LAB/TIME_KEY/Maladie/Total_cas absentes.")
 
             # 14.3) Tableau d’évolution par province et semaine épidémiologique
             with st.expander("Tableau croisé – évolution par province et semaine", expanded=False):
