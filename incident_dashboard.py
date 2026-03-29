@@ -1,3 +1,21 @@
+"""
+Dashboard épidémiologique Streamlit – fichier unique.
+
+Principes de maintenance:
+- Garder toute la logique dans un seul fichier .py
+- Séparer visuellement les blocs: constantes, standardisation, KPI, qualité, visualisations, UI
+- Privilégier les helpers réutilisables avant d'ajouter une logique spécifique dans un onglet
+- Éviter les dépendances implicites à l'état global quand un paramètre ou st.session_state suffit
+
+Ancres de recherche utiles dans l'éditeur:
+- SECTION: CONSTANTES
+- SECTION: STANDARDISATION MULTI-MALADIES
+- SECTION: INDICATEURS KPI
+- SECTION: QUALITE DES DONNEES
+- SECTION: VISUALISATIONS STREAMLIT/PLOTLY
+- SECTION: APP STREAMLIT
+"""
+
 # =========================
 # Incident RDC – Dashboard (Streamlit UI) + VISUALISATIONS CUSTOM + CARTES FIX (Plotly + fuzzy join)
 # =========================
@@ -5,6 +23,13 @@
 # - Plus d'import depuis dataminsante.visualisation.visualisation_graphique
 # - Les fonctions "custom" sont intégrées directement dans ce script
 # - ✅ Tabs + paramètres + logique UI conservés exactement comme ta version
+# =========================
+# SECTION INDEX
+# 1) Imports et constantes
+# 2) Cartes et visualisations
+# 3) Helpers de nettoyage / standardisation
+# 4) KPI et qualité des données
+# 5) Interface Streamlit
 # =========================
 
 import os
@@ -16,7 +41,7 @@ import logging
 import hashlib
 from pathlib import Path
 from difflib import SequenceMatcher
-from typing import Optional, Union, List, Tuple, Dict, Any
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,11 +60,38 @@ from io import BytesIO
 # - Évite les divergences entre tabs
 # =========================================================
 
-from typing import Iterable, List, Tuple, Any, Optional
-import io
-from functools import lru_cache
 import tempfile
 
+
+# =========================
+# SECTION: CONSTANTES
+# =========================
+MISSING_LABEL = "Inconnu"
+MISSING_LABEL_VERBOSE = "Inconnu/Non renseigné"
+APP_BUILD_TAG = "single-file-refined-v2"
+
+
+def as_list(value: Union[str, List[str], Tuple[str, ...]]) -> List[str]:
+    """Normalise un argument colonnes en liste."""
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        return [value]
+    return []
+
+
+def safe_pct(num: Union[int, float], den: Union[int, float]) -> float:
+    """Retourne un pourcentage en gérant les dénominateurs nuls."""
+    try:
+        den = float(den)
+        num = float(num)
+    except Exception:
+        return np.nan
+    if den <= 0:
+        return np.nan
+    return num / den * 100.0
 
 
 # =========================================================
@@ -404,7 +456,7 @@ def render_pivot_with_cfr(pivot: pd.DataFrame,
     - aplatit/unique les colonnes pour Streamlit
     """
     if pivot is None or pivot.empty:
-        st.info("Aucune donnée pour afficher le tableau.")
+        st.info("Aucune donnée disponible pour afficher ce tableau.")
         return
 
     pivot_display = pivot.copy()
@@ -535,14 +587,9 @@ def verifier_presence_colonnes(
     df: pd.DataFrame,
     colonnes: Union[str, List[str], Tuple[str, ...]]
 ) -> bool:
-    if isinstance(colonnes, tuple):
-        colonnes = list(colonnes)
-    elif isinstance(colonnes, str):
-        colonnes = [colonnes]
-    elif isinstance(colonnes, list):
-        pass
-    else:
-        logger.error(f"[ERREUR] Format non supporté pour les colonnes : {type(colonnes)}")
+    colonnes = as_list(colonnes)
+    if not colonnes:
+        logger.error("[ERREUR] Aucun nom de colonne valide fourni.")
         return False
 
     if df is None or not isinstance(df, pd.DataFrame):
@@ -566,7 +613,7 @@ def compter_par_categorie(
 ) -> pd.DataFrame:
     if colonne not in df.columns:
         raise ValueError(f"[ERREUR] Colonne '{colonne}' non trouvée dans le DataFrame.")
-    counts = df[colonne].fillna("Inconnu").value_counts(dropna=False)
+    counts = df[colonne].fillna(MISSING_LABEL).value_counts(dropna=False)
     filtered = counts[counts >= seuil_min].reset_index()
     filtered.columns = [colonne, "Nombre de cas"]
     return filtered
@@ -984,13 +1031,13 @@ def plot_camembert_interactif(
             if col not in df.columns:
                 logger.error(f"[ERREUR] Colonne '{col}' absente du DataFrame")
                 return None
-        serie_travail = df[colonne].fillna("Inconnu").astype(str).apply(" - ".join, axis=1)
+        serie_travail = df[colonne].fillna(MISSING_LABEL).astype(str).apply(" - ".join, axis=1)
         nom_analyse = " - ".join(colonne)
     else:
         if colonne not in df.columns:
             logger.error(f"[ERREUR] Colonne '{colonne}' absente du DataFrame")
             return None
-        serie_travail = df[colonne].fillna("Inconnu")
+        serie_travail = df[colonne].fillna(MISSING_LABEL)
         nom_analyse = colonne
 
     counts = serie_travail.value_counts(dropna=False)
@@ -1342,13 +1389,13 @@ def plot_boxplot_delais_plotly(
         fig = px.box(
             df_long, x=col_groupe, y="Jours", color="Delai",
             points="outliers",
-            title=titre or "Distribution des délais (en jours) par groupe",
+            title=titre or "Distribution des délais observés (en jours) par groupe",
         )
     else:
         fig = px.box(
             df_long, x="Delai", y="Jours",
             points="outliers",
-            title=titre or "Distribution des délais (en jours)",
+            title=titre or "Distribution des délais observés (en jours)",
         )
 
     fig.update_layout(
@@ -1674,6 +1721,7 @@ DATE_ISSUE = "Date_issue"
 
 
 # =========================
+# SECTION: STANDARDISATION MULTI-MALADIES
 # MALADIES (CONFIG / SPECS)
 # Objectif: rendre le dashboard "multi-line list" (Choléra, Rougeole, Mpox, Ebola, Intox, IDSR)
 # - Chaque maladie peut avoir des noms de colonnes différents -> on renomme vers le schéma commun
@@ -1898,19 +1946,64 @@ PROVINCES_END  = [p for p, ok in EPIDEMIE.items() if not ok]
 # =========================
 # HELPERS (UI)
 # =========================
-def st_plot(fig, key=None, height=None, stretch=True):
+def get_toggle_flag(flag_name: str, default: bool = False) -> bool:
+    """Lecture sûre d'un booléen UI depuis st.session_state."""
+    try:
+        return bool(st.session_state.get(flag_name, default))
+    except Exception:
+        return bool(default)
+
+def get_session_int(key: str, default: int) -> int:
+    """Lecture sûre d'un entier depuis st.session_state."""
+    try:
+        return int(st.session_state.get(key, default))
+    except Exception:
+        return int(default)
+
+
+def get_provinces_epid() -> List[str]:
+    """Source unique de vérité pour la liste des provinces épidémiques."""
+    return list(PROVINCES_EPID)
+
+
+def call_optional_function(func_name: str, *args, default=None, **kwargs):
+    """Appelle une fonction globale optionnelle si elle existe et est callable."""
+    func = globals().get(func_name)
+    if callable(func):
+        try:
+            return func(*args, **kwargs)
+        except Exception:
+            return default
+    return default
+
+
+def pct_change_safe(cur, prv):
+    """Variation relative sûre, retourne np.nan si la base est nulle ou absente."""
+    if pd.isna(prv) or prv == 0:
+        return np.nan
+    return (cur - prv) / prv * 100.0
+
+
+# =========================
+# SECTION: VISUALISATIONS STREAMLIT/PLOTLY
+# =========================
+def st_plot(fig, key=None, height=None, stretch=True, annotate_values: Optional[bool] = None):
     """Affiche une figure Plotly de manière robuste et compatible Streamlit ≥ 1.31.
 
     - Remplace use_container_width (déprécié) par width
     - width='stretch'  -> pleine largeur
     - width='content'  -> largeur naturelle
     - N'envoie jamais height=None
+    - Évite les dépendances implicites à globals()
     """
     if fig is None:
-        st.info("Aucune donnée à afficher (figure vide / colonnes manquantes).")
+        st.info("Aucune visualisation disponible : données absentes ou variables requises manquantes.")
         return
 
-    fig = apply_plotly_value_annotations(fig, bool(globals().get("annot_vals", False)))
+    if annotate_values is None:
+        annotate_values = get_toggle_flag("annot_vals", False)
+
+    fig = apply_plotly_value_annotations(fig, bool(annotate_values))
 
     kwargs = {}
 
@@ -1925,6 +2018,18 @@ def st_plot(fig, key=None, height=None, stretch=True):
 
     return st.plotly_chart(fig, **kwargs)
 
+
+def render_section_title(section_number: int, title: str) -> None:
+    """Affiche un titre de sous-section harmonisé dans les onglets compacts."""
+    st.markdown(f"### Section {section_number} — {title}")
+
+
+def render_standards_note() -> None:
+    """Affiche une note normative courte pour guider l'interprétation des indicateurs."""
+    st.caption(
+        "Lecture normative : les indicateurs présentés doivent être interprétés selon les définitions usuelles de la surveillance en santé publique, "
+        "en tenant compte de la complétude, de la promptitude, de la qualité des données et du niveau de confirmation biologique disponible."
+    )
 
 
 def apply_plotly_value_annotations(fig: Optional[go.Figure], enabled: bool) -> Optional[go.Figure]:
@@ -2076,7 +2181,7 @@ def taux_binaire(df, col, positive="Oui"):
     if denom == 0:
         return np.nan, 0
     num = int((s == positive).sum())
-    return (num / denom * 100.0), denom
+    return safe_pct(num, denom), denom
 
 def group_rate(df, group_col, indicator_col, positive_value):
     if group_col not in df.columns or indicator_col not in df.columns:
@@ -2088,7 +2193,7 @@ def group_rate(df, group_col, indicator_col, positive_value):
         n=(indicator_col, lambda x: int(x.notna().sum())),
         n_pos=("is_pos", "sum"),
     )
-    g["taux_%"] = np.where(g["n"] > 0, g["n_pos"] / g["n"] * 100, np.nan)
+    g["taux_%"] = [safe_pct(num, den) for num, den in zip(g["n_pos"], g["n"])]
     return g.sort_values(group_col)
 
 def group_cfr(df, group_col):
@@ -2101,7 +2206,7 @@ def group_cfr(df, group_col):
         cas=(COL_ISSUE, "size"),
         deces=("is_death", "sum"),
     )
-    g["cfr_%"] = np.where(g["cas"] > 0, g["deces"] / g["cas"] * 100, np.nan)
+    g["cfr_%"] = [safe_pct(num, den) for num, den in zip(g["deces"], g["cas"])]
     return g.sort_values(group_col)
 
 
@@ -2124,6 +2229,9 @@ def _is_yes_series(s: pd.Series) -> pd.Series:
 def _tdr_result_norm(s: pd.Series) -> pd.Series:
     return _norm_txt_series(s)
 
+# =========================
+# SECTION: INDICATEURS KPI
+# =========================
 def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
     """
     Calcule les KPI avec des dénominateurs cohérents (= nombre de cas filtrés).
@@ -2146,7 +2254,7 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
     # Décès & CFR (sur tous cas)
     # -----------------------------
     n_deaths = int(df["is_death"].sum()) if "is_death" in df.columns else 0
-    cfr_pct = (n_deaths / n_cases * 100.0) if n_cases > 0 else np.nan
+    cfr_pct = safe_pct(n_deaths, n_cases)
 
     # -----------------------------
     # Helper taux binaire Oui/Non (den = n_cases)
@@ -2186,7 +2294,7 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
         # Numérateur = TDR=Oui & positif
         pos_num = int((tdr_yes & res_n.isin(TDR_POS_SET)).sum())
 
-        pos_pct = (pos_num / pos_den * 100.0) if pos_den > 0 else np.nan
+        pos_pct = safe_pct(pos_num, pos_den)
     else:
         pos_den, pos_num, pos_pct = 0, 0, np.nan
 
@@ -2207,7 +2315,7 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
 
         invalid_den = int(tdr_yes.sum())
         invalid_num = int((tdr_yes & res_n.isin(invalid_set)).sum())
-        invalid_pct = (invalid_num / invalid_den * 100.0) if invalid_den > 0 else np.nan
+        invalid_pct = safe_pct(invalid_num, invalid_den)
 
     # -----------------------------
     # Degré déshydratation (table d'effectifs)
@@ -2216,9 +2324,9 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
         dehy_tbl = (
             df[COL_DEHY]
             .astype("string")
-            .fillna("Inconnu/Non renseigné")
+            .fillna(MISSING_LABEL_VERBOSE)
             .str.strip()
-            .replace({"": "Inconnu/Non renseigné", "inconnu/non renseigne": "Inconnu/Non renseigné","inconnu": "Inconnu/Non renseigné"})
+            .replace({"": MISSING_LABEL_VERBOSE, "inconnu/non renseigne": MISSING_LABEL_VERBOSE,"inconnu": MISSING_LABEL_VERBOSE})
             .value_counts(dropna=False)
             .rename_axis(COL_DEHY)
             .reset_index(name="Nombre_de_cas")
@@ -2277,7 +2385,7 @@ def compute_group_indicators(df_in: pd.DataFrame, group_col: str) -> pd.DataFram
     if "is_death" not in df.columns:
         g["Décès"] = 0
 
-    g["CFR_%"] = np.where(g["Cas"] > 0, g["Décès"] / g["Cas"] * 100.0, np.nan)
+    g["CFR_%"] = [safe_pct(num, den) for num, den in zip(g["Décès"], g["Cas"])]
 
     def _add_rate(col, new_name):
         if col not in df.columns:
@@ -2287,7 +2395,7 @@ def compute_group_indicators(df_in: pd.DataFrame, group_col: str) -> pd.DataFram
         tmp["is_yes"] = _is_yes_series(tmp[col])
         num = tmp.groupby(group_col)["is_yes"].sum()
         den = tmp.groupby(group_col).size()
-        g[new_name] = (num / den * 100.0).reindex(g[group_col]).to_numpy()
+        g[new_name] = [safe_pct(n, d) for n, d in zip(num.reindex(g[group_col]).fillna(0), den.reindex(g[group_col]).fillna(0))]
 
     _add_rate(COL_PREL, "Prélèvement_%")
     _add_rate(COL_HOSP, "Hospitalisation_%")
@@ -2303,7 +2411,7 @@ def compute_group_indicators(df_in: pd.DataFrame, group_col: str) -> pd.DataFram
         df_pos["num_pos"] = (tdr_yes & res_n.isin(TDR_POS_SET)).astype(int)
         sums = df_pos.groupby(group_col, as_index=False).agg(den_pos=("den_pos", "sum"), num_pos=("num_pos", "sum"))
         g = g.merge(sums, on=group_col, how="left")
-        g["Positivité_TDR_%"] = np.where(g["den_pos"] > 0, g["num_pos"] / g["den_pos"] * 100.0, np.nan)
+        g["Positivité_TDR_%"] = [safe_pct(n, d) for n, d in zip(g["num_pos"].fillna(0), g["den_pos"].fillna(0))]
         g = g.drop(columns=["den_pos", "num_pos"])
     else:
         g["Positivité_TDR_%"] = np.nan
@@ -2324,7 +2432,7 @@ def pct_under_threshold(series, threshold=2):
         return np.nan, 0
     n = len(series)
     under = int((series <= threshold).sum())
-    return (under / n * 100.0), n
+    return safe_pct(under, n), n
 
 def compile_from_folder(folder, pattern, sheet=None):
     files = sorted(glob.glob(str(Path(folder) / pattern)))
@@ -2506,6 +2614,9 @@ def standardize_df(df):
 
 # =========================
 # HELPERS (Qualité & Alertes)
+# =========================
+# =========================
+# SECTION: QUALITE DES DONNEES
 # =========================
 def qc_flags(df: pd.DataFrame) -> pd.DataFrame:
     """Retourne un tableau long des incohérences (1 ligne = 1 flag = 1 cas)."""
@@ -2853,7 +2964,7 @@ def alerts_weekly_simple(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
 # =========================
 def export_sitrep_pdf(payload):
     """
-    Export PDF robuste :
+    Exportation PDF robuste :
     - fonctionne même si certaines sections n'existent pas
     - imprime uniquement les sections disponibles
     - supporte l'ajout d'images (PNG bytes) via payload["images"]
@@ -2980,7 +3091,7 @@ def export_sitrep_pdf(payload):
     date_pub = meta.get("date_publication", "")
 
     c.setFont("Helvetica-Bold", 14)
-    c.drawString(left, y, f"SITREP CHOLERA - Semaine {semaine} / {annee}")
+    c.drawString(left, y, f"SITREP épidémiologique CHOLERA - Semaine {semaine} / {annee}")
     y -= 18
     c.setFont("Helvetica", 10)
     c.drawString(left, y, f"Date de publication: {date_pub}")
@@ -3456,7 +3567,7 @@ IDSR_MODE = (disease_key == "idsr")
 if not IDSR_MODE:
     # Déploiement en ligne : source unique = upload (xlsx/csv)
     if upl is None:
-        st.info("📂 Téléverse un fichier (xlsx ou csv) pour démarrer.")
+        st.info("Veuillez téléverser un fichier de données (.xlsx ou .csv) pour initier l’analyse de surveillance.")
 
         st.info(
             """
@@ -3553,7 +3664,7 @@ if not IDSR_MODE:
     # =========================
     # UI: TITLE + KPIs
     # =========================
-    st.title("Incident RDC – Dashboard")
+    st.title("Plateforme analytique de surveillance des listes linéaires et des données agrégées IDSR — RDC")
     with st.expander("Fichiers utilisés"):
         st.write(files_used[:200])
 
@@ -3565,7 +3676,7 @@ if not IDSR_MODE:
 
         # --- Provinces (définitions) ---
         n_provinces_global = len(EPIDEMIE)  # toutes provinces RDC
-        provinces_epid = PROVINCES_EPID if "PROVINCES_EPID" in globals() else [p for p, ok in EPIDEMIE.items() if ok]
+        provinces_epid = get_provinces_epid()
         n_provinces_attendues = len(provinces_epid)  # provinces True
 
         # Provinces trouvées dans les données (df)
@@ -3727,7 +3838,7 @@ if not IDSR_MODE:
     # KPIs (après filtres géographiques)
     # =========================
     with st.expander("Indicateurs clés de la semaine correspondant aux filtres géographiques sélectionnés",expanded=True):
-        st.info("Ces indicateurs reflètent uniquement les données correspondant aux filtres géographiques sélectionnés.")
+        st.info("Ces indicateurs sont calculés uniquement sur le périmètre analytique actuellement sélectionné et doivent être interprétés selon les définitions standard de surveillance.")
 
         kpi_f = compute_indicators(df_f)
         cases  = kpi_f["n_cases"]
@@ -3738,7 +3849,7 @@ if not IDSR_MODE:
         n_provinces_global = len(EPIDEMIE)  # toutes les provinces (RDC)
 
         # si PROVINCES_EPID existe déjà, on l'utilise, sinon on le reconstruit
-        provinces_epid = PROVINCES_EPID if "PROVINCES_EPID" in globals() else [p for p, ok in EPIDEMIE.items() if ok]
+        provinces_epid = get_provinces_epid()
         n_provinces_attendues = len(provinces_epid)  # provinces True
 
         n_provinces_f = df_f[COL_PROV].nunique() if (COL_PROV in df_f.columns and cases) else 0
@@ -3774,8 +3885,8 @@ else:
     df = pd.DataFrame()
     df_f = pd.DataFrame()
     files_used = []
-    st.title("Incident RDC – Dashboard")
-    st.info("🧭 Mode **IDSR agrégé (hebdo)** : allez dans l'onglet **9) IDSR** pour téléverser et analyser le fichier.")
+    st.title("Plateforme analytique de surveillance des listes linéaires et des données agrégées IDSR — RDC")
+    st.info("Mode **IDSR agrégé hebdomadaire** : utilisez l’onglet **IDSR** pour téléverser, filtrer et analyser le fichier agrégé.")
 
 # =========================
 # TABS
@@ -3920,24 +4031,29 @@ def _safe_top_label(df_: pd.DataFrame, col: str) -> str:
 
 
 def build_who_narrative_summary(df_: pd.DataFrame) -> str:
+    """
+    Résumé automatisé rédigé dans un langage de surveillance compatible
+    avec l'usage OMS/IDSR : période, charge de morbidité, létalité observée,
+    profil des cas, distribution géographique et informations de laboratoire.
+    """
     n_cases = int(len(df_))
     n_deaths = int(df_["is_death"].sum()) if "is_death" in df_.columns else 0
-    cfr = (n_deaths / n_cases * 100.0) if n_cases else np.nan
+    cfr = safe_pct(n_deaths, n_cases)
 
-    period_txt = "période non documentée"
+    period_txt = "sur une période non documentée"
     for col in [DATE_NOTIF, DATE_ONSET]:
         if col in df_.columns and pd.to_datetime(df_[col], errors="coerce").notna().any():
             s = pd.to_datetime(df_[col], errors="coerce")
-            period_txt = f"du {s.min():%d/%m/%Y} au {s.max():%d/%m/%Y}"
+            period_txt = f"sur la période du {s.min():%d/%m/%Y} au {s.max():%d/%m/%Y}"
             break
 
     week_txt = ""
     if "YW" in df_.columns and df_["YW"].notna().any():
         w = df_["YW"].dropna().astype(str)
-        week_txt = f", couvrant {w.min()} à {w.max()}"
+        week_txt = f" ; couverture hebdomadaire : {w.min()} à {w.max()}"
     elif COL_WNUM in df_.columns and pd.to_numeric(df_[COL_WNUM], errors='coerce').notna().any():
         w = pd.to_numeric(df_[COL_WNUM], errors='coerce').dropna().astype(int)
-        week_txt = f", couvrant SE{w.min():02d} à SE{w.max():02d}"
+        week_txt = f" ; couverture hebdomadaire : SE{w.min():02d} à SE{w.max():02d}"
 
     sex_top = _safe_top_label(df_, COL_SEX)
     age_col = None
@@ -3945,376 +4061,203 @@ def build_who_narrative_summary(df_: pd.DataFrame) -> str:
         age_col = COL_AGEG2
     elif COL_AGEG in df_.columns and df_[COL_AGEG].notna().any():
         age_col = COL_AGEG
-    age_top = _safe_top_label(df_, age_col) if age_col else "non disponible"
+    age_top = _safe_top_label(df_, age_col) if age_col else "non documenté"
     prov_top = _safe_top_label(df_, COL_PROV)
     zs_top = _safe_top_label(df_, COL_ZS)
 
     lab_tbl = build_simple_lab_table(df_)
-    pos_txt = "Aucun résultat de laboratoire interprétable n'est disponible."
+    lab_txt = "Aucun résultat de laboratoire interprétable n’est disponible dans le périmètre analysé."
     if not lab_tbl.empty and "TDR positif" in lab_tbl["Indicateur labo"].values:
         row = lab_tbl.loc[lab_tbl["Indicateur labo"] == "TDR positif"].iloc[0]
-        pos_txt = f"Le bloc laboratoire rapporte {int(row['n'])} résultat(s) positif(s) avec une positivité de {row['%'] if pd.notna(row['%']) else '-'} %."
+        pct_val = row["%"] if pd.notna(row["%"]) else "-"
+        lab_txt = (
+            f"Au plan du laboratoire, {int(row['n'])} résultat(s) positif(s) ont été documentés, "
+            f"pour une positivité observée de {pct_val} % parmi les résultats interprétables."
+        )
 
-    cfr_txt = "-" if pd.isna(cfr) else f"{cfr:.2f}"
+    cfr_txt = "non calculable" if pd.isna(cfr) else f"{cfr:.2f}"
+    geo_txt = (
+        f"La province la plus représentée est « {prov_top} »"
+        if prov_top != "non disponible"
+        else "La distribution provinciale n’est pas suffisamment documentée"
+    )
+    if zs_top != "non disponible":
+        geo_txt += f", avec une concentration notable des notifications dans la zone de santé « {zs_top} »"
+
     return (
-        f"Au total, {n_cases} cas et {n_deaths} décès ont été enregistrés {period_txt}{week_txt}, "
-        f"soit une létalité globale de {cfr_txt} %. "
-        f"Les cas sont principalement observés chez les sujets de sexe « {sex_top} » et dans le groupe d'âge « {age_top} ». "
-        f"La zone géographique la plus représentée est la province « {prov_top} »"
-        f"{'' if zs_top == 'non disponible' else f', avec une concentration notable dans la zone de santé « {zs_top} »'}" 
-        f". {pos_txt}"
+        f"Au total, {n_cases} cas et {n_deaths} décès ont été enregistrés {period_txt}{week_txt}. "
+        f"La létalité observée (CFR) est estimée à {cfr_txt} %. "
+        f"Le profil des cas met principalement en évidence le sexe « {sex_top} » et le groupe d’âge « {age_top} ». "
+        f"{geo_txt}. {lab_txt} "
+        f"Cette synthèse descriptive doit être interprétée en tenant compte de la complétude, de la promptitude et de la qualité des données disponibles."
     )
 
-tab1, tab2, tab3, tab4, tab4b, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
-    "📈 Surveillance épidémique",
-    "📊 Incidence & Létalité (CFR)",
-    "⏱️ Promptitude",
-    "👥 Profil démographique",
-    "🧾 Modèle (Temps-Lieu-Personne)",
-    "📋 Complétude des données",
-    "💾 Données & Export",
-    "🚨 Qualité & Alertes",
-    "📝 SITREP automatique",
-    "📚 IDSR",
-    "📌 Indice de Risque Épidémique (IREP)"
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📈 Surveillance épidémiologique, létalité et promptitude",
+    "👥 Profil épidémiologique des cas : personne, lieu et laboratoire",
+    "🗂️ Qualité, complétude, revue et export des données",
+    "📝 Synthèse automatique SITREP et aide à la décision",
+    "📚 Surveillance agrégée IDSR",
+    "📌 Indice provincial composite de risque épidémique (IREP)"
 ])
 
 
 # =========================
-# TAB 1: EVOLUTION
+# NAVIGATION COMPACTE
+# - Surveillance & promptitude = anciens onglets 1 + 2 + 3
+# - Profil descriptif = anciens onglets 4 + 4b
+# - Données, complétude & qualité = anciens onglets 5 + 6 + 7
+# - SITREP épidémiologique, IDSR et IREP restent dédiés
+# =========================
+
+# =========================
+# TAB 1: DYNAMIQUE EPIDEMIOLOGIQUE ET PROMPTITUDE
 # =========================
 with tab1:
     if IDSR_MODE:
-        st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Allez dans l'onglet **9) IDSR**.")
+        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
     else:
         tab_help(
             "Comment lire cet onglet",
             """
-            **🎯 Objectif** : Suivre l’évolution des cas et des décès dans le temps.
-        
-            **📖 Interprétation**
-            - Une hausse progressive des cas peut indiquer une propagation ou un élargissement du dépistage.
-            - Un pic soudain peut correspondre à un foyer actif ou à un rattrapage de notification.
-            - La courbe **CFR (%)** aide à suivre l’évolution de la létalité dans le temps.
-        
-            **⚠️ Points d’attention**
-            - Une hausse peut venir d’une meilleure complétude de rapportage, pas forcément d’une vraie augmentation.
-            - Toujours lire la tendance sur 3–4 semaines, pas une seule semaine.
+            **🎯 Objectif** : suivre la dynamique temporelle de l’événement, la distribution géographique des notifications et quelques indicateurs sentinelles de performance.
+
+            **📖 Logique de lecture**
+            - Commencer par l’**évolution hebdomadaire** des cas et des décès pour apprécier la dynamique du signal.
+            - Interpréter ensuite la **tendance combinée cas + létalité observée** pour apprécier simultanément le volume de cas et la gravité apparente.
+            - Examiner enfin la **distribution géographique** et les **indicateurs sentinelles de performance** afin d’orienter la réponse opérationnelle.
+
+            **⚠️ Point d’attention**
+            - Les tendances doivent être interprétées en tenant compte de la complétude, du retard de notification et de la disponibilité du diagnostic.
             """,
             expanded=False
         )
-        
+
+        render_section_title(1, "Surveillance temporelle hebdomadaire")
         st.subheader("Évolution hebdomadaire")
 
-        # --- Graphes initiaux conservés (priorité à YW) ---
-        if "YW" in df_f.columns and df_f["YW"].notna().any():
-            weekly = df_f.groupby("YW", as_index=False).agg(
-                Cas=("YW", "count"),
-                Deces=("is_death", "sum")
-            )
-            weekly["CFR_%"] = np.where(weekly["Cas"] > 0, weekly["Deces"] / weekly["Cas"] * 100, np.nan)
-
-            cA, cB = st.columns([2, 1])
-            with cA:
-                fig = px.line(weekly, x="YW", y="Cas", markers=True, title="Cas par semaine (YW)")
-                fig = apply_plotly_value_annotations(fig, annot_vals)
-                st.plotly_chart(fig, width="stretch")
-            with cB:
-                fig2 = px.bar(weekly, x="YW", y="Deces", title="Décès par semaine")
-                fig2 = apply_plotly_value_annotations(fig2, annot_vals)
-                st.plotly_chart(fig2, width="stretch")
-
-            fig3 = px.line(weekly, x="YW", y="CFR_%", markers=True, title="CFR (%) par semaine")
-            fig3.update_traces(line=dict(color=COLOR_CFR), marker=dict(color=COLOR_CFR), name="Létalité (%)")
-            fig3 = apply_plotly_value_annotations(fig3, annot_vals)
-            st.plotly_chart(fig3, width="stretch")
-        else:
-            st.info("Pas de clé YW disponible (Annee_epid / Num_semaine_epid manquants).")
-
-        st.markdown("**Graphique combiné : barres + létalité**")
         week_col_epi = None
-        if COL_WNUM in df_f.columns and df_f[COL_WNUM].notna().any():
-            week_col_epi = COL_WNUM
-        elif "YW" in df_f.columns and df_f["YW"].notna().any():
+        if "YW" in df_f.columns and df_f["YW"].notna().any():
             week_col_epi = "YW"
+        elif COL_WNUM in df_f.columns and df_f[COL_WNUM].notna().any():
+            week_col_epi = COL_WNUM
         elif COL_WEEK in df_f.columns and df_f[COL_WEEK].notna().any():
             week_col_epi = COL_WEEK
 
         if week_col_epi is not None:
+            weekly_tbl = df_f.groupby(week_col_epi, as_index=False).agg(
+                Cas=(week_col_epi, "count"),
+                Décès=("is_death", "sum"),
+            )
+            weekly_tbl["Létalité (%)"] = np.where(
+                weekly_tbl["Cas"] > 0,
+                weekly_tbl["Décès"] / weekly_tbl["Cas"] * 100.0,
+                np.nan,
+            )
+
+            c_week1, c_week2 = st.columns([2, 1])
+            with c_week1:
+                fig_cases_week = px.line(
+                    weekly_tbl,
+                    x=week_col_epi,
+                    y="Cas",
+                    markers=True,
+                    title="Cas par semaine (YW)" if week_col_epi == "YW" else "Cas par semaine",
+                )
+                st_plot(fig_cases_week, key="week_cases_primary")
+            with c_week2:
+                fig_deaths_week = px.bar(
+                    weekly_tbl,
+                    x=week_col_epi,
+                    y="Décès",
+                    title="Décès par semaine",
+                )
+                st_plot(fig_deaths_week, key="week_deaths_primary")
+
+            st.markdown("### Tendance hebdomadaire des cas et de la létalité observée")
             fig_combo = build_weekly_cases_cfr_combo(
                 df=df_f,
                 week_col=week_col_epi,
                 death_col="is_death",
-                titre="Cas hebdomadaires et létalité par semaine épidémiologique",
+                titre="Tendance hebdomadaire des cas et de la létalité observée",
                 rotation=45,
                 annot_bars=annot_vals,
                 annot_line=annot_vals,
                 pas_x=int(pas_x) if week_col_epi in [COL_WNUM, "YW"] else None,
                 taille_fig=(1500, 600),
             )
-            st_plot(fig_combo, key="week_cases_cfr_combo")
+            st_plot(fig_combo, key="week_cases_cfr_combo_main")
+
+            with st.expander("Afficher la table hebdomadaire de synthèse"):
+                st_dataframe_safe(weekly_tbl)
         else:
-            st.info("Pas de variable semaine disponible (Num_semaine_epid / YW / Semaine_epid manquants).")
-        
+            st.info("Variable semaine indisponible : aucune colonne temporelle exploitable n’a été détectée.")
+
         st.divider()
-        st.subheader("Visualisations")
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            x_axis_choice = st.selectbox("Axe X", [COL_WNUM, "YW", COL_PROV], index=0)
-        with c2:
-            hue_choice = st.selectbox("Couleur (hue)", [c for c in [age_col, COL_SEX, COL_PROV] if c], index=0 if age_col else 0)
-        
-        # ✅ Histogramme empilé (count des cas)
-        if use_custom_viz and HAS_CUSTOM_VIZ and x_axis_choice in df_f.columns and hue_choice in df_f.columns:
-            fig = plot_histogramme_groupe_interactif_empile(
-                df=df_f,
-                x_col=x_axis_choice,
-                x_titre=x_axis_choice,
-                hue_col=hue_choice,
-                y_titre="Nombre de cas",
-                titre=f"Histogramme empilé: {x_axis_choice} x {hue_choice}",
-                rotation=45,
-                annot=annot_vals,
-                pas_x=int(pas_x) if x_axis_choice in [COL_WNUM, "YW"] else None,
-                bargap=0,
-                bargroupgap=0.05,
-                taille_fig=(1500, 600),
-                x_trier=True,
-                ordre="desc",
-                y_col=None
-            )
-        
-            st_plot(fig, key="stacked_hist")
-        else:
-            st.info("Activer 'Utiliser visualisations custom' et vérifier colonnes disponibles.")
-        
-        # ✅ Facettes par province : cas par semaine par province
-        st.subheader("Cas par semaine, facetté par province")
-        if use_custom_viz and HAS_CUSTOM_VIZ and COL_PROV in df_f.columns and COL_WNUM in df_f.columns:
-            df_fac = df_f.copy()
-            fig = graphique_barres_facette(
-                df=df_fac,
-                x_col=COL_WNUM,
-                x_titre="Semaine épidémiologique",
-                y_col=COL_WNUM,  # non numérique => comptage (occurrences)
-                y_titre="Nombre de cas",
-                facette_col=COL_PROV,
-                titre="Répartition hebdomadaire des cas par province (facettes)",
-                taille_fig=(1500, 700),
-                rotation=45,
-                couleurs_personnalisees="black",
-                bargap=0,
-                bargroupgap=0.02,
-                annot=annot_vals,
-                pas_x=int(pas_x),
-                return_fig=True,
-                encadrer_facettes=True,
-                couleur_contour_facette="#777772"
-            )
-            st_plot(fig, key="facet_week_prov")
-        else:
-            st.info("Facettes: nécessite Province_notification + Num_semaine_epid + visualisations custom.")
-        
-        # ✅ Courbes multi-catégories
-        st.subheader("Courbe multi-séries")
-        if use_custom_viz and HAS_CUSTOM_VIZ and COL_WNUM in df_f.columns and COL_PROV in df_f.columns:
-            fig = plot_courbe_par_categories_plotly(
-                df=df_f,
-                colonne_x=COL_WNUM,
-                colonne_y=COL_PROV,
-                titre="Évolution des cas par semaine et province",
-                rotation=45,
-                annot=annot_vals,
-                pas_x=int(pas_x),
-                taille_fig=(1500, 600)
-            )
-            st_plot(fig, key="line_week_prov")
-        else:
-            st.info("Courbes multi-séries: nécessite Province + Num_semaine_epid + visualisations custom.")
-        
-    # =========================
-    # TAB 2: Taux & CFR
-    # =========================
-with tab2:
-    if IDSR_MODE:
-        st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
-    else:
-        tab_help(
-            "Comment lire cet onglet",
-            """
-            **🎯 Objectif** : Évaluer la performance diagnostic/prise en charge et la létalité.
-        
-            **📖 Indicateurs**
-            - **Taux prélèvement (%)** : disponibilité/collecte des échantillons.
-            - **Taux TDR réalisé (%)** : capacité de test.
-            - **Positivité TDR (%)** : circulation probable de Vibrio cholerae (attention au biais de test).
-            - **Taux hospitalisation (%)** : gravité ou stratégie de prise en charge.
-            - **CFR (%)** : létalité observée.
-        
-            **⚠️ Points d’attention**
-            - CFR élevé peut refléter : retard de consultation, sous-détection des cas bénins, ou qualité des soins.
-            - Positivité élevée + faible couverture TDR = confirmation insuffisante.
-            """,
-            expanded=False
+        st.subheader("Distribution géographique des notifications")
+
+        geo_mode = st.radio(
+            "Choisir le niveau de lecture géographique",
+            ["Province de notification", "Zone de santé de notification"],
+            horizontal=True,
+            key="tab1_geo_mode",
         )
-        
-        st.subheader("Taux (qualité / process) et létalité")
-        
-        # ===== KPI GLOBAUX (définitions harmonisées) =====
-        kpi = compute_indicators(df_f)
-        
-        a0, a1, a2, a3, a4, a5, a6 = st.columns(7)
-        
-        a0.metric(
-            "Cas (n)",
-            f"{kpi['n_cases']:,}".replace(",", " "),
-            help="Nombre total de cas après application des filtres."
-        )
-        
-        a1.metric(
-            "Taux prélèvement (%)",
-            "-" if np.isnan(kpi["prelev_pct"]) else f"{kpi['prelev_pct']:.1f}",
-            help=(
-                "Prélèvement=Oui / Tous cas filtrés.\n"
-                f"n={kpi.get('prelev_num', 0)}/{kpi.get('prelev_den', kpi.get('n_cases', 0))}"
-            )
-        )
-        
-        a2.metric(
-            "Couverture TDR (%)",
-            "-" if np.isnan(kpi.get("tdr_coverage_pct", np.nan)) else f"{kpi['tdr_coverage_pct']:.1f}",
-            help=(
-                "TDR réalisés (Oui) / Tous cas filtrés.\n"
-                f"n={kpi.get('tdr_coverage_num', 0)}/{kpi.get('tdr_coverage_den', kpi.get('n_cases', 0))}"
-            )
-        )
-        
-        a3.metric(
-            "Positivité TDR (%)",
-            "-" if np.isnan(kpi["pos_pct"]) else f"{kpi['pos_pct']:.1f}",
-            help=(
-                "Positifs / (Positifs + Négatifs) parmi TDR interprétables.\n"
-                "Interprétable = TDR=Oui & résultat valide (Pos/Nég).\n"
-                f"n={kpi.get('pos_num', 0)}/{kpi.get('pos_den', 0)}"
-            )
-        )
-        
-        a4.metric(
-            "Taux hospitalisation (%)",
-            "-" if np.isnan(kpi["hosp_pct"]) else f"{kpi['hosp_pct']:.1f}",
-            help=(
-                "Hospitalisation=Oui / Tous cas filtrés.\n"
-                f"n={kpi.get('hosp_num', 0)}/{kpi.get('hosp_den', kpi.get('n_cases', 0))}"
-            )
-        )
-        
-        a5.metric(
-            "CFR global (%)",
-            "-" if np.isnan(kpi["cfr_pct"]) else f"{kpi['cfr_pct']:.2f}",
-            help=f"Décès / Tous cas filtrés. n={kpi.get('n_deaths', 0)}/{kpi.get('n_cases', 0)}"
-        )
-        
-        a6.metric(
-            "% TDR invalides",
-            "-" if np.isnan(kpi.get("invalid_pct", np.nan)) else f"{kpi['invalid_pct']:.1f}",
-            help=(
-                "Invalides (ex: INBA/bande absente) / TDR réalisés (TDR=Oui).\n"
-                f"n={kpi.get('invalid_num', 0)}/{kpi.get('invalid_den', 0)}"
-            )
-        )
-        
-        
-        
-        
-        # Degré de déshydratation (liste catégorielle)
-        with st.expander("📋 Degré de déshydratation (répartition)", expanded=False):
-            st_dataframe_safe(kpi["dehy_tbl"])
-        
-        st.divider()
-        
-        group_col = st.selectbox(
-            "Grouper par",
-            [c for c in [COL_PROV, COL_ZS, "YW", COL_WNUM] if c in df_f.columns],
-            index=0
-        )
-        
-        if group_col not in df_f.columns:
-            st.warning(f"Colonne {group_col} absente dans les données filtrées.")
-        else:
-            g_ind = compute_group_indicators(df_f, group_col)
-        
-            st.markdown("**Table d'indicateurs (définitions cohérentes)**")
-            st_dataframe_safe(g_ind)
-        
-            ind_to_plot = st.selectbox(
-                "Indicateur à visualiser",
-                options=[
-                    "Cas",
-                    "Décès",
-                    "CFR_%",
-                    "Prélèvement_%",
-                    "Hospitalisation_%",
-                    "TDR_réalisé_%",
-                    "Positivité_TDR_%"
-                ],
-                index=3
-            )
-        
-            fig = px.bar(g_ind, x=group_col, y=ind_to_plot, title=f"{ind_to_plot} par {group_col}")
-            fig.update_layout(xaxis_tickangle=-45)
-            fig = apply_plotly_value_annotations(fig, annot_vals)
-            st.plotly_chart(fig, width="stretch")
-        
-        st.divider()
-        st.subheader("Évolution multi-indicateurs (cas + courbes)")
-        
-        if use_custom_viz and HAS_CUSTOM_VIZ:
-            df_tmp = df_f.copy()
-        
-            if "Femme_enceinte" in df_tmp.columns:
-                df_tmp["Femme_enceinte"] = df_tmp["Femme_enceinte"].astype("string").str.lower()
-            if COL_HOSP in df_tmp.columns:
-                df_tmp[COL_HOSP] = df_tmp[COL_HOSP].astype("string").str.lower()
-        
-            curves = []
-            valeurs_pos = {}
-        
-            if "Femme_enceinte" in df_tmp.columns:
-                curves.append("Femme_enceinte")
-                valeurs_pos["Femme_enceinte"] = "oui"
-        
-            if COL_HOSP in df_tmp.columns:
-                curves.append(COL_HOSP)
-                valeurs_pos[COL_HOSP] = "oui"
-        
-            if COL_WNUM in df_tmp.columns and curves:
-                fig = plot_evolution_multi_auto(
-                    df=df_tmp,
-                    col_x=COL_WNUM,
-                    courbe_col=curves,
-                    valeurs_courbe_col=valeurs_pos,
-                    titre="Cas (barres) + femmes enceintes / hospitalisation (courbes)",
-                    annot_x=False,
-                    annot_y=annot_vals,
-                    rotation=0,
-                    seuil_min=0,
-                    taille_fig=(1500, 600),
-                    bargap=0,
-                    bargroupgap=0.0
+
+        if geo_mode == "Province de notification":
+            if COL_PROV in df_f.columns and df_f[COL_PROV].notna().any():
+                prov_counts = (
+                    df_f.groupby(COL_PROV, as_index=False)
+                    .size()
+                    .rename(columns={"size": "Cas"})
+                    .sort_values("Cas", ascending=False)
+                    .head(15)
                 )
-                st_plot(fig, key="multi_auto")
+                fig_geo = px.bar(
+                    prov_counts,
+                    x=COL_PROV,
+                    y="Cas",
+                    title="Top 15 des provinces selon le nombre de cas notifiés",
+                    labels={COL_PROV: "Province de notification", "Cas": "Nombre de cas"},
+                )
+                st_plot(fig_geo, key="tab1_top_prov")
             else:
-                st.info("Multi-indicateurs: nécessite Num_semaine_epid + (Femme_enceinte / Hospitalisation).")
+                st.info("La variable Province de notification n’est pas disponible.")
         else:
-            st.info("Active les visualisations custom pour afficher ce bloc.")
-        
-    # =========================
-    # TAB 3: DELAIS
-    # =========================
-with tab3:
+            if COL_ZS in df_f.columns and df_f[COL_ZS].notna().any():
+                zs_counts = (
+                    df_f.groupby(COL_ZS, as_index=False)
+                    .size()
+                    .rename(columns={"size": "Cas"})
+                    .sort_values("Cas", ascending=False)
+                    .head(20)
+                )
+                fig_geo = px.bar(
+                    zs_counts,
+                    x=COL_ZS,
+                    y="Cas",
+                    title="Top 20 des zones de santé selon le nombre de cas notifiés",
+                    labels={COL_ZS: "Zone de santé de notification", "Cas": "Nombre de cas"},
+                )
+                st_plot(fig_geo, key="tab1_top_zs")
+            else:
+                st.info("La variable Zone de santé de notification n’est pas disponible.")
+
+        st.divider()
+        st.subheader("Indicateurs sentinelles de performance")
+
+        kpi = compute_indicators(df_f)
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Prélèvement réalisé (%)", "-" if np.isnan(kpi["prelev_pct"]) else f"{kpi['prelev_pct']:.1f}")
+        s2.metric("Couverture TDR (%)", "-" if np.isnan(kpi.get("tdr_coverage_pct", np.nan)) else f"{kpi['tdr_coverage_pct']:.1f}")
+        s3.metric("Positivité TDR (%)", "-" if np.isnan(kpi["pos_pct"]) else f"{kpi['pos_pct']:.1f}")
+        s4.metric("Hospitalisation (%)", "-" if np.isnan(kpi["hosp_pct"]) else f"{kpi['hosp_pct']:.1f}")
+    # Section suivante : promptitude. Les indicateurs de performance et de létalité déjà présentés plus haut ne sont pas répétés ici afin d’éviter les redondances.
+
+with tab1:
+    st.divider()
+    render_section_title(2, "Promptitude de notification, investigation et prise en charge")
     if IDSR_MODE:
-        st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
+        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
     else:
         tab_help(
             "Comment lire cet onglet",
@@ -4333,24 +4276,24 @@ with tab3:
             expanded=False
         )
         
-        st.subheader("Délais (timeliness)")
+        st.subheader("Analyse de la promptitude des principales étapes du parcours du cas et de la notification")
         
         delais_cols = [c for c in ["delai_onset_to_adm", "delai_onset_to_prel"] if c in df_f.columns]
         
         if not delais_cols:
-            st.info("Colonnes de délais indisponibles (dates manquantes).")
+            st.info("Les analyses de délais sont indisponibles : les dates nécessaires sont absentes ou non exploitables.")
         else:
             df_del = df_f.copy()
             for c in delais_cols:
                 df_del.loc[df_del[c] < 0, c] = np.nan
         
-            st.markdown("**Distribution des délais**")
+            st.markdown("**Distribution des délais observés**")
             if use_custom_viz and HAS_CUSTOM_VIZ:
                 fig = plot_boxplot_delais_plotly(
                     df=df_del,
                     colonnes_delais=delais_cols,
                     col_groupe=COL_PROV if COL_PROV in df_del.columns else None,
-                    titre="Distribution des délais (jours)",
+                    titre="Distribution des délais observés (jours)",
                     taille_fig=(1500, 600),
                     rotation=45
                 )
@@ -4373,7 +4316,7 @@ with tab3:
                 st.metric("Prélèvement ≤ seuil (%)", "-" if np.isnan(p2) else f"{p2:.1f}", help=f"n = {n2}")        
         
             if use_custom_viz and HAS_CUSTOM_VIZ and COL_PROV in df_del.columns:
-                st.subheader("Timeliness par province (% sous seuil)")
+                st.subheader("Promptitude par province (% de cas sous le seuil retenu)")
         
                 rows = []
                 for prov, sub in df_del.groupby(COL_PROV):
@@ -4408,7 +4351,7 @@ with tab3:
     # =========================
 with tab4:
     if IDSR_MODE:
-        st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
+        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
     else:
         tab_help(
             "Comment lire cet onglet",
@@ -4426,7 +4369,7 @@ with tab4:
             expanded=False
         )
         
-        st.subheader("Démographie")
+        st.subheader("Description démographique des cas et structure par groupes de population")
         
         cA, cB = st.columns(2)
         
@@ -4438,7 +4381,7 @@ with tab4:
                 fig = apply_plotly_value_annotations(fig, annot_vals)
                 st.plotly_chart(fig, width="stretch")
             else:
-                st.info("Colonne Sexe absente.")
+                st.info("La variable Sexe est absente du fichier analysé.")
         
         with cB:
             if age_col:
@@ -4449,11 +4392,11 @@ with tab4:
                 fig = apply_plotly_value_annotations(fig, annot_vals)
                 st.plotly_chart(fig, width="stretch")
             else:
-                st.info("Colonnes tranche âge absentes (Tranche_age_en_ans / Tranche_age).")
+                st.info("Les variables de tranche d’âge sont absentes ou non exploitables.")
         
         st.divider()
 
-        st.subheader("Qualité de l’âge (Data Manager)")
+        st.subheader("Contrôle qualité des variables d’âge")
 
         # --- Indicateurs rapides ---
         n_total = len(df_f)
@@ -4535,20 +4478,20 @@ with tab4:
                 unit_dist.columns = ["Unite_age (valeur)", "N"]
                 st.dataframe(unit_dist, width="stretch", height=260)
             else:
-                st.info("Colonne Unite_age absente.")
+                st.info("La variable Unite_age est absente du fichier analysé.")
 
             if extreme_mask.any():
                 show_cols = [c for c in [COL_PROV, COL_ZS, COL_AGE, COL_UNIT, DATE_ONSET, DATE_ADM, DATE_NOTIF] if c in df_f.columns]
                 df_ext = df_f.loc[extreme_mask, show_cols].copy().head(50)
                 df_ext.insert(0, "Age_en_ans_estime", years.loc[extreme_mask].head(50).round(2).values)
-                st.warning("Exemples (max 50) de valeurs extrêmes — à vérifier/corriger.")
+                st.warning("Exemples de valeurs extrêmes (maximum 50) à vérifier et corriger si nécessaire.")
                 st.dataframe(df_ext, width="stretch", height=320)
             else:
-                st.success("Aucun âge extrême détecté avec les règles actuelles.")
+                st.success("Aucune valeur d’âge extrême n’a été détectée selon les règles en vigueur.")
 
         st.divider()
 
-        st.subheader("Proportion des cas (camembert)")
+        st.subheader("Répartition proportionnelle des cas selon la variable analytique sélectionnée")
 
         if use_custom_viz and HAS_CUSTOM_VIZ:
             # ------------------------------------------------------------------
@@ -4711,7 +4654,7 @@ with tab4:
                     )
                     st_plot(fig, key="pie_age_4cat")
                 else:
-                    st.info("Impossible de construire la tranche 4 catégories (âge/unité manquants).")
+                    st.info("Impossible de construire la variable Tranche_age (4 catégories) : âge ou unité d’âge manquant.")
 
             with p2:
                 st.caption("**Tranche_age_en_ans (classes 5 ans)** : 0-4 … 60+")
@@ -4727,14 +4670,14 @@ with tab4:
                     )
                     st_plot(fig, key="pie_age_5ans")
                 else:
-                    st.info("Impossible de construire la tranche 5 ans (âge/unité manquants).")
+                    st.info("Impossible de construire la variable Tranche_age_en_ans (classes de 5 ans) : âge ou unité d’âge manquant.")
 
         else:
             st.info("Camemberts: nécessite visualisations custom (HAS_CUSTOM_VIZ=True).")
 
         st.divider()
 
-        st.subheader("Pyramides âge / sexe")
+        st.subheader("Pyramide des âges par sexe biologique déclaré")
         if use_custom_viz and HAS_CUSTOM_VIZ and COL_SEX in df_pie.columns:
             py1, py2 = st.columns(2)
 
@@ -4753,7 +4696,7 @@ with tab4:
                     )
                     st_plot(fig, key="pyr_age_4cat")
                 else:
-                    st.info("Impossible de construire la pyramide 4 catégories.")
+                    st.info("Impossible de générer la pyramide des âges en 4 catégories.")
 
             with py2:
                 st.caption("**Pyramide âge / sexe : Tranche_age_en_ans (classes 5 ans)**")
@@ -4770,11 +4713,11 @@ with tab4:
                     )
                     st_plot(fig, key="pyr_age_5ans")
                 else:
-                    st.info("Impossible de construire la pyramide 5 ans.")
+                    st.info("Impossible de générer la pyramide des âges en classes de 5 ans.")
         else:
-            st.info("Pyramides: nécessitent Sexe + visualisations custom.")
+            st.info("Les pyramides nécessitent la variable Sexe et l’activation des visualisations personnalisées.")
         
-        st.subheader("Pyramides par province (facettes)")
+        st.subheader("Pyramides âge-sexe par province de notification")
         if use_custom_viz and HAS_CUSTOM_VIZ and age_col and COL_SEX in df_f.columns and COL_PROV in df_f.columns:
             fig = graphique_pyramide_age(
                 df=df_f,
@@ -4794,14 +4737,16 @@ with tab4:
             )
             st_plot(fig, key="pyr_fac_prov")
         else:
-            st.info("Pyramides facettées: nécessite Province + Sexe + tranche âge + visualisations custom.")
+            st.info("Cette analyse nécessite Province, Sexe, une variable de tranche d’âge et les visualisations personnalisées.")
         
     # =========================
     # TAB 4B: Analyse descriptive standard
     # =========================
-with tab4b:
+with tab2:
+    st.divider()
+    render_section_title(3, "Analyse descriptive selon le modèle Temps-Lieu-Personne")
     if IDSR_MODE:
-        st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
+        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
     else:
         tab_help(
             "Comment lire cet onglet",
@@ -4819,53 +4764,18 @@ with tab4b:
             expanded=False
         )
 
-        st.subheader("Résumé automatique")
+        st.subheader("Résumé automatisé conforme au langage de surveillance")
         st.info(build_who_narrative_summary(df_f))
 
-        st.subheader("1. Vue d’ensemble")
+        st.subheader("1. Situation générale")
         st_dataframe_safe(build_global_summary_table(df_f))
 
         st.divider()
-        st.subheader("2. Temps — distribution hebdomadaire des cas, décès et létalité")
-        week_col_desc = None
-        if "YW" in df_f.columns and df_f["YW"].notna().any():
-            week_col_desc = "YW"
-        elif COL_WNUM in df_f.columns and df_f[COL_WNUM].notna().any():
-            week_col_desc = COL_WNUM
-        elif COL_WEEK in df_f.columns and df_f[COL_WEEK].notna().any():
-            week_col_desc = COL_WEEK
-
-        if week_col_desc is not None:
-            weekly_desc = df_f.groupby(week_col_desc, as_index=False).agg(Cas=(week_col_desc, 'count'), Deces=('is_death', 'sum'))
-            weekly_desc['Létalité (%)'] = np.where(weekly_desc['Cas'] > 0, weekly_desc['Deces'] / weekly_desc['Cas'] * 100.0, np.nan)
-            c1, c2 = st.columns([2, 1])
-            with c1:
-                fig = px.bar(weekly_desc, x=week_col_desc, y='Cas', title='Distribution hebdomadaire des cas')
-                fig = apply_plotly_value_annotations(fig, annot_vals)
-                st.plotly_chart(fig, width='stretch', key='oms_week_cases_bar')
-            with c2:
-                fig = px.bar(weekly_desc, x=week_col_desc, y='Deces', title='Distribution hebdomadaire des décès')
-                fig = apply_plotly_value_annotations(fig, annot_vals)
-                st.plotly_chart(fig, width='stretch', key='oms_week_deaths_bar')
-
-            fig = go.Figure()
-            fig.add_trace(go.Bar(x=weekly_desc[week_col_desc], y=weekly_desc['Cas'], name='Cas'))
-            fig.add_trace(go.Scatter(x=weekly_desc[week_col_desc], y=weekly_desc['Létalité (%)'], name='Létalité (%)', mode='lines+markers', line=dict(color=COLOR_CFR), marker=dict(color=COLOR_CFR), yaxis='y2'))
-            fig = apply_plotly_value_annotations(fig, annot_vals)
-            fig.update_layout(
-                title='Cas hebdomadaires et létalité',
-                xaxis_title='Semaine épidémiologique',
-                yaxis_title='Nombre de cas',
-                yaxis2=dict(title='Létalité (%)', overlaying='y', side='right')
-            )
-            st.plotly_chart(fig, width='stretch', key='oms_week_cases_cfr_combo')
-            with st.expander('Table hebdomadaire'):
-                st_dataframe_safe(weekly_desc)
-        else:
-            st.info("Aucune variable semaine exploitable détectée.")
+        st.subheader("2. Dimension temporelle — synthèse renvoyée à l’onglet de surveillance")
+        st.info("Les graphiques temporels détaillés (cas hebdomadaires, décès hebdomadaires et létalité observée) sont présentés dans l’onglet **Surveillance épidémiologique, létalité et promptitude de notification** afin d’éviter les redondances et de conserver une lecture OMS/IDSR plus lisible.")
 
         st.divider()
-        st.subheader("3. Personne — sexe, âge et pyramides âge/sexe")
+        st.subheader("3. Dimension personne — sexe, âge et pyramides âge-sexe")
         a1, a2 = st.columns(2)
         with a1:
             if COL_SEX in df_f.columns:
@@ -4875,7 +4785,7 @@ with tab4b:
                 st.plotly_chart(fig, width='stretch', key='oms_sex_pie')
                 st_dataframe_safe(sex_tbl)
             else:
-                st.info("Colonne sexe absente.")
+                st.info("La variable Sexe est absente du fichier analysé.")
         with a2:
             age_display_col = None
             if COL_AGEG2 in df_f.columns and df_f[COL_AGEG2].notna().any():
@@ -4898,7 +4808,7 @@ with tab4b:
                     st.plotly_chart(fig, width='stretch', key='oms_age_hist')
                     st.dataframe(age_num.describe().T, width='stretch')
                 else:
-                    st.info("Aucune information d'âge exploitable.")
+                    st.info("Aucune information d’âge exploitable n’a été détectée.")
 
         df_desc = df_f.copy()
         df_desc['Tranche_age_4cat_std'] = derive_age_4cat_generic(df_desc)
@@ -4919,7 +4829,7 @@ with tab4b:
                     )
                     st_plot(fig, key='oms_pyr_4cat')
                 else:
-                    st.info("Impossible de construire la pyramide 4 catégories.")
+                    st.info("Impossible de générer la pyramide des âges en 4 catégories.")
             with p2:
                 if df_desc['Tranche_age_5ans_std'].notna().any():
                     fig = plot_pyramide_symetrique(
@@ -4934,16 +4844,16 @@ with tab4b:
                     )
                     st_plot(fig, key='oms_pyr_5ans')
                 else:
-                    st.info("Impossible de construire la pyramide 5 ans.")
+                    st.info("Impossible de générer la pyramide des âges en classes de 5 ans.")
         else:
-            st.info("Pyramides non disponibles : il faut Sexe + visualisations custom.")
+            st.info("Les pyramides ne sont pas disponibles : la variable Sexe et les visualisations personnalisées sont requises.")
 
         st.divider()
-        st.subheader("4. Lieu — répartition par province, zone de santé et aire de santé")
+        st.subheader("4. Dimension lieu — répartition par province, zone de santé et aire de santé")
         geo_cols = [c for c in [COL_PROV, COL_ZS, COL_AS] if c in df_f.columns]
         if geo_cols:
-            geo_choice = st.selectbox('Niveau géographique', geo_cols, key='oms_geo_choice')
-            top_n_geo = st.slider('Top N à afficher', 5, 30, 15, key='oms_top_geo')
+            geo_choice = st.selectbox('Niveau géographique d’analyse', geo_cols, key='oms_geo_choice')
+            top_n_geo = st.slider('Nombre de catégories à afficher', 5, 30, 15, key='oms_top_geo')
             geo_tbl = build_frequency_table(df_f, geo_choice, top_n=top_n_geo)
             fig = px.bar(geo_tbl, x=geo_choice, y='n', title=f'Répartition des cas par {geo_choice}')
             fig.update_layout(xaxis_tickangle=-45)
@@ -4951,10 +4861,10 @@ with tab4b:
             st.plotly_chart(fig, width='stretch', key='oms_geo_bar')
             st_dataframe_safe(geo_tbl)
         else:
-            st.info("Aucune variable géographique standard détectée.")
+            st.info("Aucune variable géographique standard n’a été détectée.")
 
         st.divider()
-        st.subheader("5. Laboratoire — résumé simple")
+        st.subheader("5. Composante laboratoire — résumé opérationnel")
         lab_tbl = build_simple_lab_table(df_f)
         if not lab_tbl.empty:
             l1, l2 = st.columns([1, 1])
@@ -4966,10 +4876,10 @@ with tab4b:
                 fig = apply_plotly_value_annotations(fig, annot_vals)
                 st.plotly_chart(fig, width='stretch', key='oms_lab_bar')
         else:
-            st.info("Aucune variable labo simple détectée (prélèvement / TDR / résultat).")
+            st.info("Aucune variable laboratoire simple n’a été détectée (prélèvement, TDR ou résultat).")
 
         st.divider()
-        st.subheader("6. Délais et autres variables descriptives")
+        st.subheader("6. Délais et autres variables descriptives complémentaires")
         delay_cols_std = [c for c in ['delai_onset_to_adm', 'delai_onset_to_prel'] if c in df_f.columns]
         delay_tbl = build_delay_summary_table(df_f, delay_cols_std)
         if not delay_tbl.empty:
@@ -4984,13 +4894,13 @@ with tab4b:
                     .dropna()
                 )
                 delay_long = delay_long[delay_long['Jours'] >= 0]
-                fig = px.box(delay_long, x='Type_delai', y='Jours', points='outliers', title='Distribution des délais')
+                fig = px.box(delay_long, x='Type_delai', y='Jours', points='outliers', title='Distribution des délais observés')
                 fig = apply_plotly_value_annotations(fig, annot_vals)
                 st.plotly_chart(fig, width='stretch', key='oms_delay_box')
         else:
-            st.info("Délais indisponibles : dates nécessaires absentes ou non exploitables.")
+            st.info("Les délais sont indisponibles : les dates nécessaires sont absentes ou non exploitables.")
 
-        st.markdown("**Tableaux des variables catégorielles**")
+        st.markdown("**Tableaux descriptifs des variables catégorielles**")
         default_cat_candidates = [COL_SEX, COL_PROV, COL_ZS, COL_AS, COL_AGEG2, COL_AGEG, COL_ISSUE, COL_PREL, COL_TDR, COL_TDRR, COL_HOSP, COL_CLASS]
         cat_candidates = [c for c in default_cat_candidates if c in df_f.columns]
         extra_candidates = [c for c in df_f.columns if (not is_numeric_dtype(df_f[c])) and c not in cat_candidates]
@@ -5038,14 +4948,15 @@ with tab4b:
                     else:
                         st_dataframe_safe(build_frequency_table(df_f, c))
         else:
-            st.info("Aucune variable catégorielle exploitable détectée.")
+            st.info("Aucune variable catégorielle exploitable n’a été détectée.")
 
     # =========================
     # TAB 5: Complétude
     # =========================
-with tab5:
+with tab3:
+    render_section_title(4, "Complétude des données et couverture des rapports")
     if IDSR_MODE:
-        st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
+        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
     else:
         tab_help(
             "Comment lire cet onglet",
@@ -5107,19 +5018,19 @@ with tab5:
             # ---- Boutons (on_click = safe) ----
             c1, c2, c3 = st.columns([1, 1, 2])
             with c1:
-                st.button("Tout cocher", key="tab5_all", on_click=_apply_bulk_tab5, args=(True,))
+                st.button("Sélectionner toutes les provinces", key="tab5_all", on_click=_apply_bulk_tab5, args=(True,))
             with c2:
-                st.button("Tout décocher", key="tab5_none", on_click=_apply_bulk_tab5, args=(False,))
+                st.button("Désélectionner toutes les provinces", key="tab5_none", on_click=_apply_bulk_tab5, args=(False,))
             with c3:
-                st.button("Réinitialiser (défaut script)", key="tab5_reset", on_click=_reset_defaults_tab5)
+                st.button("Réinitialiser selon les paramètres par défaut du script", key="tab5_reset", on_click=_reset_defaults_tab5)
 
             # ✅ Provinces attendues (UI Tab5)
             PROVINCES_EPID = [p for p, ok in st.session_state.epidemie_state_tab5.items() if ok]
        
-        st.subheader("Complétude (provinces attendues vs reçues)")
+        st.subheader("Suivi de la complétude de notification : provinces attendues versus provinces effectivement rapportées")
         
         if COL_PROV not in df_f.columns:
-            st.info("Province_notification absente.")
+            st.info("La variable Province_notification est absente du fichier analysé.")
         else:
             if COL_WNUM in df_f.columns and df_f[COL_WNUM].notna().any():
                 last_w = int(df_f[COL_WNUM].max())
@@ -5139,7 +5050,7 @@ with tab5:
             c2.metric("Provinces trouvées", str(nb_rec))
             c3.metric("Complétude (%)", f"{compl:.1f}")
             if missing:
-                st.warning("Manquantes: " + ", ".join(missing))
+                st.warning("Provinces attendues non reçues : " + ", ".join(missing))
         
             with st.expander("Tableau provinces attendues vs reçues"):
                 df_comp = pd.DataFrame({
@@ -5176,13 +5087,13 @@ with tab5:
                 # --- Outils UX (global)
                 cUX1, cUX2, cUX3, cUX4 = st.columns([1.1, 1.1, 1.1, 0.9])
                 with cUX1:
-                    show_pct = st.checkbox("Afficher %", value=False, key="ct_show_pct")
+                    show_pct = st.checkbox("Afficher les pourcentages", value=False, key="ct_show_pct")
                 with cUX2:
-                    show_bar = st.checkbox("Barres (datatable)", value=True, key="ct_show_bar")
+                    show_bar = st.checkbox("Afficher les barres dans le tableau", value=True, key="ct_show_bar")
                 with cUX3:
-                    tbl_height = st.number_input("Hauteur tableau", min_value=250, max_value=1200, value=520, step=50, key="ct_tbl_height")
+                    tbl_height = st.number_input("Hauteur du tableau", min_value=250, max_value=1200, value=520, step=50, key="ct_tbl_height")
                 with cUX4:
-                    do_download = st.checkbox("Activer export", value=True, key="ct_export_on")
+                    do_download = st.checkbox("Activer l’export", value=True, key="ct_export_on")
         
                 # --- Choix du niveau d’agrégation (on maintient les 3 options)
                 level = st.radio(
@@ -5213,7 +5124,7 @@ with tab5:
                 # 1) Province (occurrences)
                 if level == "Province (occurrences)":
                     if COL_PROV not in df_scope.columns:
-                        st.info("Colonne Province_notification absente.")
+                        st.info("La variable Province_notification est absente du fichier analysé.")
                     else:
                         piv = (
                             df_scope.assign(_prov=df_scope[COL_PROV].fillna("Inconnu"))
@@ -5254,7 +5165,7 @@ with tab5:
                             _show_table(piv, "province_occurrences")
         
                     with st.expander("Graphique (top provinces)"):
-                        topk = st.number_input("Top K", min_value=5, max_value=30, value=15, step=1, key="ct_topk_prov")
+                        topk = st.number_input("Nombre de provinces à afficher", min_value=5, max_value=30, value=15, step=1, key="ct_topk_prov")
                         figp = px.bar(piv.head(int(topk)), x=COL_PROV, y="Occurrences", title="Top provinces – occurrences")
                         figp.update_layout(xaxis_tickangle=-45)
                         figp = apply_plotly_value_annotations(figp, annot_vals)
@@ -5263,7 +5174,7 @@ with tab5:
                 # 2) Province + Zone de santé
                 elif level == "Province + Zone de santé":
                     if (COL_PROV not in df_scope.columns) or (COL_ZS not in df_scope.columns):
-                        st.info("Colonnes Province_notification / Zone_de_sante_notification absentes.")
+                        st.info("Les variables Province_notification et/ou Zone_de_sante_notification sont absentes.")
                     else:
                         colA, colB, colC = st.columns([1.2, 1.2, 1.6])
                         with colA:
@@ -5275,9 +5186,9 @@ with tab5:
                                 key="ct_view_mode_pz"
                             )
                         with colB:
-                            limit_zones = st.checkbox("Limiter zones (perf)", value=True, key="ct_limit_zones_pz")
+                            limit_zones = st.checkbox("Limiter le nombre de zones de santé (performance)", value=True, key="ct_limit_zones_pz")
                         with colC:
-                            top_z = st.number_input("Top zones (si limitation)", min_value=10, max_value=2000, value=250, step=25, key="ct_top_z_pz")
+                            top_z = st.number_input("Nombre maximum de zones de santé", min_value=10, max_value=2000, value=250, step=25, key="ct_top_z_pz")
         
                         df_scope2 = df_scope.copy()
                         if limit_zones:
@@ -5313,7 +5224,7 @@ with tab5:
                         )
         
                         if view_mode == "Top N (table longue)":
-                            top_n = st.number_input("Afficher Top N lignes", min_value=10, max_value=20000, value=500, step=50, key="ct_topn_long")
+                            top_n = st.number_input("Nombre maximum de lignes à afficher", min_value=10, max_value=20000, value=500, step=50, key="ct_topn_long")
                             df_show = piv.head(int(top_n)).copy()
         
                             if show_bar:
@@ -5368,7 +5279,7 @@ with tab5:
                                 st_dataframe_safe(tot_prov)
         
                         with st.expander("Graphique (top provinces)"):
-                            topk = st.number_input("Top K", min_value=5, max_value=30, value=15, step=1, key="ct_topk_pz")
+                            topk = st.number_input("Nombre de provinces à afficher", min_value=5, max_value=30, value=15, step=1, key="ct_topk_pz")
                             figp = px.bar(tot_prov.head(int(topk)), x=COL_PROV, y="Occurrences", title="Top provinces – occurrences (scope)")
                             figp.update_layout(xaxis_tickangle=-45)
                             figp = apply_plotly_value_annotations(figp, annot_vals)
@@ -5377,7 +5288,7 @@ with tab5:
                 # 3) Tableau croisé Province × Zone
                 else:
                     if (COL_PROV not in df_scope.columns) or (COL_ZS not in df_scope.columns):
-                        st.info("Colonnes Province_notification / Zone_de_sante_notification absentes.")
+                        st.info("Les variables Province_notification et/ou Zone_de_sante_notification sont absentes.")
                     else:
                         cA, cB, cC = st.columns([1.1, 1.3, 1.6])
                         with cA:
@@ -5442,9 +5353,11 @@ with tab5:
     # =========================
     # TAB 6: DATA & EXPORT
     # =========================
-with tab6:
+with tab3:
+    st.divider()
+    render_section_title(5, "Extraction, revue et export des données")
     if IDSR_MODE:
-        st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
+        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
     else:
         tab_help(
             "Comment lire cet onglet",
@@ -5452,7 +5365,7 @@ with tab6:
             **🎯 Objectif** : Consulter et exporter les données filtrées pour analyses/partage.
         
             **📖 Utilisation**
-            - Export **CSV/Excel** pour analyses complémentaires (R/Python/DHIS2).
+            - Exportation **CSV/Excel** pour analyses complémentaires (R/Python/DHIS2).
             - Vérifier les filtres actifs avant export.
         
             **⚠️ Points d’attention**
@@ -5461,7 +5374,7 @@ with tab6:
             expanded=False
         )
         
-        st.subheader("Données filtrées & export")
+        st.subheader("Extraction des données filtrées, traçabilité et options d’export")
         
         st_dataframe_safe(df_f, height=420)
         
@@ -5474,8 +5387,7 @@ with tab6:
         )
         
         try:
-            import io
-            buffer = io.BytesIO()
+            buffer = BytesIO()
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
                 df_f.to_excel(writer, sheet_name="LL_Cholera", index=False)
         
@@ -5486,14 +5398,16 @@ with tab6:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         except Exception:
-            st.info("Export Excel indisponible (openpyxl ?).")
+            st.info("Exportation Excel indisponible (openpyxl ?).")
         
     # =========================
     # TAB 7 — Labo / qualité / signaux
     # =========================
-with tab7:
+with tab3:
+    st.divider()
+    render_section_title(6, "Qualité des données et alertes de gestion")
     if IDSR_MODE:
-        st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
+        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
     else:
         tab_help(
             "Comment lire cet onglet",
@@ -5514,7 +5428,7 @@ with tab7:
             expanded=False
         )
         
-        st.subheader("Qualité des données & alertes opérationnelles")
+        st.subheader("Contrôle qualité des données et alertes opérationnelles de surveillance")
         
         # -------- Helpers (robustes) --------
         def _get_pct_from_cascade(casc: pd.DataFrame, key: str) -> float:
@@ -5645,7 +5559,7 @@ with tab7:
         
             flags = qc_flags(df_f)
             if flags.empty:
-                st.success("Aucune incohérence détectée selon les règles actuelles.")
+                st.success("Aucune incohérence n’a été détectée selon les règles de contrôle actuellement appliquées.")
             else:
                 # Résumé
                 resume = flags["flag"].value_counts().reset_index()
@@ -5654,7 +5568,7 @@ with tab7:
         
                 # Filtre par flag
                 flag_list = sorted(flags["flag"].dropna().unique().tolist())
-                flag_sel = st.selectbox("Filtrer le détail par flag", ["Tous"] + flag_list, index=0)
+                flag_sel = st.selectbox("Filtrer le détail par type d’incohérence", ["Tous"] + flag_list, index=0)
         
                 # Détail (merge + colonnes utiles)
                 cols_show = [c for c in [
@@ -5668,7 +5582,7 @@ with tab7:
                 if flag_sel != "Tous":
                     detail = detail[detail["flag"] == flag_sel]
         
-                st.caption("Détail des lignes concernées (filtré) — max 500 lignes")
+                st.caption("Détail des lignes concernées (filtré, maximum 500 lignes)")
                 st.dataframe(detail[["flag"] + cols_show].head(500), width="stretch", height=420)
         
         # ==========================================================
@@ -5684,17 +5598,17 @@ with tab7:
             ]
         
             group_choices = [c for c in [COL_PROV, COL_ZS, "YW", COL_WNUM] if c in df_f.columns]
-            group_for_comp = st.selectbox("Complétude par", group_choices, index=0 if group_choices else 0)
+            group_for_comp = st.selectbox("Analyser la complétude par", group_choices, index=0 if group_choices else 0)
         
             comp = completeness_table(df_f, champs_cles, by=group_for_comp) if group_choices else pd.DataFrame()
         
             if comp.empty:
-                st.info("Impossible de calculer la complétude (colonne group ou champs absents).")
+                st.info("Impossible de calculer la complétude : variable de regroupement ou champs requis absents.")
             else:
                 st_dataframe_safe(comp, height=520)
         
                 # Bar chart plus lisible: top N pires scores
-                topn = st.slider("Afficher les N groupes les moins complets", min_value=10, max_value=80, value=25, step=5)
+                topn = st.slider("Nombre de groupes les moins complets à afficher", min_value=10, max_value=80, value=25, step=5)
                 comp_plot = comp.sort_values("score_completude_%").head(topn)
         
                 figc = px.bar(
@@ -5715,7 +5629,7 @@ with tab7:
         
             cascad = cascade_metrics(df_f) if n_total else pd.DataFrame()
             if cascad.empty:
-                st.info("Cascade indisponible (aucune donnée après filtres).")
+                st.info("La cascade est indisponible : aucune donnée n’est disponible après application des filtres.")
             else:
                 st_dataframe_safe(cascad)
         
@@ -5756,12 +5670,12 @@ with tab7:
         # ==========================================================
         with st.expander("🔎 Alertes tendance (hausse vs baseline simple)", expanded=False):
             alert_group_choices = [c for c in [COL_PROV, COL_ZS] if c in df_f.columns]
-            alert_group = st.selectbox("Grouper les alertes par", alert_group_choices, index=0 if alert_group_choices else 0)
+            alert_group = st.selectbox("Regrouper les alertes par", alert_group_choices, index=0 if alert_group_choices else 0)
         
             alerts = alerts_weekly_simple(df_f, alert_group) if alert_group_choices else pd.DataFrame()
         
             if alerts.empty:
-                st.info("Alertes indisponibles (YW manquant, groupe absent, ou pas assez de semaines).")
+                st.info("Les alertes sont indisponibles : variable temporelle absente, groupe indisponible ou historique insuffisant.")
             else:
                 # Dernière semaine observée
                 last_yw = alerts["YW"].dropna().max()
@@ -5793,30 +5707,25 @@ with tab7:
                     figa = apply_plotly_value_annotations(figa, annot_vals)
                     st.plotly_chart(figa, width="stretch")
                 else:
-                    st.success("Aucun signal détecté avec les seuils actuels (baseline*1.5 et Cas≥10).")
-with tab8:
+                    st.success("Aucun signal n’a été détecté avec les seuils actuellement définis (baseline × 1,5 et cas ≥ 10).")
+with tab4:
     if IDSR_MODE:
-        st.info("🧭 Mode **IDSR agrégé (hebdo)** : les analyses line list ne sont pas actives. Va dans l'onglet **9) IDSR**.")
+        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
     else:
-        import pandas as pd
-        import numpy as np
-        import plotly.express as px
-        from datetime import date
-
-        st.markdown("## SITREP")
+        render_section_title(1, "Synthèse automatique de la situation épidémiologique (SITREP)")
 
         tab_help(
             "Comment lire cet onglet",
             """
-            ### 📰 Objectif du SITREP automatique
+            ### 📰 Objectif du SITREP épidémiologique automatique
             Cet onglet génère un **rapport épidémiologique hebdomadaire** à partir des données actuellement filtrées dans le tableau de bord.
 
             ---
 
             ### ⚙️ Comment ça fonctionne
-            - Le SITREP utilise **les données filtrées (df_f)** : provinces, ZS, période, classification, etc.
+            - Le SITREP épidémiologique utilise **les données filtrées (df_f)** : provinces, ZS, période, classification, etc.
             - Les indicateurs sont recalculés **automatiquement** selon la **SE** et l’**année** sélectionnées.
-            - Si tu changes les filtres du dashboard, le SITREP se met à jour.
+            - Si tu changes les filtres du dashboard, le SITREP épidémiologique se met à jour.
 
             ---
 
@@ -5845,16 +5754,16 @@ with tab8:
 
             **5️⃣ Démographie & délais**  
             - Répartition par sexe / tranche d’âge
-            - Délais (début maladie → admission)
+            - Délais : début de maladie → admission
 
             ---
 
-            ### 📤 Export
-            Tu peux télécharger le SITREP généré automatiquement au format **PDF** en bas de page.
+            ### 📤 Exportation
+            Tu peux télécharger le SITREP épidémiologique généré automatiquement au format **PDF** en bas de page.
             Le document exporté reflète exactement les données visibles dans cet onglet.
 
             ---
-            ℹ️ **Astuce :** Pour produire le SITREP officiel de la semaine, règle d’abord les filtres du tableau de bord (période, province, etc.), puis viens ici pour exporter.
+            ℹ️ **Astuce :** Pour produire le SITREP épidémiologique officiel de la semaine, règle d’abord les filtres du tableau de bord (période, province, etc.), puis viens ici pour exporter.
             """,
             expanded=False
         )
@@ -5911,7 +5820,7 @@ with tab8:
             annee = int(y_max)
 
         st.caption(
-            f"Scope SITREP: df_f (filtré). SE disponibles: {w_min}–{w_max}. "
+            f"Scope SITREP épidémiologique: df_f (filtré). SE disponibles: {w_min}–{w_max}. "
             f"Années disponibles: {y_min}–{y_max}."
         )
 
@@ -6036,7 +5945,7 @@ with tab8:
         # =========================================================
         def _build_sitrep_payload_from_df(df_scope, se, annee, date_pub, min_cas_zs=30, min_cas_prov=50):
             """
-            Build un payload SITREP à partir de df_scope (ici df_f filtré).
+            Build un payload SITREP épidémiologique à partir de df_scope (ici df_f filtré).
 
             - Filtre SE/Année pour indicateurs de la semaine (d_se)
             - Calcule cumuls année jusqu'à la SE (d_cum)
@@ -6126,22 +6035,10 @@ with tab8:
             }
 
             # Cascade labo (si fonction dispo)
-            if "cascade_metrics" in globals() and callable(globals()["cascade_metrics"]):
-                try:
-                    payload["cascade"] = globals()["cascade_metrics"](d_se)
-                except Exception:
-                    payload["cascade"] = pd.DataFrame()
-            else:
-                payload["cascade"] = pd.DataFrame()
+            payload["cascade"] = call_optional_function("cascade_metrics", d_se, default=pd.DataFrame())
 
-            # Alertes (dernière semaine disponible) — sur df_scope filtré
-            if "alerts_weekly_simple" in globals() and callable(globals()["alerts_weekly_simple"]):
-                try:
-                    payload["alertes_last"] = globals()["alerts_weekly_simple"](d, COL_PROV) if COL_PROV in d.columns else pd.DataFrame()
-                except Exception:
-                    payload["alertes_last"] = pd.DataFrame()
-            else:
-                payload["alertes_last"] = pd.DataFrame()
+            # Alertes sur la dernière semaine disponible — sur df_scope filtré
+            payload["alertes_last"] = call_optional_function("alerts_weekly_simple", d, COL_PROV, default=pd.DataFrame()) if COL_PROV in d.columns else pd.DataFrame()
 
             # ---- ENRICHMENTS ----
             # Weekly summary (sur df_scope filtré)
@@ -6229,7 +6126,7 @@ with tab8:
             return payload
 
         # Paramètres de seuils (gravité)
-        st.markdown("### Paramètres (seuils gravité)")
+        st.markdown("### Paramètres d’analyse et seuils d’alerte")
         cS1, cS2 = st.columns(2)
         with cS1:
             min_cas_zs = st.number_input("Seuil min cas ZS (pour CFR critique)", min_value=10, max_value=200, value=30, step=5)
@@ -6246,7 +6143,7 @@ with tab8:
                 for b in sitrep_payload["points_saillants"]:
                     st.markdown(f"- {b}")
             else:
-                st.caption("Aucun point saillant (données insuffisantes pour le scope).")
+                st.caption("Aucun point saillant n’a été identifié pour le périmètre sélectionné.")
 
         with st.expander("2) Situation épidémiologique", expanded=True):
             k = sitrep_payload["kpi"]
@@ -6275,12 +6172,12 @@ with tab8:
             if table_epi is not None and isinstance(table_epi, pd.DataFrame) and not table_epi.empty:
                 st_dataframe_safe(table_epi, height=520)
             else:
-                st.caption("Table ZS indisponible (pas de données sur la SE/année ou colonne ZS manquante).")
+                st.caption("Le tableau des zones de santé est indisponible : absence de données sur la période sélectionnée ou variable ZS manquante.")
 
             # Courbe hebdo (si dispo)
             wk = sitrep_payload.get("weekly")
             if isinstance(wk, pd.DataFrame) and not wk.empty and "YW" in wk.columns:
-                st.markdown("### Évolution hebdomadaire (scope filtré)")
+                st.markdown("### Évolution hebdomadaire sur le périmètre filtré")
                 fig = px.line(wk, x="YW", y=["Cas", "Décès"], markers=True, title="Cas et décès par semaine")
                 fig.update_layout(xaxis_title="Semaine (YW)", yaxis_title="Nombre")
                 fig = apply_plotly_value_annotations(fig, annot_vals)
@@ -6292,20 +6189,20 @@ with tab8:
                 st.markdown("### Cascade prélèvement → TDR → résultat")
                 st_dataframe_safe(cascad, height=320)
             else:
-                st.caption("Cascade indisponible (fonction/colonnes manquantes ou pas de données sur la SE).")
+                st.caption("La cascade est indisponible : fonction absente, variables manquantes ou absence de données sur la semaine sélectionnée.")
 
             al = sitrep_payload.get("alertes_last")
             if al is not None and isinstance(al, pd.DataFrame) and not al.empty:
-                st.markdown("### Alertes (dernière semaine disponible)")
+                st.markdown("### Signaux d’alerte sur la dernière semaine disponible")
                 cols = [c for c in ["YW", "Cas", "Cas_prev", "var_%", "baseline_3w", "signal"] if c in al.columns]
                 st_dataframe_safe(al[cols] if cols else al, height=420)
             else:
-                st.caption("Alertes indisponibles (fonction absente ou pas assez d’historique).")
+                st.caption("Les alertes sont indisponibles : fonction absente ou historique insuffisant.")
 
         with st.expander("4) Analyse spatiale & gravité", expanded=True):
             provt = sitrep_payload.get("prov_table")
             if provt is not None and isinstance(provt, pd.DataFrame) and not provt.empty:
-                st.markdown("### Provinces – Cas / Décès / CFR (SE)")
+                st.markdown("### Provinces — cas, décès et létalité (semaine sélectionnée)")
                 st_dataframe_safe(provt, height=360)
 
             provcrit = sitrep_payload.get("prov_cfr_crit")
@@ -6323,47 +6220,47 @@ with tab8:
         with st.expander("5) Démographie & délais", expanded=False):
             sext = sitrep_payload.get("sex_table")
             if sext is not None and isinstance(sext, pd.DataFrame) and not sext.empty:
-                st.markdown("### Répartition par sexe (SE)")
+                st.markdown("### Répartition des cas par sexe (semaine sélectionnée)")
                 st_dataframe_safe(sext, height=220)
 
             aget = sitrep_payload.get("age_table")
             if aget is not None and isinstance(aget, pd.DataFrame) and not aget.empty:
-                st.markdown("### Répartition par tranches d’âge (SE)")
+                st.markdown("### Répartition des cas par tranches d’âge (semaine sélectionnée)")
                 st_dataframe_safe(aget, height=320)
 
             delais = sitrep_payload.get("delais")
             if delais is not None and isinstance(delais, pd.DataFrame) and not delais.empty:
-                st.markdown("### Délais (début maladie → admission)")
+                st.markdown("### Délais : début de maladie → admission")
                 st_dataframe_safe(delais, height=140)
 
             interp = sitrep_payload.get("interpretation", [])
             if interp:
-                st.markdown("### Interprétation épidémiologique (auto)")
+                st.markdown("### Interprétation épidémiologique automatisée pour la décision")
                 for line in interp:
                     st.markdown(f"- {line}")
 
         # =========================================================
-        # 5) Export PDF
+        # 5) Exportation PDF
         # =========================================================
         st.divider()
-        st.markdown("### Export")
+        st.markdown("### Exportation")
 
         if "export_sitrep_pdf" in globals() and callable(export_sitrep_pdf):
             try:
                 pdf_bytes = export_sitrep_pdf(sitrep_payload)
                 st.download_button(
-                    "⬇️ Télécharger le SITREP (PDF)",
+                    "⬇️ Télécharger le SITREP épidémiologique (PDF)",
                     data=pdf_bytes,
-                    file_name=f"SITREP_CHOLERA_SE{int(semaine):02d}_{int(annee)}.pdf",
+                    file_name=f"SITREP épidémiologique_CHOLERA_SE{int(semaine):02d}_{int(annee)}.pdf",
                     mime="application/pdf",
                     type="primary",
                     key="sitrep_dl_pdf",
                 )
                 st.caption("ℹ️ Si les images n’apparaissent pas dans le PDF : installe `kaleido` (Plotly → PNG). Le PDF reste exportable sans images.")
             except Exception as e:
-                st.error(f"Erreur export PDF : {e}")
+                st.error(f"Erreur lors de l’exportation PDF : {e}")
         else:
-            st.error("La fonction export_sitrep_pdf(payload) n'est pas définie dans ce script.")
+            st.error("La fonction export_sitrep_pdf(payload) n’est pas définie dans ce script.")
 
 # =========================
 # TAB 9 — IDSR : Helpers robuste
@@ -6542,8 +6439,8 @@ def to_numeric_cols(df: pd.DataFrame, cols) -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
-with tab9:
-    st.markdown("## IDSR – Analyses")
+with tab5:
+    st.markdown("## IDSR — Surveillance agrégée hebdomadaire")
 
     tab_help(
         "Comment lire cet onglet",
@@ -6564,13 +6461,13 @@ with tab9:
     # -------------------------------------------------------------------------
     # 1) Chargement fichier IDSR
     # -------------------------------------------------------------------------
-    st.caption("📥 Charger un fichier IDSR agrégé (.xlsx).")
+    st.caption("Téléverser un fichier IDSR agrégé (.xlsx).")
     # 2 façons de téléverser :
     #  - Sidebar (si la source sélectionnée est IDSR)
     #  - Ici dans l’onglet 9 (toujours disponible)
-    up_from_sidebar = idsr_upl_side if ('idsr_upl_side' in globals() or 'idsr_upl_side' in locals()) else None
+    up_from_sidebar = st.session_state.get('idsr_upl_side')
     if up_from_sidebar is not None:
-        st.caption("✅ Fichier IDSR détecté depuis la sidebar (mode IDSR).")
+        st.caption("Fichier IDSR détecté depuis la barre latérale (mode IDSR).")
     up = up_from_sidebar or st.file_uploader("Fichier IDSR agrégé", type=["xlsx"], key="idsr_upl")
 
     default_path = "rdc_compilation_IDS_RDC_SE01_SE03_25_01_2026_00_07_33.xlsx"
@@ -6595,9 +6492,9 @@ with tab9:
                 src = None
 
     if df_idsr.empty:
-        st.info("Charge un fichier IDSR agrégé (xlsx) pour afficher les analyses.")
+        st.info("Veuillez charger un fichier IDSR agrégé (.xlsx) pour afficher les analyses.")
     else:
-        st.success(f"Fichier chargé: {src} | Lignes: {len(df_idsr):,}")
+        st.success(f"Fichier chargé : {src} | Lignes: {len(df_idsr):,}")
 
         # ---------------------------------------------------------------------
         # 2) Harmonisation colonnes (BRUT vs COMPILÉ)
@@ -7165,7 +7062,7 @@ with tab9:
 
 
         # Filtre semaines selon mode
-        # Copie avant filtre semaines: utile pour 'Situation – dernière semaine' (focus sur semaine max)
+        # Copie avant filtre semaines: utile pour 'Situation épidémiologique — dernière semaine disponible' (focus sur semaine max)
         df9_base = df9.copy()
 
         # Filtre semaines selon mode
@@ -7177,7 +7074,7 @@ with tab9:
             df9["Num_semaine_epid"] = pd.to_numeric(df9["Num_semaine_epid"], errors="coerce")
             df9 = df9[df9["Num_semaine_epid"].between(w_min, w_max, inclusive="both")]
 
-        st.caption(f"📌 Périmètre filtré : {len(df9):,} lignes")
+        st.caption(f"📌 Périmètre analytique filtré : {len(df9):,} lignes")
         # -------------------------------------------------------------
         # Plusieurs années en mode WNUM → pas de deltas interprétables
         # -------------------------------------------------------------
@@ -7194,7 +7091,7 @@ with tab9:
 
 
         # ---------------------------------------------------------------------
-        # 8.b) Résumé – période filtrée (confort utilisateur)
+        # 8.b) Résumé de la période filtrée (confort utilisateur)
         # ---------------------------------------------------------------------
         if not df9.empty:
             _tot_cas = pd.to_numeric(df9.get("Total_cas"), errors="coerce").sum(skipna=True) if "Total_cas" in df9.columns else np.nan
@@ -7204,7 +7101,7 @@ with tab9:
             _n_prov = df9[COL_PROV_ID].nunique(dropna=True) if COL_PROV_ID in df9.columns else 0
             _n_zs = df9[COL_ZS_ID].nunique(dropna=True) if COL_ZS_ID in df9.columns else 0
 
-            st.markdown("### Résumé – période filtrée")
+            st.markdown("### Résumé de la période filtrée")
             r1, r2, r3, r4, r5 = st.columns(5)
             r1.metric("Cas (total)", f"{int(_tot_cas):,}" if pd.notna(_tot_cas) else "NA")
             r2.metric("Décès (total)", f"{int(_tot_dec):,}" if pd.notna(_tot_dec) else "NA")
@@ -7214,7 +7111,7 @@ with tab9:
 
 
         if df9.empty:
-            st.info("Aucune donnée après filtrage.")
+            st.info("Aucune donnée n’est disponible après application des filtres analytiques.")
         else:
             st.divider()
 
@@ -7224,7 +7121,7 @@ with tab9:
             required_cols = ["Total_cas", "Total_deces"]
             missing = [c for c in required_cols if c not in df9.columns]
             if missing:
-                st.error(f"Colonnes manquantes pour l'analyse temporelle : {', '.join(missing)}")
+                st.error(f"Variables manquantes pour l’analyse temporelle : {', '.join(missing)}")
             else:
                 # Agrégation hebdo
                 weekly = df9.groupby(["TIME_LAB", "TIME_KEY"], as_index=False).agg(
@@ -7263,7 +7160,7 @@ with tab9:
                 # 9.b) Comparaison "Tranches d’âge" vs "Totaux" (visualisation)
                 # -------------------------------------------------------------
                 # Objectif : afficher 2 lignes de KPI (Cas/Décès/CFR) :
-                # - Ligne 1 : Somme tranches d’âge (Cas_* / Deces_*) => détecte incohérences
+                # - Ligne 1 : somme des tranches d’âge (Cas_* / Deces_*) => détecte incohérences
                 # - Ligne 2 : Totaux (Total_cas / Total_deces) => référence opérationnelle
 
                 age_case_cols = [c for c in ["Cas_tnn", "Cas_0_11mois", "Cas_12_59mois", "Cas_5_14ans", "Cas_15plus"] if c in df9.columns]
@@ -7292,7 +7189,7 @@ with tab9:
                     )
                     weekly_age_sorted = weekly_age.sort_values("TIME_KEY").reset_index(drop=True)
                 # KPI dernière semaine + variati# KPI dernière semaine (focus sur semaine max) + variation vs semaine-1
-                def pct_change(cur, prv):
+                def pct_change_safe(cur, prv):
                     if prv is None or pd.isna(prv) or prv == 0 or pd.isna(cur):
                         return None
                     return (cur - prv) / prv * 100
@@ -7361,11 +7258,11 @@ with tab9:
                     last = weekly_sorted.iloc[-1]
                     prev = weekly_sorted.iloc[-2] if len(weekly_sorted) >= 2 else None
 
-                d_cas = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change(last["Cas"], prev["Cas"]) if (last is not None and prev is not None) else None)
-                d_dec = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change(last["Deces"], prev["Deces"]) if (last is not None and prev is not None) else None)
-                d_cfr = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change(last["CFR_calc_%"], prev["CFR_calc_%"]) if (last is not None and prev is not None) else None)
+                d_cas = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change_safe(last["Cas"], prev["Cas"]) if (last is not None and prev is not None) else None)
+                d_dec = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change_safe(last["Deces"], prev["Deces"]) if (last is not None and prev is not None) else None)
+                d_cfr = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change_safe(last["CFR_calc_%"], prev["CFR_calc_%"]) if (last is not None and prev is not None) else None)
 
-                st.markdown("### Situation – dernière semaine")
+                st.markdown("### Situation épidémiologique — dernière semaine disponible")
 
                 # Préparer la série "tranches d’âge" (Cas_* / Deces_*) pour comparer avec les totaux
                 age_case_cols = [c for c in ["Cas_tnn", "Cas_0_11mois", "Cas_12_59mois", "Cas_5_14ans", "Cas_15plus"] if c in df9.columns]
@@ -7388,7 +7285,7 @@ with tab9:
                     )
                     weekly_age_sorted = weekly_age.sort_values("TIME_KEY").reset_index(drop=True)
 
-                def pct_change(cur, prv):
+                def pct_change_safe(cur, prv):
                     if prv is None or pd.isna(prv) or prv == 0 or pd.isna(cur):
                         return None
                     return (cur - prv) / prv * 100
@@ -7456,7 +7353,7 @@ with tab9:
                 if week_filter_mode == "WNUM" and "Annee_epid" in df_last_week.columns:
                     _yrs = pd.to_numeric(df_last_week["Annee_epid"], errors="coerce").dropna().unique().tolist()
                     if len(_yrs) > 1:
-                        st.info("ℹ️ Plusieurs années détectées pour cette semaine (mode BRUT / WNUM) : les variations vs semaine-1 sont désactivées.")
+                        st.info("Plusieurs années ont été détectées pour cette semaine (mode brut / WNUM) : les variations par rapport à la semaine précédente sont désactivées.")
                         disable_deltas = True
 
                 # 2) Affichage métriques "tranches d'âge" pour la semaine max
@@ -7469,18 +7366,18 @@ with tab9:
                     dec_age_prev = df_prev_week[age_death_cols].apply(pd.to_numeric, errors="coerce").sum(axis=0, skipna=True).sum() if (not df_prev_week.empty) else np.nan
                     cfr_age_prev = (float(dec_age_prev) / float(cas_age_prev) * 100.0) if (pd.notna(cas_age_prev) and cas_age_prev > 0 and pd.notna(dec_age_prev)) else np.nan
 
-                    d_cas_a = None if ("disable_deltas" in locals() and disable_deltas) else pct_change(cas_age_last, cas_age_prev)
-                    d_dec_a = None if ("disable_deltas" in locals() and disable_deltas) else pct_change(dec_age_last, dec_age_prev)
-                    d_cfr_a = None if ("disable_deltas" in locals() and disable_deltas) else pct_change(cfr_age_last, cfr_age_prev)
+                    d_cas_a = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_safe(cas_age_last, cas_age_prev)
+                    d_dec_a = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_safe(dec_age_last, dec_age_prev)
+                    d_cfr_a = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_safe(cfr_age_last, cfr_age_prev)
 
-                    st.caption("Ligne 1 : Somme tranches d’âge (Cas_* / Deces_*)")
+                    st.caption("Ligne 1 : somme des tranches d’âge (Cas_* / Deces_*)")
                     a1, a2, a3, a4 = st.columns(4)
                     a1.metric("Semaine", str(last_lab_focus))
                     a2.metric("Cas (tranches)", f"{int(cas_age_last):,}" if pd.notna(cas_age_last) else "NA", delta=None if d_cas_a is None else f"{d_cas_a:.1f}% vs semaine-1")
                     a3.metric("Décès (tranches)", f"{int(dec_age_last):,}" if pd.notna(dec_age_last) else "NA", delta=None if d_dec_a is None else f"{d_dec_a:.1f}% vs semaine-1")
                     a4.metric("CFR (tranches)", f"{cfr_age_last:.2f}%" if pd.notna(cfr_age_last) else "NA", delta=None if d_cfr_a is None else f"{d_cfr_a:.1f}% vs semaine-1")
                 else:
-                    st.caption("Ligne 1 : Somme tranches d’âge (Cas_* / Deces_*) — indisponible (colonnes manquantes ou aucune donnée)")
+                    st.caption("Ligne 1 : somme des tranches d’âge (Cas_* / Deces_*) — indisponible (colonnes manquantes ou aucune donnée)")
 
                 
                 # -----------------------------------------------------------------
@@ -7495,11 +7392,11 @@ with tab9:
                 tot_dec_prevwk = pd.to_numeric(df_prev_week.get("Total_deces"), errors="coerce").sum(skipna=True) if (("Total_deces" in df9.columns) and (not df_prev_week.empty)) else np.nan
                 cfr_tot_prevwk = (float(tot_dec_prevwk) / float(tot_cas_prevwk) * 100.0) if (pd.notna(tot_cas_prevwk) and tot_cas_prevwk > 0 and pd.notna(tot_dec_prevwk)) else np.nan
 
-                d_cas_t = None if ("disable_deltas" in locals() and disable_deltas) else pct_change(tot_cas_lastwk, tot_cas_prevwk)
-                d_dec_t = None if ("disable_deltas" in locals() and disable_deltas) else pct_change(tot_dec_lastwk, tot_dec_prevwk)
-                d_cfr_t = None if ("disable_deltas" in locals() and disable_deltas) else pct_change(cfr_tot_lastwk, cfr_tot_prevwk)
+                d_cas_t = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_safe(tot_cas_lastwk, tot_cas_prevwk)
+                d_dec_t = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_safe(tot_dec_lastwk, tot_dec_prevwk)
+                d_cfr_t = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_safe(cfr_tot_lastwk, cfr_tot_prevwk)
 
-                st.caption("Ligne 2 : Totaux (TOTALCAS / TOTALDECES)")
+                st.caption("Ligne 2 : totaux notifiés (TOTALCAS / TOTALDECES)")
                 k1, k2, k3, k4 = st.columns(4)
                 k1.metric("Semaine", str(last_lab_focus) if last_lab_focus is not None else "NA")
                 k2.metric("Cas (totaux)", f"{int(tot_cas_lastwk):,}" if pd.notna(tot_cas_lastwk) else "NA", delta=None if d_cas_t is None else f"{d_cas_t:.1f}% vs semaine-1")
@@ -7514,7 +7411,7 @@ with tab9:
 
                 if pd.notna(diff_cas) and pd.notna(diff_dec):
                     if (diff_cas == 0) and (diff_dec == 0):
-                        st.success("✅ Aucun écart : TOTALCAS/TOTALDECES = somme des tranches d’âge (semaine max).")
+                        st.success("Aucun écart détecté : TOTALCAS/TOTALDECES correspond à la somme des tranches d’âge sur la semaine maximale.")
                     else:
                         pct_cas = (diff_cas / cas_age_last * 100.0) if ("cas_age_last" in locals() and pd.notna(cas_age_last) and cas_age_last != 0) else np.nan
                         pct_dec = (diff_dec / dec_age_last * 100.0) if ("dec_age_last" in locals() and pd.notna(dec_age_last) and dec_age_last != 0) else np.nan
@@ -7523,7 +7420,7 @@ with tab9:
                             f"Cas={diff_cas:+,} ({pct_cas:.1f}%) | Décès={diff_dec:+,} ({pct_dec:.1f}%)"
                         )
                 else:
-                    st.info("Écart non calculable (colonnes manquantes ou données insuffisantes).")
+                    st.info("Écart non calculable : variables manquantes ou données insuffisantes.")
 
                 # Note: cette section est volontairement centrée sur la semaine max,
                 # même si l'utilisateur change semaine min.
@@ -7532,7 +7429,7 @@ with tab9:
                     if "QC_Date_vs_Semaine" in df9.columns:
                         st.write(df9["QC_Date_vs_Semaine"].value_counts(dropna=False))
                     else:
-                        st.info("QC indisponible (pas de dates source).")
+                        st.info("Le contrôle qualité temporel est indisponible : dates sources absentes.")
 
                 # -----------------------------------------------------------------
                 # 10) Signaux – Top en hausse (dernière semaine vs précédente)
@@ -7564,10 +7461,10 @@ with tab9:
                         prov_delta = prov_delta[prov_delta["Cas"] >= min_cases].sort_values("Delta_cas", ascending=False)
 
                         with st.expander("📈 Top provinces en hausse (dérouler)", expanded=False):
-                            n_up = st.slider("Nombre à afficher", 5, 50, 15, step=5, key="tab9_n_up_prov")
+                            n_up = st.slider("Nombre d’unités à afficher", 5, 50, 15, step=5, key="tab9_n_up_prov")
                             st.dataframe(prov_delta.head(n_up), width="stretch", height=420, hide_index=True)
                     else:
-                        st.info("Top en hausse indisponible (colonne Province ou semaines insuffisantes).")
+                        st.info("Le classement des provinces en hausse est indisponible : variable Province absente ou historique insuffisant.")
 
                     # -----------------------------------------------------------------
                     # 11) Top provinces / ZS sur la période
@@ -7588,7 +7485,7 @@ with tab9:
                                 st.dataframe(top_prov.head(n_prov), width="stretch", height=420, hide_index=True)
                         else:
                             top_prov = None
-                            st.info("Top provinces indisponible (colonnes manquantes).")
+                            st.info("Le classement des provinces est indisponible : variables requises manquantes.")
 
                     with c4:
                         if (COL_PROV_ID in df9.columns) and (COL_ZS_ID in df9.columns) and ("Total_cas" in df9.columns) and ("Total_deces" in df9.columns):
@@ -7604,7 +7501,7 @@ with tab9:
                                 st.dataframe(top_zs.head(n_zs), width="stretch", height=420, hide_index=True)
                         else:
                             top_zs = None
-                            st.info("Top ZS indisponible (colonnes manquantes).")
+                            st.info("Le classement des zones de santé est indisponible : variables requises manquantes.")
 
             # -----------------------------------------------------------------
             # 12) Contrôles cohérence totaux vs tranches d’âge
@@ -7689,15 +7586,15 @@ with tab9:
                     return styles
 
                 # Filtres QC
-                st.markdown("#### Filtres QC")
+                st.markdown("#### Filtres de contrôle qualité")
                 f1, f2, f3, f4 = st.columns(4)
 
                 with f1:
-                    qc_global_sel = st.selectbox("QC global", options=["Tous", "✅ OK", "❌ KO"], index=0, key="tab9_qc_global_sel")
+                    qc_global_sel = st.selectbox("Contrôle qualité global", options=["Tous", "✅ OK", "❌ KO"], index=0, key="tab9_qc_global_sel")
                 with f2:
-                    qc_cas_sel = st.selectbox("QC cas", options=["Tous", "✅ OK", "❌ KO"], index=0, key="tab9_qc_cas_sel")
+                    qc_cas_sel = st.selectbox("Contrôle qualité des cas", options=["Tous", "✅ OK", "❌ KO"], index=0, key="tab9_qc_cas_sel")
                 with f3:
-                    qc_deces_sel = st.selectbox("QC décès", options=["Tous", "✅ OK", "❌ KO"], index=0, key="tab9_qc_deces_sel")
+                    qc_deces_sel = st.selectbox("Contrôle qualité des décès", options=["Tous", "✅ OK", "❌ KO"], index=0, key="tab9_qc_deces_sel")
                 with f4:
                     
                     abs_diff_min = st.number_input(
@@ -7746,7 +7643,7 @@ with tab9:
                         cond = cond | (table_to_show["diff_deces"].fillna(0).abs() >= abs_diff_min)
                     table_to_show = table_to_show[cond]
 
-                st.caption(f"📌 Lignes après filtres QC : {len(table_to_show):,}")
+                st.caption(f"📌 Lignes après application des filtres de contrôle qualité : {len(table_to_show):,}")
 
                 # Colonnes QC à afficher
                 qc_cols = ["QC_Global", "QC_Cas", "QC_Deces"]
@@ -7816,9 +7713,9 @@ with tab9:
                         fig_cas_cfr = apply_plotly_value_annotations(fig_cas_cfr, annot_vals)
                         st.plotly_chart(fig_cas_cfr, width="stretch", key="idsr_hist_cas_cfr")
                     else:
-                        st.info("Colonnes insuffisantes pour tracer l'évolution hebdomadaire (TIME_LAB/Cas).")
+                        st.info("Variables insuffisantes pour tracer l’évolution hebdomadaire (TIME_LAB/Cas).")
                 else:
-                    st.info("Aucune donnée agrégée par semaine disponible après filtrage.")
+                    st.info("Aucune donnée hebdomadaire agrégée n’est disponible après filtrage.")
 
             # 14.2) Camembert par tranche d'âge + tableau associé
             with st.expander("📈 Camembert – répartition des cas par tranche d’âge", expanded=True):
@@ -7883,9 +7780,9 @@ with tab9:
                                 hide_index=True
                             )
                     else:
-                        st.info("Aucune colonne 'Cas_*' par tranche d’âge trouvée dans les données IDSR.")
+                        st.info("Aucune variable 'Cas_*' par tranche d’âge n’a été trouvée dans les données IDSR.")
                 else:
-                    st.info("Aucune donnée après filtrage (impossible de produire la répartition par âge).")
+                    st.info("Aucune donnée n’est disponible après filtrage pour produire la répartition par âge.")
 
 
             # 14.3) Tableau d’évolution par province et semaine épidémiologique
@@ -7919,7 +7816,7 @@ with tab9:
                     # Colonne semaine (unique) : privilégier Année-Semaine si dispo, sinon TIME_KEY, sinon TIME_LAB
                     week_series, _order_key_col = choose_week_column(tmp_pw)
                     if week_series.empty:
-                        st.info("Colonnes manquantes pour produire le tableau province × semaine (YW/TIME_KEY/TIME_LAB).")
+                        st.info("Variables manquantes pour produire le tableau province × semaine (YW/TIME_KEY/TIME_LAB).")
                     else:
                         # Construire pivot Cas/Décès/Létalité (%)
                         pivot = build_cases_deaths_cfr_pivot(
@@ -7945,13 +7842,13 @@ with tab9:
                         render_pivot_with_cfr(pivot, cfr_label="Létalité (%)", cfr_decimals=2, height=520)
 
                 else:
-                    st.info("Aucune donnée après filtrage (impossible de produire le tableau province × semaine).")
+                    st.info("Aucune donnée n’est disponible après filtrage pour produire le tableau province × semaine.")
 
             # 14.4) Tableau croisé – totaux mensuels (Province / ZS)
             with st.expander("Tableau croisé – totaux mensuels (Province / ZS)", expanded=False):
 
                 if df9.empty:
-                    st.info("Aucune donnée après filtrage.")
+                    st.info("Aucune donnée n’est disponible après application des filtres analytiques.")
                 else:
                     # ---------------------------------------------------------
                     # 1) Construire une date source robuste
@@ -7986,7 +7883,7 @@ with tab9:
                     tmp_m["_dt"] = _get_date_series(tmp_m)
 
                     if tmp_m["_dt"].isna().all():
-                        st.warning("Impossible de créer les mois (aucune date exploitable : Date_debut_semaine_iso / Date_debut_semaine / DEBUTSEM).")
+                        st.warning("Impossible de construire les mois : aucune date exploitable n’a été détectée (Date_debut_semaine_iso / Date_debut_semaine / DEBUTSEM).")
                     else:
                         # ---------------------------------------------------------
                         # 1bis) (Optionnel) filtrer dates absurdes pour éviter 1965/2037
@@ -7996,7 +7893,7 @@ with tab9:
                         tmp_m = tmp_m[tmp_m["_dt"].between(dt_min, dt_max)]
 
                         if tmp_m.empty:
-                            st.warning("Toutes les dates disponibles sont hors plage (2000 → +1 an). Vérifie DEBUTSEM/Date_debut_semaine.")
+                            st.warning("Toutes les dates disponibles sont hors de la plage attendue (2000 → année courante + 1). Veuillez vérifier DEBUTSEM/Date_debut_semaine.")
                         else:
                             # Mois (timestamp)
                             tmp_m["_month"] = tmp_m["_dt"].dt.to_period("M").dt.to_timestamp()
@@ -8129,7 +8026,7 @@ with tab9:
                                 st.dataframe(pivot, width="stretch", height=520, hide_index=True)
 
                                 # -----------------------------------------------------
-                                # 6) Export CSV / XLSX (colonnes déjà uniques)
+                                # 6) Exportation CSV / XLSX (colonnes déjà uniques)
                                 # -----------------------------------------------------
                                 csv_m = pivot.to_csv(index=False).encode("utf-8")
                                 st.download_button(
@@ -8358,8 +8255,8 @@ def compute_irep_province(
 
     return out
 
-with tab10:
-    st.subheader("Indice de risque épidémique provincial (IREP)")
+with tab6:
+    st.subheader("Indice provincial composite de risque épidémique (IREP)")
     tab_help(
         "Lecture et interprétation",
         """
@@ -8376,7 +8273,7 @@ with tab10:
     )
 
     if df is None or df.empty:
-        st.info("Aucune donnée disponible pour calculer l’IREP.")
+        st.info("Aucune donnée n’est disponible pour calculer l’IREP.")
     else:
         # -----------------------------
         # 1) Choisir colonne semaine
@@ -8390,19 +8287,19 @@ with tab10:
                 df["_WEEK_TMP_"] = _wk.astype(str)
                 col_week_irep = "_WEEK_TMP_"
             else:
-                st.error("Aucune colonne semaine détectée (Semaine_epid / YW / TIME_KEY / TIME_LAB).")
+                st.error("Aucune variable semaine n’a été détectée (Semaine_epid / YW / TIME_KEY / TIME_LAB).")
                 st.stop()
 
         # Liste des semaines (tri robuste)
         week_vals = sorted(df[col_week_irep].dropna().astype(str).unique().tolist())
         if not week_vals:
-            st.info("Aucune semaine valide pour calculer l’IREP.")
+            st.info("Aucune semaine valide n’est disponible pour calculer l’IREP.")
             st.stop()
 
         # -----------------------------
         # 2) Population (optionnel)
         # -----------------------------
-        st.markdown("### Population provinciale (optionnel, pour l’incidence)")
+        st.markdown("### Population provinciale (optionnelle, pour le calcul de l’incidence)")
         pop_upl = st.file_uploader(
             "Téléverser un fichier population (csv/xlsx) avec colonnes: Province, Population",
             type=["csv", "xlsx", "xls"],
@@ -8432,7 +8329,7 @@ with tab10:
                         break
 
                 if prov_col is None or pop_col is None:
-                    st.warning("Fichier population non reconnu. Attendu: colonnes 'Province' et 'Population'.")
+                    st.warning("Fichier de population non reconnu. Colonnes attendues : 'Province' et 'Population'.")
                 else:
                     pop_df = pop_df[[prov_col, pop_col]].dropna()
                     pop_df[prov_col] = pop_df[prov_col].astype(str).str.strip()
@@ -8476,7 +8373,7 @@ with tab10:
 
         # Seuil de promptitude (réutilise celui de la sidebar si présent)
         try:
-            threshold_days = int(seuil_jours) if "seuil_jours" in globals() else 2
+            threshold_days = get_session_int("seuil_jours", 2)
         except Exception:
             threshold_days = 2
 
@@ -8556,7 +8453,7 @@ with tab10:
 # =========================
 if show_maps:
     st.divider()
-    st.header("Cartes (statique)")
+    st.header("Cartographie statique de la distribution géographique des cas")
 
     if gpd is None:
         st.warning("geopandas n'est pas installé. Ajoute 'geopandas' dans requirements.txt si tu veux les cartes.")
@@ -8605,7 +8502,7 @@ if show_maps:
         longueur_km = st.number_input("Longueur barre échelle (km)", min_value=5, max_value=300, value=50, step=5)
 
         # ---------- Provinces ----------
-        st.subheader("Carte Provinces (cas)")
+        st.subheader("Carte des cas par province")
         if geo_prov and Path(geo_prov).exists() and COL_PROV in df_f.columns:
             gdfp = gpd.read_file(geo_prov)
 
@@ -8650,7 +8547,7 @@ if show_maps:
         st.divider()
 
         # ---------- Zones de santé ----------
-        st.subheader("Carte Zones de santé (cas)")
+        st.subheader("Carte des cas par zone de santé")
         if geo_zs and Path(geo_zs).exists() and COL_ZS in df_f.columns:
             gdfz = gpd.read_file(geo_zs)
 
