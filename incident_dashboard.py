@@ -3680,7 +3680,7 @@ if not IDSR_MODE:
     # =========================
     # UI: TITLE + KPIs
     # =========================
-    st.title("Outil analytique pour le suivi des listes linéaires et des données agrégées IDSR en RDC")
+    st.title("Analyse pour le suivi des listes linéaires et des données agrégées IDSR en RDC")
     with st.expander("Fichiers utilisés"):
         st.write(files_used[:200])
 
