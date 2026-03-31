@@ -533,6 +533,17 @@ def _strip_accents(text):
     )
 
 
+def _normalize_name(s: str) -> str:
+    """Normalise un nom de colonne pour des correspondances robustes.
+    Gère accents, espaces, ponctuation et variations de casse.
+    """
+    s = str(s).strip()
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[^A-Za-z0-9]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s.lower()
+
+
 # Cartes
 try:
     import geopandas as gpd
@@ -1772,27 +1783,94 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "mpox": {
         "label": "Mpox (line list)",
-        "default_sheet": "LL_Mpox",
+        "default_sheet": "",
         "rename_map": {
-            # Identité
+            # =========================
+            # GÉOGRAPHIE / IDENTITÉ
+            # =========================
             "Nom_complet_cas_suspect": "Nom_complet",
-            # Classification
+            "Nom_Cas": "Nom_complet",
+
+            "Div_Prov": "Province_notification",
+            "Zone_Sante": "Zone_de_sante_notification",
+            "Aire_Sante": "Aire_de_sante_notification",
+
+            # =========================
+            # DÉMOGRAPHIE
+            # =========================
+            "Age_Cas": "Age",
+            "Age_Unite": "Unite_age",
+            "Sexe_Cas": "Sexe",
+            "AgeGroup": "Tranche_age_en_ans",
+            "AgeGroup2": "Tranche_age",
+
+            # =========================
+            # CLASSIFICATION / ISSUE
+            # =========================
             "Classification_finale_du_cas": "Classification_finale",
-            # Prélevement / labo (harmonisation minimale)
+            "ClassificationFinale": "Classification_finale",
+            "Statut_Cas": "Classification_finale",
+
+            "DateDecharge": "Date_issue",
+            "Date_Deces": "Date_issue",
+            "Date_Décès": "Date_issue",
+
+            # =========================
+            # DATES CLÉS
+            # =========================
+            "Date_debut_symptomes": "Date_debut_maladie",
+            "Date_Investigation": "Date_investigation",
+            "DateHospit": "Date_admission_au_CT",
+
+            # =========================
+            # PRÉLÈVEMENT / LABO
+            # =========================
             "Prelevement_realise_au_moment_de_investigation": "Prelevement",
+            "Prelevement_investigation": "Prelevement",
+            "PrelevementInvestigation": "Prelevement",
+            "Prelevement_apres_investigation": "Prelevement_apres_investigation",
+            "PrelevementApresInvestigation": "Prelevement_apres_investigation",
+
             "Si_oui_date_de_prelevement": "Date_prelevement",
+            "Date_Prelevement": "Date_prelevement",
+
+            "Date_Envoie_Echantillon": "Date_d_envoie_d_echantillons_au_laboratoire",
+            "Date_Reception_Echantillon": "Date_reception_labo",
+
+            "Date_Analyse": "Date_resultat",
+            "Date_resultat_final_opx": "Date_resultat",
+
             "Quel_est_le_resultats": "Resultat_labo",
+            "Resultat_final_opx": "Resultat_labo",
+            "Resultats_Labo": "Resultat_labo",
+
+            "Status_Analyse": "Statut_analyse",
         },
-        # Mpox: onset "unique" rarement présent; on choisit une meilleure approximation si dispo
         "onset_candidates": [
+            "Date_debut_maladie",
+            "Date_debut_symptomes",
+            "Date_Eruptions_Cutanee",
+            "Date_Fievre",
             "Si_oui_des_eruption_cutanee_quelle_est_la_date_de_debut_de_leruption_cutanee",
             "Si_le_cas_suspect_a_eu_une_fievre_quelle_est_la_date_du_debut_de_la_fievre",
-            "Date_debut_symptomes",
-            "Date_debut_maladie",
         ],
-        "notif_candidates": ["Date_notification"],
-        "adm_candidates": ["Date_d_hospitalisation_isolement", "Date_admission_au_CT"],
-        "prel_candidates": ["Date_prelevement", "Date_d_envoie_d_echantillons_au_laboratoire"],
+        "notif_candidates": [
+            "Date_notification",
+        ],
+        "adm_candidates": [
+            "Date_admission_au_CT",
+            "DateHospit",
+            "Date_d_hospitalisation_isolement",
+            "Date_investigation",
+            "Date_Investigation",
+        ],
+        "prel_candidates": [
+            "Date_prelevement",
+            "Date_Prelevement",
+            "Date_d_envoie_d_echantillons_au_laboratoire",
+            "Date_envoie_echantillon",
+            "Date_Envoie_Echantillon",
+        ],
     },
     "ebola": {
         "label": "Ebola / MVE (line list)",
@@ -1893,15 +1971,46 @@ def standardize_ll_by_disease(df: pd.DataFrame, disease_key: str) -> pd.DataFram
     spec = DISEASE_SPECS.get(disease_key, DISEASE_SPECS["cholera"])
     df = _clean_colnames(df)
 
-    # 1) Rename spécifique
+    # 1) Rename spécifique (robuste aux accents, espaces, ponctuation)
     rmap = spec.get("rename_map", {}) or {}
-    # Renommage seulement si la colonne source existe ET la cible n'existe pas déjà
+    real_cols_norm = {_normalize_name(c): c for c in df.columns}
+    rename_dict = {}
     for src, dst in rmap.items():
-        if (src in df.columns) and (dst not in df.columns):
-            df = df.rename(columns={src: dst})
+        src_norm = _normalize_name(src)
+        real_src = real_cols_norm.get(src_norm)
+        if (real_src is not None) and (dst not in df.columns):
+            rename_dict[real_src] = dst
+    if rename_dict:
+        df = df.rename(columns=rename_dict)
 
     # 2) Core
     df = standardize_ll_core(df)
+
+    # 2b) Post-traitement spécifique Mpox
+    if disease_key == "mpox":
+        # Alias explicite pour la chaîne labo standard
+        if "Resultat_labo" in df.columns and "TDR_Resultat" not in df.columns:
+            df["TDR_Resultat"] = df["Resultat_labo"]
+
+        if "TDR_realise" not in df.columns:
+            df["TDR_realise"] = pd.NA
+
+        if "Statut_analyse" in df.columns:
+            s = df["Statut_analyse"].astype("string").str.strip().str.lower()
+            yes_mask = s.isin([
+                "fait", "réalisé", "realise", "réalisée",
+                "complete", "complété", "completee", "termine", "terminé"
+            ])
+            no_mask = s.isin([
+                "non fait", "non realise", "non réalisé",
+                "en attente", "pending", "attente"
+            ])
+            df.loc[yes_mask, "TDR_realise"] = "Oui"
+            df.loc[no_mask & df["TDR_realise"].isna(), "TDR_realise"] = "Non"
+
+        if "Resultat_labo" in df.columns:
+            has_result = df["Resultat_labo"].notna()
+            df.loc[has_result & df["TDR_realise"].isna(), "TDR_realise"] = "Oui"
 
     # 3) Coalesce dates (si vides)
     # - On convertit toutes les candidates en datetime (robuste)
@@ -3531,7 +3640,7 @@ if disease_key != "idsr":
         type=["xlsx", "xls", "csv"],
         key="ll_upload"
     )
-    sheet_upl = st.sidebar.text_input("Nom feuille (si Excel upload)", value=default_sheet)
+    sheet_upl = st.sidebar.text_input("Nom feuille (si Excel upload, sinon auto)", value=default_sheet)
 
     # En mode line list, on ne propose pas l'upload IDSR ici (il reste disponible dans l'onglet 9)
     idsr_upl_side = None
@@ -3611,14 +3720,34 @@ if not IDSR_MODE:
         else:
             if upl.name.lower().endswith(".csv"):
                 raw = pd.read_csv(upl)
+                st.session_state["_ll_cache_sheet_used"] = None
+                st.session_state["_ll_cache_sheet_names"] = []
             else:
                 sh = sheet_upl.strip() if isinstance(sheet_upl, str) else ""
-                raw = pd.read_excel(upl, sheet_name=sh if sh else 0)
+                chosen_sheet, available_sheets = choose_best_sheet_name(
+                    upl,
+                    disease_key=disease_key,
+                    requested_sheet=sh if sh else None,
+                    engine="openpyxl",
+                )
+                raw = load_excel_cached(upl, sheet_name=chosen_sheet, engine="openpyxl")
+                st.session_state["_ll_cache_sheet_used"] = chosen_sheet
+                st.session_state["_ll_cache_sheet_names"] = available_sheets
 
             st.session_state["_ll_cache_key"] = _cache_key
             st.session_state["_ll_cache_raw"] = raw
 
         files_used = [f"upload:{upl.name}"]
+
+        used_sheet = st.session_state.get("_ll_cache_sheet_used")
+        available_sheets = st.session_state.get("_ll_cache_sheet_names") or []
+        if not upl.name.lower().endswith(".csv") and used_sheet:
+            if sheet_upl and str(sheet_upl).strip():
+                st.sidebar.caption(f"Feuille utilisée : **{used_sheet}**")
+            else:
+                st.sidebar.caption(f"Feuille détectée automatiquement : **{used_sheet}**")
+            if len(available_sheets) > 1:
+                st.sidebar.caption("Feuilles disponibles : " + ", ".join(map(str, available_sheets)))
 
     except Exception as e:
         st.error(f"❌ Impossible de lire le fichier téléversé : {e}")
@@ -6393,6 +6522,110 @@ def _read_excel_from_path_cached(
     p = Path(path_str)
     file_bytes = p.read_bytes()
     return _read_excel_from_bytes_cached(file_bytes, sheet_name, engine, kwargs_items)
+
+def _normalize_sheet_name(s: str) -> str:
+    s = str(s).strip()
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[^A-Za-z0-9]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_").lower()
+    return s
+
+
+def _score_sheet_name(sheet_name: str, disease_key: str) -> int:
+    """Score simple pour choisir automatiquement la feuille la plus plausible."""
+    s = _normalize_sheet_name(sheet_name)
+    score = 0
+
+    # bonus génériques line list / raw data
+    generic_tokens = ["raw_data", "line_list", "linelist", "data", "donnees", "donnees_brutes"]
+    if any(tok in s for tok in generic_tokens):
+        score += 15
+
+    disease_tokens_map = {
+        "mpox": ["mpox", "monkeypox", "pox", "raw_data", "sud_kivu"],
+        "cholera": ["cholera"],
+        "rougeole": ["rougeole", "rubeole", "measles"],
+        "ebola": ["ebola", "mve"],
+        "intox": ["intox", "intoxication"],
+        "meningite": ["meningite", "meningitis"],
+        "idsr": ["idsr", "surveillance", "hebdo"],
+    }
+    disease_tokens = disease_tokens_map.get(disease_key, [disease_key])
+    for tok in disease_tokens:
+        if tok and tok in s:
+            score += 20
+
+    # Bonus si la feuille ressemble au nom de feuille par défaut configuré
+    default_sheet = DISEASE_SPECS.get(disease_key, {}).get("default_sheet", "")
+    if default_sheet and s == _normalize_sheet_name(default_sheet):
+        score += 30
+
+    # Pénalité faible pour feuilles purement génériques type sheet1/feuil1
+    if s in {"sheet1", "sheet_1", "feuil1", "feuille1", "feuille_1"}:
+        score -= 5
+
+    return score
+
+
+@st.cache_data(show_spinner=False)
+def get_excel_sheet_names(file_bytes: bytes, engine: str = "openpyxl") -> List[str]:
+    if not file_bytes:
+        return []
+    bio = BytesIO(file_bytes)
+    with pd.ExcelFile(bio, engine=engine) as xls:
+        return list(xls.sheet_names)
+
+
+def choose_best_sheet_name(file, disease_key: str, requested_sheet: str | None = None, engine: str = "openpyxl") -> Tuple[Optional[str], List[str]]:
+    """
+    Choisit automatiquement la meilleure feuille.
+    Priorité:
+    1) feuille demandée si elle existe (exacte / casse / normalisée)
+    2) meilleure feuille scorée selon la maladie
+    3) première feuille
+    """
+    file_bytes = None
+    if hasattr(file, "getvalue") and callable(file.getvalue):
+        file_bytes = file.getvalue()
+    elif isinstance(file, (str, Path)):
+        p = Path(file)
+        if p.exists():
+            file_bytes = p.read_bytes()
+    elif hasattr(file, "read") and callable(file.read):
+        try:
+            pos = file.tell()
+        except Exception:
+            pos = None
+        file_bytes = file.read()
+        try:
+            if pos is not None:
+                file.seek(pos)
+        except Exception:
+            pass
+
+    if not file_bytes:
+        return requested_sheet, []
+
+    sheet_names = get_excel_sheet_names(file_bytes, engine=engine)
+    if not sheet_names:
+        return requested_sheet, []
+
+    req = (requested_sheet or "").strip()
+    if req:
+        if req in sheet_names:
+            return req, sheet_names
+        low = {s.lower(): s for s in sheet_names}
+        if req.lower() in low:
+            return low[req.lower()], sheet_names
+        req_norm = _normalize_sheet_name(req)
+        norm_map = {_normalize_sheet_name(s): s for s in sheet_names}
+        if req_norm in norm_map:
+            return norm_map[req_norm], sheet_names
+
+    ranked = sorted(sheet_names, key=lambda s: (_score_sheet_name(s, disease_key), s != sheet_names[0]), reverse=True)
+    chosen = ranked[0] if ranked else sheet_names[0]
+    return chosen, sheet_names
+
 
 def load_excel_cached(file, sheet_name=None, engine="openpyxl", **kwargs) -> pd.DataFrame:
     """
