@@ -3640,7 +3640,7 @@ if disease_key != "idsr":
         type=["xlsx", "xls", "csv"],
         key="ll_upload"
     )
-    sheet_upl = st.sidebar.text_input("Nom feuille (si Excel upload, sinon auto)", value=default_sheet)
+    sheet_upl = st.sidebar.text_input("Nom feuille (si Excel upload)", value=default_sheet)
 
     # En mode line list, on ne propose pas l'upload IDSR ici (il reste disponible dans l'onglet 9)
     idsr_upl_side = None
@@ -3720,34 +3720,14 @@ if not IDSR_MODE:
         else:
             if upl.name.lower().endswith(".csv"):
                 raw = pd.read_csv(upl)
-                st.session_state["_ll_cache_sheet_used"] = None
-                st.session_state["_ll_cache_sheet_names"] = []
             else:
                 sh = sheet_upl.strip() if isinstance(sheet_upl, str) else ""
-                chosen_sheet, available_sheets = choose_best_sheet_name(
-                    upl,
-                    disease_key=disease_key,
-                    requested_sheet=sh if sh else None,
-                    engine="openpyxl",
-                )
-                raw = load_excel_cached(upl, sheet_name=chosen_sheet, engine="openpyxl")
-                st.session_state["_ll_cache_sheet_used"] = chosen_sheet
-                st.session_state["_ll_cache_sheet_names"] = available_sheets
+                raw = pd.read_excel(upl, sheet_name=sh if sh else 0)
 
             st.session_state["_ll_cache_key"] = _cache_key
             st.session_state["_ll_cache_raw"] = raw
 
         files_used = [f"upload:{upl.name}"]
-
-        used_sheet = st.session_state.get("_ll_cache_sheet_used")
-        available_sheets = st.session_state.get("_ll_cache_sheet_names") or []
-        if not upl.name.lower().endswith(".csv") and used_sheet:
-            if sheet_upl and str(sheet_upl).strip():
-                st.sidebar.caption(f"Feuille utilisée : **{used_sheet}**")
-            else:
-                st.sidebar.caption(f"Feuille détectée automatiquement : **{used_sheet}**")
-            if len(available_sheets) > 1:
-                st.sidebar.caption("Feuilles disponibles : " + ", ".join(map(str, available_sheets)))
 
     except Exception as e:
         st.error(f"❌ Impossible de lire le fichier téléversé : {e}")
@@ -6522,110 +6502,6 @@ def _read_excel_from_path_cached(
     p = Path(path_str)
     file_bytes = p.read_bytes()
     return _read_excel_from_bytes_cached(file_bytes, sheet_name, engine, kwargs_items)
-
-def _normalize_sheet_name(s: str) -> str:
-    s = str(s).strip()
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-    s = re.sub(r"[^A-Za-z0-9]+", "_", s)
-    s = re.sub(r"_+", "_", s).strip("_").lower()
-    return s
-
-
-def _score_sheet_name(sheet_name: str, disease_key: str) -> int:
-    """Score simple pour choisir automatiquement la feuille la plus plausible."""
-    s = _normalize_sheet_name(sheet_name)
-    score = 0
-
-    # bonus génériques line list / raw data
-    generic_tokens = ["raw_data", "line_list", "linelist", "data", "donnees", "donnees_brutes"]
-    if any(tok in s for tok in generic_tokens):
-        score += 15
-
-    disease_tokens_map = {
-        "mpox": ["mpox", "monkeypox", "pox", "raw_data", "sud_kivu"],
-        "cholera": ["cholera"],
-        "rougeole": ["rougeole", "rubeole", "measles"],
-        "ebola": ["ebola", "mve"],
-        "intox": ["intox", "intoxication"],
-        "meningite": ["meningite", "meningitis"],
-        "idsr": ["idsr", "surveillance", "hebdo"],
-    }
-    disease_tokens = disease_tokens_map.get(disease_key, [disease_key])
-    for tok in disease_tokens:
-        if tok and tok in s:
-            score += 20
-
-    # Bonus si la feuille ressemble au nom de feuille par défaut configuré
-    default_sheet = DISEASE_SPECS.get(disease_key, {}).get("default_sheet", "")
-    if default_sheet and s == _normalize_sheet_name(default_sheet):
-        score += 30
-
-    # Pénalité faible pour feuilles purement génériques type sheet1/feuil1
-    if s in {"sheet1", "sheet_1", "feuil1", "feuille1", "feuille_1"}:
-        score -= 5
-
-    return score
-
-
-@st.cache_data(show_spinner=False)
-def get_excel_sheet_names(file_bytes: bytes, engine: str = "openpyxl") -> List[str]:
-    if not file_bytes:
-        return []
-    bio = BytesIO(file_bytes)
-    with pd.ExcelFile(bio, engine=engine) as xls:
-        return list(xls.sheet_names)
-
-
-def choose_best_sheet_name(file, disease_key: str, requested_sheet: str | None = None, engine: str = "openpyxl") -> Tuple[Optional[str], List[str]]:
-    """
-    Choisit automatiquement la meilleure feuille.
-    Priorité:
-    1) feuille demandée si elle existe (exacte / casse / normalisée)
-    2) meilleure feuille scorée selon la maladie
-    3) première feuille
-    """
-    file_bytes = None
-    if hasattr(file, "getvalue") and callable(file.getvalue):
-        file_bytes = file.getvalue()
-    elif isinstance(file, (str, Path)):
-        p = Path(file)
-        if p.exists():
-            file_bytes = p.read_bytes()
-    elif hasattr(file, "read") and callable(file.read):
-        try:
-            pos = file.tell()
-        except Exception:
-            pos = None
-        file_bytes = file.read()
-        try:
-            if pos is not None:
-                file.seek(pos)
-        except Exception:
-            pass
-
-    if not file_bytes:
-        return requested_sheet, []
-
-    sheet_names = get_excel_sheet_names(file_bytes, engine=engine)
-    if not sheet_names:
-        return requested_sheet, []
-
-    req = (requested_sheet or "").strip()
-    if req:
-        if req in sheet_names:
-            return req, sheet_names
-        low = {s.lower(): s for s in sheet_names}
-        if req.lower() in low:
-            return low[req.lower()], sheet_names
-        req_norm = _normalize_sheet_name(req)
-        norm_map = {_normalize_sheet_name(s): s for s in sheet_names}
-        if req_norm in norm_map:
-            return norm_map[req_norm], sheet_names
-
-    ranked = sorted(sheet_names, key=lambda s: (_score_sheet_name(s, disease_key), s != sheet_names[0]), reverse=True)
-    chosen = ranked[0] if ranked else sheet_names[0]
-    return chosen, sheet_names
-
 
 def load_excel_cached(file, sheet_name=None, engine="openpyxl", **kwargs) -> pd.DataFrame:
     """
