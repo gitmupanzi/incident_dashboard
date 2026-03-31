@@ -5846,14 +5846,18 @@ with tab4:
         def _safe_pct(num, den):
             return (num / den * 100.0) if den and den > 0 else np.nan
 
-        def _plotly_to_png_bytes(fig):
+        def _plotly_to_png_bytes(fig, scale: int = 1):
             """
-            Convertit une figure Plotly en PNG bytes (pour PDF).
-            Nécessite kaleido ; si absent, renvoie None (export PDF restera OK, sans images).
+            Conversion Plotly -> PNG bytes robuste pour Streamlit Cloud.
+            - Ne fait jamais planter l'application
+            - Réduit la charge mémoire avec scale=1 par défaut
             """
+            if fig is None:
+                return None
             try:
-                return fig.to_image(format="png", scale=2)
-            except Exception:
+                return fig.to_image(format="png", scale=scale)
+            except Exception as e:
+                logger.warning(f"[SITREP] Export PNG Plotly ignoré : {e}")
                 return None
 
         def build_weekly_summary(df_scope):
@@ -5959,13 +5963,22 @@ with tab4:
         # =========================================================
         # 3) Build payload (Tab8 autonome) — VERSION ENRICHIE
         # =========================================================
-        def _build_sitrep_payload_from_df(df_scope, se, annee, date_pub, min_cas_zs=30, min_cas_prov=50):
+        def _build_sitrep_payload_from_df(
+            df_scope,
+            se,
+            annee,
+            date_pub,
+            min_cas_zs=30,
+            min_cas_prov=50,
+            include_images=False,
+        ):
             """
             Build un payload SITREP épidémiologique à partir de df_scope (ici df_f filtré).
 
-            - Filtre SE/Année pour indicateurs de la semaine (d_se)
-            - Calcule cumuls année jusqu'à la SE (d_cum)
-            - Produit table ZS, provinces, démographie, délais, alertes, images pour PDF
+            IMPORTANT:
+            - include_images=False par défaut pour éviter de lancer Kaleido/Chromium
+              à chaque rerun Streamlit.
+            - Les images PNG pour le PDF ne sont générées qu'à la demande.
             """
             d = df_scope.copy()
 
@@ -6009,7 +6022,6 @@ with tab4:
                        .agg(cas=("_cas_", "sum"), deces=("_deces_", "sum"))
                        .sort_values("cas", ascending=False)
                 )
-                # rename friendly
                 if COL_PROV in table_epi.columns:
                     table_epi = table_epi.rename(columns={COL_PROV: "Province de notification"})
                 if COL_ZS in table_epi.columns:
@@ -6054,90 +6066,84 @@ with tab4:
             payload["cascade"] = call_optional_function("cascade_metrics", d_se, default=pd.DataFrame())
 
             # Alertes sur la dernière semaine disponible — sur df_scope filtré
-            payload["alertes_last"] = call_optional_function("alerts_weekly_simple", d, COL_PROV, default=pd.DataFrame()) if COL_PROV in d.columns else pd.DataFrame()
+            payload["alertes_last"] = call_optional_function("build_alerts_last_week", d, default=pd.DataFrame())
 
-            # ---- ENRICHMENTS ----
-            # Weekly summary (sur df_scope filtré)
+            # Série hebdo filtrée pour visualisation / PDF
             payload["weekly"] = build_weekly_summary(d)
 
-            # Geo tables (SE)
-            geo = build_geo_tables(d_se, min_cas_zs=min_cas_zs, min_cas_prov=min_cas_prov)
-            payload.update(geo)
+            # Analyse spatiale et gravité
+            payload.update(build_geo_tables(d_se, min_cas_zs=min_cas_zs, min_cas_prov=min_cas_prov))
 
-            # Demo tables (SE)
+            # Démographie et délais
             payload.update(build_demo_tables(d_se))
-
-            # Délais (SE)
             payload["delais"] = build_delay_summary(d_se)
 
-            # Narration automatique (interprétation)
+            # Interprétation automatisée
             interpret = []
-            if cas_se > 0:
-                interpret.append(f"La SE{int(se):02d} enregistre {cas_se} cas et {dec_se} décès (CFR {cfr_se:.1f}%).")
-                if cfr_se >= 1:
-                    interpret.append("Le CFR est au-dessus du seuil attendu (<1%) et suggère un retard d’accès aux soins, une qualité de prise en charge à renforcer, ou une sous-détection des formes légères.")
-                if cfr_se >= 2:
-                    interpret.append("Priorité : revue des décès, disponibilité SRO/IV, triage et organisation CT/CTC, et détection communautaire.")
-            else:
-                interpret.append(f"Aucun cas sur SE{int(se):02d}/{int(annee)} dans le scope filtré (df_f).")
+            provcrit = payload.get("prov_cfr_crit")
+            if isinstance(provcrit, pd.DataFrame) and not provcrit.empty:
+                top3 = provcrit.head(3)
+                parts = [f"{r[COL_PROV]} (CFR {r['CFR_%']:.1f}%)" for _, r in top3.iterrows() if COL_PROV in top3.columns]
+                if parts:
+                    interpret.append("Provinces à létalité élevée (seuil) : " + ", ".join(parts))
 
             zscrit = payload.get("zs_cfr_crit")
             if isinstance(zscrit, pd.DataFrame) and not zscrit.empty:
-                topz = zscrit.head(3)
-                # colonnes possibles
-                zname = COL_ZS if COL_ZS in topz.columns else ("Zone de santé" if "Zone de santé" in topz.columns else None)
-                pname = COL_PROV if COL_PROV in topz.columns else None
                 parts = []
-                for _, r in topz.iterrows():
-                    if zname and pname:
-                        parts.append(f"{r[pname]} / {r[zname]} (CFR {r['CFR_%']:.1f}%)")
-                    elif zname:
-                        parts.append(f"{r[zname]} (CFR {r['CFR_%']:.1f}%)")
+                for _, r in zscrit.head(5).iterrows():
+                    if COL_PROV in zscrit.columns:
+                        parts.append(f"{r[COL_PROV]} / {r[COL_ZS]} (CFR {r['CFR_%']:.1f}%)")
+                    else:
+                        parts.append(f"{r[COL_ZS]} (CFR {r['CFR_%']:.1f}%)")
                 if parts:
                     interpret.append("ZS à létalité élevée (seuil) : " + ", ".join(parts))
 
             payload["interpretation"] = interpret
-
-            # Images pour PDF (optionnel)
             payload["images"] = []
-            try:
-                # 1) courbe hebdo cas/décès (si historique dispo)
-                wk = payload.get("weekly")
-                if isinstance(wk, pd.DataFrame) and not wk.empty and "YW" in wk.columns:
-                    fig1 = px.line(wk, x="YW", y=["Cas", "Décès"], markers=True, title="Évolution hebdomadaire – Cas et décès")
-                    fig1.update_layout(xaxis_title="Semaine (YW)", yaxis_title="Nombre")
-                    png1 = _plotly_to_png_bytes(fig1)
-                    if png1:
-                        payload["images"].append(("Évolution hebdomadaire", png1))
 
-                # 2) top provinces (SE) — cas
-                provt = payload.get("prov_table")
-                if isinstance(provt, pd.DataFrame) and not provt.empty and COL_PROV in d_se.columns:
-                    provt2 = provt.copy()
-                    fig2 = px.bar(provt2.head(10), x=COL_PROV, y="Cas", title="Top 10 Provinces – Cas (SE)")
-                    fig2.update_layout(xaxis_tickangle=-45)
-                    png2 = _plotly_to_png_bytes(fig2)
-                    if png2:
-                        payload["images"].append(("Top provinces (cas)", png2))
+            if include_images:
+                try:
+                    wk = payload.get("weekly")
+                    if isinstance(wk, pd.DataFrame) and not wk.empty and "YW" in wk.columns:
+                        fig1 = px.line(
+                            wk,
+                            x="YW",
+                            y=["Cas", "Décès"],
+                            markers=True,
+                            title="Évolution hebdomadaire – Cas et décès",
+                        )
+                        fig1.update_layout(xaxis_title="Semaine (YW)", yaxis_title="Nombre")
+                        png1 = _plotly_to_png_bytes(fig1, scale=1)
+                        if png1:
+                            payload["images"].append(("Évolution hebdomadaire", png1))
 
-                # 3) top ZS (SE) — cas
-                zst = payload.get("zs_table")
-                if isinstance(zst, pd.DataFrame) and not zst.empty and COL_ZS in d_se.columns:
-                    zst2 = zst.copy()
-                    # Si province existe, concat pour lisibilité
-                    if COL_PROV in zst2.columns:
-                        zst2["Prov/ZS"] = zst2[COL_PROV].astype(str) + " / " + zst2[COL_ZS].astype(str)
-                        xcol = "Prov/ZS"
-                    else:
-                        xcol = COL_ZS
-                    fig3 = px.bar(zst2.head(10), x=xcol, y="Cas", title="Top 10 ZS – Cas (SE)")
-                    fig3.update_layout(xaxis_tickangle=-45)
-                    png3 = _plotly_to_png_bytes(fig3)
-                    if png3:
-                        payload["images"].append(("Top ZS (cas)", png3))
-            except Exception:
-                # Aucun impact si images non générées
-                pass
+                    provt = payload.get("prov_table")
+                    if isinstance(provt, pd.DataFrame) and not provt.empty and COL_PROV in provt.columns:
+                        fig2 = px.bar(provt.head(10), x=COL_PROV, y="Cas", title="Top 10 Provinces – Cas (SE)")
+                        fig2.update_layout(xaxis_tickangle=-45)
+                        png2 = _plotly_to_png_bytes(fig2, scale=1)
+                        if png2:
+                            payload["images"].append(("Top provinces (cas)", png2))
+
+                    zst = payload.get("zs_table")
+                    if isinstance(zst, pd.DataFrame) and not zst.empty:
+                        zst2 = zst.copy()
+                        if (COL_PROV in zst2.columns) and (COL_ZS in zst2.columns):
+                            zst2["Prov/ZS"] = zst2[COL_PROV].astype(str) + " / " + zst2[COL_ZS].astype(str)
+                            xcol = "Prov/ZS"
+                        elif COL_ZS in zst2.columns:
+                            xcol = COL_ZS
+                        else:
+                            xcol = None
+
+                        if xcol is not None:
+                            fig3 = px.bar(zst2.head(10), x=xcol, y="Cas", title="Top 10 ZS – Cas (SE)")
+                            fig3.update_layout(xaxis_tickangle=-45)
+                            png3 = _plotly_to_png_bytes(fig3, scale=1)
+                            if png3:
+                                payload["images"].append(("Top ZS (cas)", png3))
+                except Exception as e:
+                    logger.warning(f"[SITREP] Génération des images PDF ignorée : {e}")
 
             return payload
 
@@ -6149,7 +6155,15 @@ with tab4:
         with cS2:
             min_cas_prov = st.number_input("Seuil min cas Province (pour CFR critique)", min_value=10, max_value=500, value=50, step=10)
 
-        sitrep_payload = _build_sitrep_payload_from_df(df_f, semaine, annee, date_pub, min_cas_zs=min_cas_zs, min_cas_prov=min_cas_prov)
+        sitrep_payload = _build_sitrep_payload_from_df(
+            df_f,
+            semaine,
+            annee,
+            date_pub,
+            min_cas_zs=min_cas_zs,
+            min_cas_prov=min_cas_prov,
+            include_images=False,
+        )
 
         # =========================================================
         # 4) Affichage (pliable)
@@ -6262,19 +6276,52 @@ with tab4:
         st.markdown("### Exportation")
 
         if "export_sitrep_pdf" in globals() and callable(export_sitrep_pdf):
-            try:
-                pdf_bytes = export_sitrep_pdf(sitrep_payload)
-                st.download_button(
-                    "⬇️ Télécharger le SITREP épidémiologique (PDF)",
-                    data=pdf_bytes,
-                    file_name=f"SITREP épidémiologique_CHOLERA_SE{int(semaine):02d}_{int(annee)}.pdf",
-                    mime="application/pdf",
+            cexp1, cexp2 = st.columns([1, 1])
+
+            with cexp1:
+                prepare_pdf = st.button(
+                    "Préparer le SITREP PDF",
                     type="primary",
-                    key="sitrep_dl_pdf",
+                    key="prepare_sitrep_pdf_btn",
                 )
-                st.caption("ℹ️ Si les images n’apparaissent pas dans le PDF : installe `kaleido` (Plotly → PNG). Le PDF reste exportable sans images.")
-            except Exception as e:
-                st.error(f"Erreur lors de l’exportation PDF : {e}")
+
+            with cexp2:
+                include_pdf_images = st.checkbox(
+                    "Inclure les graphiques dans le PDF",
+                    value=False,
+                    key="include_pdf_images_chk",
+                    help="Option plus lourde sur Streamlit Cloud. À activer seulement si nécessaire.",
+                )
+
+            if prepare_pdf:
+                with st.spinner("Préparation du PDF en cours..."):
+                    try:
+                        pdf_payload = _build_sitrep_payload_from_df(
+                            df_f,
+                            semaine,
+                            annee,
+                            date_pub,
+                            min_cas_zs=min_cas_zs,
+                            min_cas_prov=min_cas_prov,
+                            include_images=include_pdf_images,
+                        )
+
+                        pdf_bytes = export_sitrep_pdf(pdf_payload)
+
+                        st.download_button(
+                            "⬇️ Télécharger le SITREP épidémiologique (PDF)",
+                            data=pdf_bytes,
+                            file_name=f"SITREP_epidemiologique_CHOLERA_SE{int(semaine):02d}_{int(annee)}.pdf",
+                            mime="application/pdf",
+                            key="sitrep_dl_pdf",
+                        )
+
+                        if include_pdf_images:
+                            st.caption("PDF généré avec tentative d’inclusion des graphiques.")
+                        else:
+                            st.caption("PDF généré sans graphiques intégrés pour maximiser la stabilité.")
+                    except Exception as e:
+                        st.error(f"Erreur lors de l’exportation PDF : {e}")
         else:
             st.error("La fonction export_sitrep_pdf(payload) n’est pas définie dans ce script.")
 
