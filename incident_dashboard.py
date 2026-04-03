@@ -1758,6 +1758,7 @@ DATE_ISSUE = "Date_issue"
 DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     "cholera": {
         "label": "Choléra",
+        "enabled": True,
         "default_sheet": "LL_Cholera",
         "rename_map": {
             # variations fréquentes
@@ -1771,6 +1772,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "rougeole": {
         "label": "Rougeole (line list)",
+        "enabled": False,
         "default_sheet": "LL_Rougeole_Rubeole",
         "rename_map": {
             "Evolution": "Issue",
@@ -1783,6 +1785,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "mpox": {
         "label": "Mpox (line list)",
+        "enabled": True,
         "default_sheet": "",
         "rename_map": {
             # =========================
@@ -1874,6 +1877,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "ebola": {
         "label": "Ebola / MVE (line list)",
+        "enabled": True,
         "default_sheet": "LL_Ebola",
         "rename_map": {
             "Date_debut_symptomes": "Date_debut_maladie",
@@ -1886,6 +1890,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "intox": {
         "label": "Intoxication (line list)",
+        "enabled": True,
         "default_sheet": "LL_Intox",
         "rename_map": {
             "Date_consultation": "Date_notification",
@@ -1898,6 +1903,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "idsr": {
         "label": "IDSR agrégé (hebdo)",
+        "enabled": True,
         "default_sheet": "IDSR",
         "rename_map": {
             "Num": "Num",
@@ -1917,6 +1923,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "meningite": {
         "label": "Méningite (line list)",
+        "enabled": True,
         "default_sheet": "LL_Meningite",
         "rename_map": {},
         "onset_candidates": ["Date_debut_maladie", "Date_debut_symptomes"],
@@ -1926,6 +1933,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "autre": {
         "label": "Autre (line list générique)",
+        "enabled": False,
         "default_sheet": "",
         "rename_map": {},
         "onset_candidates": [
@@ -1947,6 +1955,12 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
         ],
     },
 }
+
+
+def is_disease_enabled(disease_key: str) -> bool:
+    """Indique si la maladie sélectionnée est activée dans le dashboard."""
+    spec = DISEASE_SPECS.get(disease_key, {})
+    return bool(spec.get("enabled", True))
 
 def _coalesce_first(df: pd.DataFrame, candidates: List[str]) -> pd.Series:
     """Retourne la première colonne non-NA dans candidates (coalesce)."""
@@ -3632,6 +3646,13 @@ mode = "Téléverser (upload)"  # Déploiement en ligne : upload uniquement
 
 # Par défaut: feuille selon la maladie (modifiable)
 default_sheet = DISEASE_SPECS.get(disease_key, DISEASE_SPECS["cholera"]).get("default_sheet", "")
+disease_enabled = is_disease_enabled(disease_key)
+
+if not disease_enabled:
+    st.sidebar.warning(
+        f"{DISEASE_SPECS.get(disease_key, {}).get("label", disease_key)} : maladie désactivée. "
+        "Le fichier peut être téléversé, mais aucune analyse ne sera exécutée."
+    )
 
 if disease_key != "idsr":
     # --- Upload line list (toutes maladies sauf IDSR)
@@ -3731,6 +3752,14 @@ if not IDSR_MODE:
 
     except Exception as e:
         st.error(f"❌ Impossible de lire le fichier téléversé : {e}")
+        st.stop()
+
+    if not disease_enabled:
+        disease_label = DISEASE_SPECS.get(disease_key, {}).get("label", disease_key)
+        st.warning(
+            f"La maladie sélectionnée ({disease_label}) est actuellement désactivée. "
+            "Le fichier a bien été téléversé, mais aucune analyse ne sera exécutée."
+        )
         st.stop()
 
     # ✅ 1) Standardisation commune (Rougeole/Choléra/…)
