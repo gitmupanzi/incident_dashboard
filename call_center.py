@@ -771,7 +771,7 @@ def carte_rdc(df_filtered):
         showframe=False,
     )
     fig.update_layout(
-        height=560,
+        height=500,
         margin=dict(l=8, r=8, t=4, b=4),
         paper_bgcolor="#fbfaf7",
         plot_bgcolor="#fbfaf7",
@@ -786,7 +786,7 @@ def carte_rdc_statique(df_filtered):
     gdf, geo_col = build_map_gdf(df_filtered)
     gdf_plot = gdf.to_crs(epsg=3857)
 
-    fig, ax = plt.subplots(figsize=(8.5, 6.2), facecolor="#fbfaf7")
+    fig, ax = plt.subplots(figsize=(7.8, 5.6), facecolor="#fbfaf7")
     ax.set_facecolor("#fbfaf7")
     gdf_plot.plot(
         column="nb",
@@ -875,7 +875,7 @@ def render_map(df_filtered, static_map=False):
     selection_state = st.plotly_chart(
         fig_map,
         width="stretch",
-        height=580,
+        height=520,
         key="province_map",
         on_select="rerun",
         selection_mode="points",
@@ -904,7 +904,7 @@ def render_map(df_filtered, static_map=False):
     return df_filtered
 
 
-def style_figure(fig, height=260):
+def style_figure(fig, height=235):
     fig.update_layout(
         height=height,
         margin=dict(l=8, r=8, t=8, b=8),
@@ -962,7 +962,7 @@ def render_sexe_chart(df_filtered):
             color_discrete_sequence=["#1f7ae0", "#e3342f", "#16a34a", "#d97706"],
         )
         fig_sexe.update_traces(textinfo="percent+label")
-        st.plotly_chart(style_figure(fig_sexe), width="stretch")
+        st.plotly_chart(style_figure(fig_sexe, height=220), width="stretch")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -994,9 +994,175 @@ def build_time_series(df_filtered, time_grain):
     )
 
 
+def render_time_trend_chart(df_filtered, chart_options):
+    st.markdown("<div class='block'><div class='block-title'>Evolution des appels dans le temps</div>", unsafe_allow_html=True)
+    df_time = build_time_series(df_filtered, chart_options["time_grain"])
+    fig_time = px.line(
+        df_time,
+        x="Periode",
+        y="Nombre",
+        color="Indicateur",
+        markers=True,
+        text="Nombre" if chart_options["show_curve_labels"] else None,
+        color_discrete_map={"Appels recus": "#1f7ae0", "Appels clotures": "#15803d"},
+    )
+    if chart_options["show_curve_labels"]:
+        fig_time.update_traces(textposition="top center")
+    st.plotly_chart(style_figure(fig_time, height=255), width="stretch")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_hour_chart(df_filtered):
+    st.markdown("<div class='block'><div class='block-title'>Appels par heure</div>", unsafe_allow_html=True)
+    if COL_HEURE_NUM not in df_filtered.columns or df_filtered[COL_HEURE_NUM].dropna().empty:
+        st.info("La colonne Heure n'est pas exploitable pour cette analyse.")
+    else:
+        hour_counts = (
+            df_filtered[COL_HEURE_NUM]
+            .dropna()
+            .astype(int)
+            .value_counts()
+            .reindex(range(24), fill_value=0)
+            .rename_axis("Heure_num")
+            .reset_index(name="Nombre")
+        )
+        hour_counts["Heure"] = hour_counts["Heure_num"].apply(lambda value: f"{value:02d}h")
+        fig_hour = px.bar(
+            hour_counts,
+            x="Heure",
+            y="Nombre",
+            color_discrete_sequence=["#0f62fe"],
+        )
+        fig_hour.update_layout(showlegend=False)
+        st.plotly_chart(style_figure(fig_hour, height=250), width="stretch")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_weekday_chart(df_filtered):
+    st.markdown("<div class='block'><div class='block-title'>Appels par jour de semaine</div>", unsafe_allow_html=True)
+    if df_filtered[COL_DATE].dropna().empty:
+        st.info("La colonne Date n'est pas exploitable pour cette analyse.")
+    else:
+        weekday_labels = {0: "Lundi", 1: "Mardi", 2: "Mercredi", 3: "Jeudi", 4: "Vendredi", 5: "Samedi", 6: "Dimanche"}
+        weekday_counts = (
+            df_filtered[COL_DATE]
+            .dropna()
+            .dt.weekday
+            .value_counts()
+            .reindex(range(7), fill_value=0)
+            .rename_axis("Jour_num")
+            .reset_index(name="Nombre")
+        )
+        weekday_counts["Jour"] = weekday_counts["Jour_num"].map(weekday_labels)
+        fig_weekday = px.bar(
+            weekday_counts,
+            x="Jour",
+            y="Nombre",
+            color_discrete_sequence=["#1a936f"],
+        )
+        fig_weekday.update_layout(showlegend=False)
+        st.plotly_chart(style_figure(fig_weekday, height=250), width="stretch")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_closure_rate_by_province(df_filtered, top_n):
+    st.markdown("<div class='block'><div class='block-title'>Taux de cloture par province</div>", unsafe_allow_html=True)
+    df_rate = df_filtered[[COL_PROVINCE_NORM, COL_STATUT]].copy()
+    if df_rate.empty:
+        st.info("Pas assez de donnees pour calculer le taux de cloture.")
+    else:
+        df_rate["Cloture"] = df_rate[COL_STATUT].apply(normalize_status) == "cloture"
+        province_rate = (
+            df_rate.groupby(COL_PROVINCE_NORM, as_index=False)
+            .agg(Total=(COL_STATUT, "size"), Clotures=("Cloture", "sum"))
+            .sort_values(["Total", COL_PROVINCE_NORM], ascending=[False, True])
+            .head(top_n)
+        )
+        province_rate["Taux_cloture"] = province_rate["Clotures"] / province_rate["Total"] * 100
+        province_rate = province_rate.sort_values("Taux_cloture", ascending=True)
+        province_rate["Texte"] = province_rate["Taux_cloture"].round(1).astype(str) + "%"
+
+        fig_rate = px.bar(
+            province_rate,
+            x="Taux_cloture",
+            y=COL_PROVINCE_NORM,
+            orientation="h",
+            text="Texte",
+            color="Taux_cloture",
+            color_continuous_scale=["#fee2e2", "#fb7185", "#9f1239"],
+        )
+        fig_rate.update_traces(
+            textposition="outside",
+            customdata=province_rate[["Total", "Clotures"]],
+            hovertemplate="<b>%{y}</b><br>Taux: %{x:.1f}%<br>Total: %{customdata[0]}<br>Clotures: %{customdata[1]}<extra></extra>",
+        )
+        fig_rate.update_layout(coloraxis_showscale=False)
+        st.plotly_chart(style_figure(fig_rate, height=250), width="stretch")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_resolution_chart(df_filtered, top_n):
+    st.markdown("<div class='block'><div class='block-title'>Analyse par resolution</div>", unsafe_allow_html=True)
+    if COL_RESOLUTION not in df_filtered.columns:
+        st.info("La colonne Resolution n'est pas disponible.")
+    else:
+        df_resolution = df_filtered[df_filtered[COL_RESOLUTION].fillna("").astype(str).str.strip() != ""]
+        if df_resolution.empty:
+            st.info("Aucune valeur exploitable dans la colonne Resolution.")
+        else:
+            resolution_counts = df_resolution[COL_RESOLUTION].value_counts().head(top_n).reset_index()
+            resolution_counts.columns = ["Resolution", "Nombre"]
+            fig_resolution = px.bar(
+                resolution_counts.sort_values("Nombre", ascending=True),
+                x="Nombre",
+                y="Resolution",
+                orientation="h",
+                color_discrete_sequence=["#7c3aed"],
+            )
+            fig_resolution.update_layout(showlegend=False)
+            st.plotly_chart(style_figure(fig_resolution, height=250), width="stretch")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_pathology_province_heatmap(df_filtered, top_n):
+    st.markdown("<div class='block'><div class='block-title'>Pathologie x province</div>", unsafe_allow_html=True)
+    if df_filtered.empty:
+        st.info("Pas assez de donnees pour ce croisement.")
+    else:
+        top_pathologies = df_filtered[COL_PATHOLOGIE].value_counts().head(min(top_n, 6)).index
+        top_provinces = df_filtered[COL_PROVINCE_NORM].value_counts().head(min(top_n, 6)).index
+        df_matrix = df_filtered[
+            df_filtered[COL_PATHOLOGIE].isin(top_pathologies)
+            & df_filtered[COL_PROVINCE_NORM].isin(top_provinces)
+        ]
+        if df_matrix.empty:
+            st.info("Pas assez de donnees pour construire la matrice.")
+        else:
+            matrix = pd.crosstab(df_matrix[COL_PATHOLOGIE], df_matrix[COL_PROVINCE_NORM])
+            matrix = matrix.reindex(index=top_pathologies, columns=top_provinces, fill_value=0)
+            fig_heatmap = px.imshow(
+                matrix,
+                text_auto=True,
+                color_continuous_scale=["#eff6ff", "#60a5fa", "#1d4ed8"],
+                aspect="auto",
+                labels=dict(x="Province", y="Pathologie", color="Appels"),
+            )
+            fig_heatmap.update_xaxes(side="top")
+            fig_heatmap.update_layout(
+                height=320,
+                margin=dict(l=8, r=8, t=8, b=8),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#17233c", size=12),
+                coloraxis_colorbar=dict(title="Appels"),
+            )
+            st.plotly_chart(fig_heatmap, width="stretch")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_charts(df_filtered, chart_options):
     top_n = chart_options["top_n"]
-    c1, c2, c3 = st.columns([1.25, 1.7, 1.1])
+    c1, c2, c3 = st.columns([1.18, 1.62, 1.0])
 
     with c1:
         df_filtered = render_map(df_filtered, static_map=chart_options["static_map"])
@@ -1008,7 +1174,7 @@ def render_charts(df_filtered, chart_options):
             df_patho = df_filtered[COL_PATHOLOGIE].value_counts().head(top_n).reset_index()
             df_patho.columns = ["Pathologie", "Nombre"]
             fig_patho = px.bar(df_patho, x="Nombre", y="Pathologie", orientation="h", color_discrete_sequence=["#1f7ae0"])
-            st.plotly_chart(style_figure(fig_patho), width="stretch")
+            st.plotly_chart(style_figure(fig_patho, height=220), width="stretch")
             st.markdown("</div>", unsafe_allow_html=True)
 
         with mid_top_right:
@@ -1020,7 +1186,7 @@ def render_charts(df_filtered, chart_options):
             df_item = df_filtered[COL_ITEM].value_counts().head(top_n).reset_index()
             df_item.columns = ["Item", "Nombre"]
             fig_item = px.bar(df_item, x="Nombre", y="Item", orientation="h", color_discrete_sequence=["#208a3c"])
-            st.plotly_chart(style_figure(fig_item), width="stretch")
+            st.plotly_chart(style_figure(fig_item, height=220), width="stretch")
             st.markdown("</div>", unsafe_allow_html=True)
 
         with mid_bottom_right:
@@ -1032,25 +1198,8 @@ def render_charts(df_filtered, chart_options):
                 color_discrete_sequence=["#e3342f", "#1f7ae0", "#8f99a3", "#16a34a", "#d97706"],
             )
             fig_categorie.update_traces(textinfo="none")
-            st.plotly_chart(style_figure(fig_categorie), width="stretch")
+            st.plotly_chart(style_figure(fig_categorie, height=220), width="stretch")
             st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-        st.markdown("<div class='block'><div class='block-title'>Evolution des appels dans le temps</div>", unsafe_allow_html=True)
-        df_time = build_time_series(df_filtered, chart_options["time_grain"])
-        fig_time = px.line(
-            df_time,
-            x="Periode",
-            y="Nombre",
-            color="Indicateur",
-            markers=True,
-            text="Nombre" if chart_options["show_curve_labels"] else None,
-            color_discrete_map={"Appels recus": "#1f7ae0", "Appels clotures": "#15803d"},
-        )
-        if chart_options["show_curve_labels"]:
-            fig_time.update_traces(textposition="top center")
-        st.plotly_chart(style_figure(fig_time, height=260), width="stretch")
-        st.markdown("</div>", unsafe_allow_html=True)
 
     with c3:
         df_province = df_filtered[COL_PROVINCE_NORM].value_counts().head(top_n).reset_index()
@@ -1060,6 +1209,31 @@ def render_charts(df_filtered, chart_options):
         df_patho_rank = df_filtered[COL_PATHOLOGIE].value_counts().head(top_n).reset_index()
         df_patho_rank.columns = ["Pathologie", "Nombre"]
         render_ranking(f"Top {top_n} pathologies", df_patho_rank, "Pathologie")
+
+    st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+    tab_tendance, tab_charge, tab_performance, tab_croisement = st.tabs(
+        ["Tendance", "Charge horaire", "Performance", "Croisements"]
+    )
+
+    with tab_tendance:
+        render_time_trend_chart(df_filtered, chart_options)
+
+    with tab_charge:
+        extra_row_1_col_1, extra_row_1_col_2 = st.columns(2)
+        with extra_row_1_col_1:
+            render_hour_chart(df_filtered)
+        with extra_row_1_col_2:
+            render_weekday_chart(df_filtered)
+
+    with tab_performance:
+        extra_row_2_col_1, extra_row_2_col_2 = st.columns(2)
+        with extra_row_2_col_1:
+            render_closure_rate_by_province(df_filtered, top_n)
+        with extra_row_2_col_2:
+            render_resolution_chart(df_filtered, top_n)
+
+    with tab_croisement:
+        render_pathology_province_heatmap(df_filtered, top_n)
 
 
 def render_footer():
