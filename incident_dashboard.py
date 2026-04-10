@@ -1772,7 +1772,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "rougeole": {
         "label": "Rougeole (line list)",
-        "enabled": False,
+        "enabled": True,
         "default_sheet": "LL_Rougeole_Rubeole",
         "rename_map": {
             "Evolution": "Issue",
@@ -1933,7 +1933,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "autre": {
         "label": "Autre (line list générique)",
-        "enabled": False,
+        "enabled": True,
         "default_sheet": "",
         "rename_map": {},
         "onset_candidates": [
@@ -9036,8 +9036,8 @@ if show_maps:
             st.caption("Réinitialise les uploads et revient aux GeoJSON par défaut du dépôt (si présents).")
 
         # Fichiers par défaut (dans le repo)
-        geo_prov_default = "geometry_rdc_provinces.geojson"
-        geo_zs_default   = "geometry_rdc_zones_sante.geojson"
+        geo_prov_default = "data/geometry_rdc_provinces.geojson"
+        geo_zs_default   = "data/geometry_rdc_zones_sante.geojson"
 
         def _upl_to_tmp_path(upl_obj, suffix=".geojson"):
             if upl_obj is None:
