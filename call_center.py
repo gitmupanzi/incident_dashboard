@@ -98,6 +98,55 @@ def strip_accents(value):
     return "".join(character for character in normalized if not unicodedata.combining(character))
 
 
+def normalize_column_key(value):
+    normalized = strip_accents(value).strip().lower()
+    normalized = normalized.replace("n°", "n").replace("nº", "n").replace("№", "n")
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized)
+    return normalized.strip("_")
+
+
+COLUMN_NAME_ALIASES = {
+    "n": "N",
+    "no": "N",
+    "numero": "N",
+    "date": COL_DATE,
+    "heure": COL_HEURE,
+    "nom_de_la_qualification": COL_QUALIFICATION,
+    "nom_qualification": COL_QUALIFICATION,
+    "qualification": COL_QUALIFICATION,
+    "numero_appelant": "Numero_appelant",
+    "numero_appelant": "Numero_appelant",
+    "numero_de_l_appelant": "Numero_appelant",
+    "num_appelant": "Numero_appelant",
+    "autre_numero": "Autre_numero",
+    "autre_numero_telephone": "Autre_numero",
+    "autre_numero_telephone": "Autre_numero",
+    "nom": "Nom_complet",
+    "nom_complet": "Nom_complet",
+    "prenom": "Prenom",
+    "province": COL_PROVINCE,
+    "province_notification": COL_PROVINCE,
+    "territoire": COL_TERRITOIRE,
+    "territoire_notification": COL_TERRITOIRE,
+    "zone_de_sante": COL_ZONE_SANTE,
+    "zone_de_sante_notification": COL_ZONE_SANTE,
+    "genre": COL_SEXE,
+    "sexe": COL_SEXE,
+    "categorie": COL_CATEGORIE,
+    "categorie_appel": COL_CATEGORIE,
+    "type": COL_PATHOLOGIE,
+    "type_pathologie": COL_PATHOLOGIE,
+    "type_de_pathologie": COL_PATHOLOGIE,
+    "item": COL_ITEM,
+    "details_de_l_appel": "Details_appel",
+    "details_appel": "Details_appel",
+    "detail_appel": "Details_appel",
+    "resolution": COL_RESOLUTION,
+    "statutappel": COL_STATUT,
+    "statut_appel": COL_STATUT,
+}
+
+
 def normalize_province_name(value):
     cleaned_value = strip_accents(value).strip()
     cleaned_value = re.sub(r"\s+", " ", cleaned_value)
@@ -230,11 +279,57 @@ def read_postgresql_file(host, port, database, user, password, query):
     return df_loaded
 
 
+def is_blank_series(series):
+    return series.isna() | series.astype(str).str.strip().eq("")
+
+
+def merge_duplicate_columns(df_loaded):
+    merged = pd.DataFrame(index=df_loaded.index)
+    for column in list(dict.fromkeys(df_loaded.columns)):
+        same_columns = df_loaded.loc[:, df_loaded.columns == column]
+        combined = same_columns.iloc[:, 0]
+        for idx in range(1, same_columns.shape[1]):
+            next_series = same_columns.iloc[:, idx]
+            combined = combined.where(~is_blank_series(combined), next_series)
+        merged[column] = combined
+    return merged
+
+
+def standardize_source_columns(df_loaded):
+    df_loaded = df_loaded.copy()
+    df_loaded.columns = [str(column).strip() for column in df_loaded.columns]
+
+    renamed_columns = {}
+    for column in df_loaded.columns:
+        normalized_key = normalize_column_key(column)
+        renamed_columns[column] = COLUMN_NAME_ALIASES.get(normalized_key, column)
+
+    df_loaded = df_loaded.rename(columns=renamed_columns)
+    df_loaded = merge_duplicate_columns(df_loaded)
+
+    if "Prenom" in df_loaded.columns:
+        nom_series = (
+            df_loaded["Nom_complet"].fillna("").astype(str).str.strip()
+            if "Nom_complet" in df_loaded.columns
+            else pd.Series("", index=df_loaded.index, dtype="object")
+        )
+        prenom_series = df_loaded["Prenom"].fillna("").astype(str).str.strip()
+        full_name = (nom_series + " " + prenom_series).str.strip()
+        if "Nom_complet" in df_loaded.columns:
+            df_loaded["Nom_complet"] = full_name.where(full_name.ne(""), df_loaded["Nom_complet"])
+        else:
+            df_loaded["Nom_complet"] = full_name
+        df_loaded = df_loaded.drop(columns=["Prenom"])
+
+    return df_loaded
+
+
 def require_columns(df_loaded):
     missing_columns = [column for column in REQUIRED_COLUMNS if column not in df_loaded.columns]
     if missing_columns:
-        st.error("Le fichier Excel ne contient pas toutes les colonnes attendues.")
+        st.error("Les donnees ne contiennent pas toutes les colonnes attendues, meme apres harmonisation.")
         st.write("Colonnes manquantes :", ", ".join(missing_columns))
+        st.write("Colonnes detectees :", ", ".join(df_loaded.columns))
         st.stop()
 
 
@@ -288,6 +383,7 @@ def parse_hour_value(value):
 
 
 def prepare_data(df_loaded):
+    df_loaded = standardize_source_columns(df_loaded)
     require_columns(df_loaded)
 
     df_loaded[COL_DATE] = pd.to_datetime(df_loaded[COL_DATE], errors="coerce")
