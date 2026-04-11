@@ -537,7 +537,7 @@ def render_header():
         """
 <div class="header">
 <h2>DASHBOARD DE CALL CENTER SANTE PUBLIQUE</h2>
-<p>Suivi des appels et surveillance epidemiologique</p>
+<p>Suivi des appels et surveillance epidémiologique</p>
 </div>
 """,
         unsafe_allow_html=True,
@@ -1241,8 +1241,8 @@ def render_footer():
         """
 <div class="footer">
   <div>Pour toute urgence sanitaire, appelez le<br><small>+243 800 000 115</small></div>
-  <div>Donnees fiables pour des decisions rapides<br><small>Protegeons nos communautes</small></div>
-  <div>Source : Base de donnees Call Center<br><small>COUSP - RDC</small></div>
+  <div>Données fiables pour des decisions rapides<br><small>Protegeons nos communautes</small></div>
+  <div>Source : Base de données Call Center<br><small>COUSP - RDC</small></div>
 </div>
 """,
         unsafe_allow_html=True,

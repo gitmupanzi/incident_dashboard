@@ -2142,6 +2142,21 @@ def st_plot(fig, key=None, height=None, stretch=True, annotate_values: Optional[
     if annotate_values is None:
         annotate_values = get_toggle_flag("annot_vals", False)
 
+    try:
+        fig.update_layout(
+            template="plotly_white",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            colorway=[COLOR_CASES, COLOR_DEATHS, COLOR_CFR, COLOR_MASCULIN, COLOR_FEMININ, "#3e8b5a", "#d97b16"],
+            font=dict(color="#20344f", size=12),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            margin=dict(l=40, r=30, t=70, b=50),
+        )
+        fig.update_xaxes(showgrid=False, linecolor="rgba(9,37,79,0.10)")
+        fig.update_yaxes(showgrid=True, gridcolor="rgba(9,37,79,0.08)", zeroline=False)
+    except Exception:
+        pass
+
     fig = apply_plotly_value_annotations(fig, bool(annotate_values))
 
     kwargs = {}
@@ -2160,7 +2175,16 @@ def st_plot(fig, key=None, height=None, stretch=True, annotate_values: Optional[
 
 def render_section_title(section_number: int, title: str) -> None:
     """Affiche un titre de sous-section harmonisé dans les onglets compacts."""
-    st.markdown(f"### Section {section_number} — {title}")
+    safe_title = str(title).upper()
+    st.markdown(
+        f"""
+<div class="cousp-section-title">
+  <span class="cousp-section-index">{int(section_number):02d}</span>
+  <span>{safe_title}</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def render_standards_note() -> None:
@@ -2168,6 +2192,491 @@ def render_standards_note() -> None:
     st.caption(
         "Lecture normative : les indicateurs présentés doivent être interprétés selon les définitions usuelles de la surveillance en santé publique, "
         "en tenant compte de la complétude, de la promptitude, de la qualité des données et du niveau de confirmation biologique disponible."
+    )
+
+
+def inject_professional_dashboard_css() -> None:
+    """Applique une identité visuelle institutionnelle inspirée du tableau de bord COUSP."""
+    st.markdown(
+        """
+<style>
+    :root {
+        --cousp-blue-dark: #0b2c63;
+        --cousp-blue: #1553a1;
+        --cousp-blue-soft: #eaf2ff;
+        --cousp-green: #2d7d46;
+        --cousp-green-soft: #eef8f1;
+        --cousp-orange: #d97b16;
+        --cousp-orange-soft: #fff4e8;
+        --cousp-red: #b9353f;
+        --cousp-slate: #44536a;
+        --cousp-border: rgba(18, 53, 106, 0.10);
+        --cousp-shadow: 0 14px 30px rgba(11, 44, 99, 0.10);
+        --cousp-card-bg: rgba(255, 255, 255, 0.92);
+    }
+
+    .stApp {
+        background:
+            radial-gradient(circle at top left, rgba(39, 107, 191, 0.12), transparent 30%),
+            radial-gradient(circle at top right, rgba(45, 125, 70, 0.12), transparent 26%),
+            linear-gradient(180deg, #f4f8fd 0%, #edf3f9 46%, #f6f8fc 100%);
+    }
+
+    .main .block-container {
+        max-width: 1520px;
+        padding-top: 1.2rem;
+        padding-bottom: 2rem;
+    }
+
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #f2f6fb 0%, #e8f0f7 100%);
+        border-right: 1px solid rgba(11, 44, 99, 0.08);
+    }
+
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] .stMarkdown,
+    section[data-testid="stSidebar"] .stCaption {
+        color: #18365f;
+    }
+
+    .cousp-hero {
+        position: relative;
+        overflow: hidden;
+        padding: 1.35rem 1.75rem;
+        margin-bottom: 1.1rem;
+        border-radius: 24px;
+        color: #ffffff;
+        background:
+            linear-gradient(120deg, rgba(255,255,255,0.10), rgba(255,255,255,0.02)),
+            linear-gradient(90deg, #072654 0%, #0f438f 56%, #2c75c8 100%);
+        box-shadow: 0 18px 40px rgba(7, 38, 84, 0.24);
+        border: 1px solid rgba(255,255,255,0.18);
+    }
+
+    .cousp-hero::before,
+    .cousp-hero::after {
+        content: "";
+        position: absolute;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.10);
+        filter: blur(6px);
+    }
+
+    .cousp-hero::before {
+        width: 220px;
+        height: 220px;
+        top: -130px;
+        right: -30px;
+    }
+
+    .cousp-hero::after {
+        width: 160px;
+        height: 160px;
+        bottom: -90px;
+        left: -20px;
+    }
+
+    .cousp-hero-badge {
+        display: inline-block;
+        padding: 0.28rem 0.7rem;
+        margin-bottom: 0.8rem;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.14);
+        border: 1px solid rgba(255,255,255,0.16);
+        font-size: 0.82rem;
+        letter-spacing: 0.14em;
+        font-weight: 700;
+    }
+
+    .cousp-hero h1 {
+        margin: 0;
+        font-size: clamp(1.6rem, 2.8vw, 2.25rem);
+        line-height: 1.15;
+        letter-spacing: 0.03em;
+        font-weight: 800;
+    }
+
+    .cousp-hero p {
+        margin: 0.45rem 0 0;
+        font-size: 1rem;
+        opacity: 0.94;
+        font-weight: 500;
+    }
+
+    .cousp-context-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 0.8rem;
+        margin: 0.8rem 0 1rem;
+    }
+
+    .cousp-context-chip {
+        background: rgba(255, 255, 255, 0.84);
+        border: 1px solid var(--cousp-border);
+        box-shadow: var(--cousp-shadow);
+        border-radius: 18px;
+        padding: 0.85rem 1rem;
+    }
+
+    .cousp-context-chip .label {
+        color: var(--cousp-slate);
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+    }
+
+    .cousp-context-chip .value {
+        color: var(--cousp-blue-dark);
+        font-size: 1rem;
+        font-weight: 800;
+        margin-top: 0.28rem;
+    }
+
+    .cousp-kpi-card {
+        min-height: 148px;
+        border-radius: 20px;
+        padding: 1rem 1.05rem;
+        color: #ffffff;
+        position: relative;
+        overflow: hidden;
+        box-shadow: 0 16px 34px rgba(13, 46, 93, 0.18);
+        height: 100%;
+    }
+
+    .cousp-kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(205px, 1fr));
+        gap: 0.9rem;
+        margin-bottom: 0.75rem;
+        align-items: stretch;
+    }
+
+    .cousp-kpi-grid .cousp-kpi-card.span-2 {
+        grid-column: span 2;
+    }
+
+    .cousp-kpi-card::after {
+        content: "";
+        position: absolute;
+        inset: auto -20px -25px auto;
+        width: 86px;
+        height: 86px;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.10);
+    }
+
+    .cousp-kpi-card.blue { background: linear-gradient(160deg, #2f76d2 0%, #164fa7 100%); }
+    .cousp-kpi-card.navy { background: linear-gradient(160deg, #314468 0%, #232b44 100%); }
+    .cousp-kpi-card.orange { background: linear-gradient(160deg, #f09b39 0%, #d67310 100%); }
+    .cousp-kpi-card.green { background: linear-gradient(160deg, #4e9864 0%, #2f6f44 100%); }
+
+    .cousp-kpi-title {
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+        opacity: 0.90;
+        margin-bottom: 0.35rem;
+    }
+
+    .cousp-kpi-value {
+        font-size: clamp(1.6rem, 2vw, 2.35rem);
+        line-height: 1.05;
+        font-weight: 800;
+        margin-bottom: 0.35rem;
+        word-break: break-word;
+    }
+
+    .cousp-kpi-subtitle {
+        font-size: 0.92rem;
+        font-weight: 500;
+        opacity: 0.95;
+        word-break: break-word;
+    }
+
+    @media (max-width: 1280px) {
+        .cousp-kpi-grid {
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        }
+
+        .cousp-kpi-grid .cousp-kpi-card.span-2 {
+            grid-column: span 1;
+        }
+    }
+
+    .cousp-panel-title {
+        margin: 0.35rem 0 0.55rem;
+        color: var(--cousp-blue-dark);
+        font-size: 0.95rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 800;
+    }
+
+    .cousp-panel-subtitle {
+        margin: -0.15rem 0 0.6rem;
+        color: var(--cousp-slate);
+        font-size: 0.9rem;
+    }
+
+    .cousp-summary-box {
+        background: var(--cousp-card-bg);
+        border-radius: 22px;
+        border: 1px solid var(--cousp-border);
+        box-shadow: var(--cousp-shadow);
+        padding: 1.05rem 1.1rem;
+        margin-bottom: 0.7rem;
+    }
+
+    .cousp-summary-box .summary-lead {
+        color: var(--cousp-blue-dark);
+        font-size: 1rem;
+        font-weight: 700;
+        margin-bottom: 0.7rem;
+    }
+
+    .cousp-summary-box ul {
+        margin: 0;
+        padding-left: 1rem;
+        color: #2a3c57;
+    }
+
+    .cousp-summary-box li {
+        margin-bottom: 0.35rem;
+    }
+
+    .cousp-section-title {
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+        margin: 0.4rem 0 0.75rem;
+        color: var(--cousp-blue-dark);
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+
+    .cousp-section-index {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 12px;
+        background: linear-gradient(160deg, #eff4fd 0%, #dfeaf9 100%);
+        border: 1px solid rgba(21, 83, 161, 0.16);
+        color: var(--cousp-blue);
+        font-size: 0.88rem;
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.45);
+    }
+
+    div[data-testid="stPlotlyChart"],
+    div[data-testid="stImage"],
+    div[data-testid="stDataFrame"],
+    div[data-testid="stMetric"] {
+        background: var(--cousp-card-bg);
+        border: 1px solid var(--cousp-border);
+        border-radius: 22px;
+        box-shadow: var(--cousp-shadow);
+    }
+
+    div[data-testid="stPlotlyChart"] {
+        padding: 0.4rem 0.5rem 0.2rem;
+    }
+
+    div[data-testid="stImage"],
+    div[data-testid="stDataFrame"] {
+        padding: 0.55rem;
+    }
+
+    div[data-testid="stMetric"] {
+        padding: 0.9rem 1rem;
+    }
+
+    div[data-testid="stMetric"] label {
+        color: var(--cousp-slate);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-size: 0.7rem;
+    }
+
+    div[data-testid="stTabs"] button[role="tab"] {
+        border-radius: 14px 14px 0 0;
+        padding: 0.85rem 1rem;
+        margin-right: 0.22rem;
+        background: rgba(255,255,255,0.74);
+        border: 1px solid rgba(21, 83, 161, 0.10);
+        color: var(--cousp-blue-dark);
+        font-weight: 700;
+    }
+
+    div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+        color: #ffffff;
+        background: linear-gradient(90deg, #11448d 0%, #2b74ca 100%);
+        border-color: transparent;
+    }
+
+    div[data-testid="stExpander"] {
+        border: 1px solid var(--cousp-border);
+        border-radius: 18px;
+        background: rgba(255,255,255,0.82);
+        box-shadow: var(--cousp-shadow);
+    }
+
+    div[data-testid="stExpander"] summary {
+        min-height: 54px;
+        padding-top: 0.2rem;
+        padding-bottom: 0.2rem;
+    }
+
+    div[data-testid="stExpander"] summary p {
+        color: var(--cousp-blue-dark);
+        font-size: 0.88rem;
+        font-weight: 700;
+        line-height: 1.2;
+    }
+
+    div[data-testid="stExpander"] details[open] {
+        border-radius: 18px;
+        border: 1px solid rgba(21, 83, 161, 0.16);
+        background: rgba(255,255,255,0.96);
+        box-shadow: 0 18px 38px rgba(11, 44, 99, 0.12);
+    }
+
+    div[data-testid="stExpander"] details[open] summary {
+        border-bottom: 1px solid rgba(21, 83, 161, 0.10);
+        background: linear-gradient(90deg, rgba(234,242,255,0.95) 0%, rgba(245,249,255,0.95) 100%);
+        border-radius: 18px 18px 0 0;
+    }
+
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] div[data-testid="stExpander"] {
+        min-height: 62px;
+        border-radius: 16px;
+    }
+
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] div[data-testid="stExpander"] summary {
+        min-height: 62px;
+        padding-left: 0.55rem;
+        padding-right: 0.55rem;
+    }
+
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] div[data-testid="stExpander"] summary p {
+        font-size: 0.80rem;
+        text-transform: none;
+    }
+
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] div[data-testid="stButton"] > button {
+        min-height: 64px;
+        border-radius: 18px;
+        padding: 0.55rem 0.7rem;
+        white-space: normal;
+        line-height: 1.18;
+        font-size: 0.80rem;
+        font-weight: 700;
+        box-shadow: var(--cousp-shadow);
+        border: 1px solid rgba(21, 83, 161, 0.14);
+        background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(243,247,253,0.98) 100%);
+        color: var(--cousp-blue-dark);
+    }
+
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] div[data-testid="stButton"] > button:hover {
+        border-color: rgba(21, 83, 161, 0.28);
+        color: var(--cousp-blue);
+        transform: translateY(-1px);
+    }
+
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] div[data-testid="stButton"] > button[kind="primary"],
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] div[data-testid="stButton"] > button[data-testid="baseButton-primary"] {
+        color: #ffffff;
+        border-color: transparent;
+        background: linear-gradient(120deg, #103d82 0%, #2369be 100%);
+        box-shadow: 0 18px 34px rgba(16, 61, 130, 0.24);
+    }
+
+    .cousp-detail-empty {
+        margin-top: 0.95rem;
+        margin-bottom: 0.5rem;
+        padding: 1rem 1.15rem;
+        border-radius: 20px;
+        border: 1px dashed rgba(21, 83, 161, 0.28);
+        background: linear-gradient(180deg, rgba(247, 250, 255, 0.98) 0%, rgba(239, 245, 253, 0.95) 100%);
+        color: #2b4264;
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.55);
+    }
+
+    .cousp-detail-empty strong {
+        display: block;
+        margin-bottom: 0.22rem;
+        color: var(--cousp-blue-dark);
+        letter-spacing: 0.02em;
+    }
+
+    .cousp-footer {
+        margin-top: 1.4rem;
+        padding: 1.15rem 1.35rem;
+        border-radius: 22px;
+        color: #ffffff;
+        background:
+            linear-gradient(120deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04)),
+            linear-gradient(90deg, #09254f 0%, #0b3d7d 56%, #1e5fae 100%);
+        box-shadow: 0 16px 36px rgba(8, 38, 78, 0.20);
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 1rem;
+    }
+
+    .cousp-footer strong {
+        display: block;
+        margin-bottom: 0.18rem;
+        font-size: 1rem;
+        letter-spacing: 0.03em;
+    }
+
+    .cousp-footer span {
+        font-size: 0.92rem;
+        opacity: 0.92;
+    }
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_professional_header() -> None:
+    """Affiche le bandeau principal du tableau de bord."""
+    st.markdown(
+        """
+<div class="cousp-hero">
+  <div class="cousp-hero-badge">COUSP RDC</div>
+  <h1>TABLEAU DE BORD DES INCIDENTS EPIDEMIOLOGIQUES</h1>
+  <p>Situation epidemiologique hebdomadaire - COUSP RDC</p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_footer() -> None:
+    """Affiche un pied de page professionnel et institutionnel."""
+    st.markdown(
+        """
+<div class="cousp-footer">
+  <div>
+    <strong>COUSP RDC</strong>
+    <span>Surveillance epidemiologique nationale</span>
+  </div>
+  <div>
+    <strong>Donnees fiables pour decisions rapides</strong>
+    <span>Protection des communautes et pilotage operationnel</span>
+  </div>
+  <div>
+    <strong>Ministere de la Sante</strong>
+    <span>Tous droits reserves</span>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
     )
 
 
@@ -3626,6 +4135,12 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # =========================
+# THEME DASHBOARD
+# =========================
+inject_professional_dashboard_css()
+render_professional_header()
+
+# =========================
 # SIDEBAR: INPUT
 # =========================
 st.sidebar.header("Source des données")
@@ -3649,8 +4164,9 @@ default_sheet = DISEASE_SPECS.get(disease_key, DISEASE_SPECS["cholera"]).get("de
 disease_enabled = is_disease_enabled(disease_key)
 
 if not disease_enabled:
+    disabled_label = DISEASE_SPECS.get(disease_key, {}).get("label", disease_key)
     st.sidebar.warning(
-        f"{DISEASE_SPECS.get(disease_key, {}).get("label", disease_key)} : maladie désactivée. "
+        f"{disabled_label} : maladie désactivée. "
         "Le fichier peut être téléversé, mais aucune analyse ne sera exécutée."
     )
 
@@ -3814,59 +4330,13 @@ if not IDSR_MODE:
     df = df.copy()
     age_col_auto = pick_age_col(df)
 
-
-    # =========================
-    # UI: TITLE + KPIs
-    # =========================
-    st.title("Analyse pour le suivi des listes linéaires et des données agrégées IDSR en RDC")
-    with st.expander("Fichiers utilisés"):
+    with st.expander("Source analytique et fichiers utilises", expanded=False):
         st.write(files_used[:200])
-
-    with st.expander("Indicateurs clés de la semaine"):
-        kpi_all = compute_indicators(df)
-        cases  = kpi_all["n_cases"]
-        deaths = kpi_all["n_deaths"]
-        cfr    = kpi_all["cfr_pct"] if not np.isnan(kpi_all["cfr_pct"]) else 0.0
-
-        # --- Provinces (définitions) ---
-        n_provinces_global = len(EPIDEMIE)  # toutes provinces RDC
-        provinces_epid = get_provinces_epid()
-        n_provinces_attendues = len(provinces_epid)  # provinces True
-
-        # Provinces trouvées dans les données (df)
-        n_provinces = df[COL_PROV].nunique() if (COL_PROV in df.columns and cases) else 0
-
-        # Provinces épidémiques réellement rapportées = intersection (df ∩ provinces True)
-        if (COL_PROV in df.columns) and cases:
-            n_provinces_epid = df.loc[df[COL_PROV].isin(provinces_epid), COL_PROV].nunique()
-        else:
-            n_provinces_epid = 0
-
-        # --- % complétude ---
-        compl_epidem_pct = (n_provinces_epid / n_provinces_attendues * 100.0) if n_provinces_attendues > 0 else 0.0
-        compl_nat_pct    = (n_provinces / n_provinces_global * 100.0) if n_provinces_global > 0 else 0.0
-
-        # plafonner à 100%
-        compl_epidem_pct = min(compl_epidem_pct, 100.0)
-        compl_nat_pct    = min(compl_nat_pct, 100.0)
-
-        # --- Textes ratio ---
-        prov_ratio_epidem = f"{n_provinces_epid} / {n_provinces_attendues}"
-        prov_ratio_nat    = f"{n_provinces} / {n_provinces_global}"
-
-        # --- ZS ---
-        n_zs = df[COL_ZS].nunique() if (COL_ZS in df.columns and cases) else 0
-
-        # --- KPIs UI ---
-        k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
-        k1.metric("Cas (lignes)", f"{cases:,}".replace(",", " "))
-        k2.metric("Décès", f"{deaths:,}".replace(",", " "))
-        k3.metric("CFR (%)", f"{cfr:.2f}" if cases else "0.00")
-        k4.metric("Semaine min", str(df[COL_WNUM].min()) if (COL_WNUM in df.columns and cases) else "-")
-        k5.metric("Semaine max", str(df[COL_WNUM].max()) if (COL_WNUM in df.columns and cases) else "-")
-        k6.metric("Provinces épidémiques", prov_ratio_epidem, f"{compl_epidem_pct:.1f}%")
-        k7.metric("Couverture nationale", prov_ratio_nat, f"{compl_nat_pct:.1f}%")
-        k8.metric("ZS touchées", f"{n_zs}")
+        disease_label = DISEASE_SPECS.get(disease_key, {}).get("label", disease_key)
+        st.write(f"Perimetre courant : **{disease_label}**")
+        st.write(
+            "Les KPI et visuels de la page d'accueil sont calcules apres application des filtres temporels et geographiques."
+        )
 
 
     # =========================
@@ -3988,58 +4458,12 @@ if not IDSR_MODE:
             df_f = df_f[df_f[COL_CLASS].isin(class_sel)]
 
     age_col = pick_age_col(df_f)
-    # =========================
-    # KPIs (après filtres géographiques)
-    # =========================
-    with st.expander("Indicateurs clés de la semaine correspondant aux filtres géographiques sélectionnés",expanded=True):
-        st.info("Ces indicateurs sont calculés uniquement sur le périmètre analytique actuellement sélectionné et doivent être interprétés selon les définitions standard de surveillance.")
-
-        kpi_f = compute_indicators(df_f)
-        cases  = kpi_f["n_cases"]
-        deaths = kpi_f["n_deaths"]
-        cfr    = kpi_f["cfr_pct"] if not np.isnan(kpi_f["cfr_pct"]) else 0.0
-
-        # --- Provinces (définitions) ---
-        n_provinces_global = len(EPIDEMIE)  # toutes les provinces (RDC)
-
-        # si PROVINCES_EPID existe déjà, on l'utilise, sinon on le reconstruit
-        provinces_epid = get_provinces_epid()
-        n_provinces_attendues = len(provinces_epid)  # provinces True
-
-        n_provinces_f = df_f[COL_PROV].nunique() if (COL_PROV in df_f.columns and cases) else 0
-
-        # --- % complétude ---
-        compl_epidem_pct = (n_provinces_f / n_provinces_attendues * 100.0) if n_provinces_attendues > 0 else 0.0
-        compl_nat_pct    = (n_provinces_f / n_provinces_global   * 100.0) if n_provinces_global > 0 else 0.0
-
-        # plafonner à 100% (optionnel)
-        compl_epidem_pct = min(compl_epidem_pct, 100.0)
-        compl_nat_pct    = min(compl_nat_pct, 100.0)
-
-        # --- Textes ratio ---
-        prov_ratio_epidem = f"{n_provinces_f} / {n_provinces_attendues}"
-        prov_ratio_nat    = f"{n_provinces_f} / {n_provinces_global}"
-
-        # --- ZS ---
-        n_zs_f = df_f[COL_ZS].nunique() if (COL_ZS in df_f.columns and cases) else 0
-
-        # --- KPIs UI ---
-        k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
-        k1.metric("Cas (lignes)", f"{cases:,}".replace(",", " "))
-        k2.metric("Décès", f"{deaths:,}".replace(",", " "))
-        k3.metric("CFR (%)", f"{cfr:.2f}" if cases else "0.00")
-        k4.metric("Semaine min", str(df_f[COL_WNUM].min()) if (COL_WNUM in df_f.columns and cases) else "-")
-        k5.metric("Semaine max", str(df_f[COL_WNUM].max()) if (COL_WNUM in df_f.columns and cases) else "-")
-        k6.metric("Provinces épidémiques", prov_ratio_epidem, f"{compl_epidem_pct:.1f}%")
-        k7.metric("Couverture nationale", prov_ratio_nat, f"{compl_nat_pct:.1f}%")
-        k8.metric("ZS touchées", f"{n_zs_f}")
 else:
     # Mode IDSR: on ne charge pas de line list ici. Les analyses IDSR sont dans l'onglet 9.
     raw = pd.DataFrame()
     df = pd.DataFrame()
     df_f = pd.DataFrame()
     files_used = []
-    st.title("Plateforme analytique de surveillance des listes linéaires et des données agrégées IDSR — RDC")
     st.info("Mode **IDSR agrégé hebdomadaire** : utilisez l’onglet **IDSR** pour téléverser, filtrer et analyser le fichier agrégé.")
 
 # =========================
@@ -4155,6 +4579,52 @@ def build_simple_lab_table(df_: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["Indicateur labo", "n", "%"])
 
 
+def build_weekly_lab_summary(df_: pd.DataFrame) -> pd.DataFrame:
+    """Construit un suivi hebdomadaire des tests valides et de la positivite."""
+    week_col = resolve_week_column(df_)
+    if week_col is None or COL_TDRR not in df_.columns:
+        return pd.DataFrame(columns=["Semaine", "Tests valides", "Tests positifs", "Positivite (%)"])
+
+    tmp = df_.copy()
+    if week_col == "YW":
+        tmp = tmp[tmp["YW"].notna()].copy()
+        tmp["Semaine"] = tmp["YW"].astype(str)
+        tmp["_order"] = tmp["Semaine"]
+    elif week_col == COL_WNUM:
+        tmp["_week_num"] = pd.to_numeric(tmp[COL_WNUM], errors="coerce")
+        tmp = tmp[tmp["_week_num"].notna()].copy()
+        tmp["_order"] = tmp["_week_num"].astype(int)
+        tmp["Semaine"] = tmp["_order"].apply(lambda x: f"SE{x:02d}")
+    else:
+        tmp = tmp[tmp[COL_WEEK].notna()].copy()
+        tmp["Semaine"] = tmp[COL_WEEK].astype(str)
+        tmp["_order"] = tmp["Semaine"]
+
+    if tmp.empty:
+        return pd.DataFrame(columns=["Semaine", "Tests valides", "Tests positifs", "Positivite (%)"])
+
+    res_n = _tdr_result_norm(tmp[COL_TDRR])
+    tmp["test_valide"] = res_n.isin(TDR_POS_SET.union(TDR_NEG_SET)).astype(int)
+    tmp["test_positif"] = res_n.isin(TDR_POS_SET).astype(int)
+
+    summary = (
+        tmp.groupby(["_order", "Semaine"], as_index=False)
+        .agg(
+            **{
+                "Tests valides": ("test_valide", "sum"),
+                "Tests positifs": ("test_positif", "sum"),
+            }
+        )
+        .sort_values("_order")
+    )
+    summary["Positivite (%)"] = np.where(
+        summary["Tests valides"] > 0,
+        summary["Tests positifs"] / summary["Tests valides"] * 100.0,
+        np.nan,
+    )
+    return summary.drop(columns=["_order"])
+
+
 def build_delay_summary_table(df_: pd.DataFrame, delay_cols: list[str]) -> pd.DataFrame:
     rows = []
     for col in delay_cols:
@@ -4246,14 +4716,526 @@ def build_who_narrative_summary(df_: pd.DataFrame) -> str:
         f"Cette synthèse descriptive doit être interprétée en tenant compte de la complétude, de la promptitude et de la qualité des données disponibles."
     )
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📈 Surveillance épidémiologique, létalité et promptitude",
-    "👥 Profil épidémiologique des cas : personne, lieu et laboratoire",
-    "🗂️ Qualité, complétude, revue et export des données",
-    "📝 Synthèse automatique SITREP et aide à la décision",
-    "📚 Surveillance agrégée IDSR",
-    "📌 Indice provincial composite de risque épidémique (IREP)"
-])
+
+def format_metric_value(value: Any, decimals: int = 0, suffix: str = "") -> str:
+    """Formate proprement les valeurs numeriques affichees dans les KPI."""
+    if value is None or pd.isna(value):
+        return "-"
+    try:
+        if decimals <= 0:
+            return f"{int(round(float(value))):,}".replace(",", " ") + suffix
+        return f"{float(value):,.{int(decimals)}f}".replace(",", " ") + suffix
+    except Exception:
+        return f"{value}{suffix}"
+
+
+def format_pct_delta(current_value: Any, previous_value: Any) -> str:
+    """Construit un delta lisible pour les cartes KPI."""
+    delta = pct_change_safe(current_value, previous_value)
+    if pd.isna(delta):
+        return "Reference indisponible"
+    return f"{delta:+.1f}% vs semaine precedente"
+
+
+def resolve_week_column(df_: pd.DataFrame) -> Optional[str]:
+    """Identifie la meilleure colonne semaine disponible pour les vues synthese."""
+    if "YW" in df_.columns and df_["YW"].notna().any():
+        return "YW"
+    if COL_WNUM in df_.columns and pd.to_numeric(df_[COL_WNUM], errors="coerce").notna().any():
+        return COL_WNUM
+    if COL_WEEK in df_.columns and df_[COL_WEEK].notna().any():
+        return COL_WEEK
+    return None
+
+
+def build_weekly_overview_table(df_: pd.DataFrame) -> pd.DataFrame:
+    """Construit la serie hebdomadaire standard utilisee dans la page d'accueil."""
+    week_col = resolve_week_column(df_)
+    if week_col is None or df_.empty:
+        return pd.DataFrame(columns=["order_key", "label", "Cas", "Deces", "Letalite (%)"])
+
+    weekly = df_.copy()
+    if week_col == "YW":
+        weekly = weekly[weekly["YW"].notna()].copy()
+        weekly["order_key"] = weekly["YW"].astype(str)
+        weekly["label"] = weekly["YW"].astype(str)
+    elif week_col == COL_WNUM:
+        weekly["_week_num"] = pd.to_numeric(weekly[COL_WNUM], errors="coerce")
+        weekly = weekly[weekly["_week_num"].notna()].copy()
+        weekly["order_key"] = weekly["_week_num"].astype(int)
+        weekly["label"] = weekly["order_key"].apply(lambda x: f"SE{x:02d}")
+    else:
+        weekly = weekly[weekly[COL_WEEK].notna()].copy()
+        weekly["order_key"] = weekly[COL_WEEK].astype(str)
+        weekly["label"] = weekly[COL_WEEK].astype(str)
+
+    if weekly.empty:
+        return pd.DataFrame(columns=["order_key", "label", "Cas", "Deces", "Letalite (%)"])
+
+    grouped = (
+        weekly.groupby(["order_key", "label"], as_index=False)
+        .agg(Cas=("label", "size"), Deces=("is_death", "sum"))
+        .sort_values("order_key")
+    )
+    grouped["Letalite (%)"] = np.where(grouped["Cas"] > 0, grouped["Deces"] / grouped["Cas"] * 100.0, np.nan)
+    return grouped
+
+
+def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
+    """Calcule les KPI principaux de la page d'accueil."""
+    kpi = compute_indicators(df_)
+    weekly = build_weekly_overview_table(df_)
+
+    provinces_epid = get_provinces_epid()
+    total_provinces = len(EPIDEMIE)
+    total_provinces_epid = len(provinces_epid)
+    reported_provinces = int(df_[COL_PROV].dropna().nunique()) if COL_PROV in df_.columns else 0
+    reported_epid_provinces = (
+        int(df_.loc[df_[COL_PROV].isin(provinces_epid), COL_PROV].dropna().nunique())
+        if COL_PROV in df_.columns
+        else 0
+    )
+    reported_zs = int(df_[COL_ZS].dropna().nunique()) if COL_ZS in df_.columns else 0
+
+    week_min = "-"
+    week_max = "-"
+    if not weekly.empty:
+        week_min = str(weekly["label"].iloc[0])
+        week_max = str(weekly["label"].iloc[-1])
+    elif COL_WNUM in df_.columns and pd.to_numeric(df_[COL_WNUM], errors="coerce").notna().any():
+        week_values = pd.to_numeric(df_[COL_WNUM], errors="coerce").dropna().astype(int)
+        week_min = f"SE{int(week_values.min()):02d}"
+        week_max = f"SE{int(week_values.max()):02d}"
+
+    latest = weekly.iloc[-1].to_dict() if not weekly.empty else {}
+    previous = weekly.iloc[-2].to_dict() if len(weekly) > 1 else {}
+    promptitude_pct, promptitude_n = pct_under_threshold(df_.get("delai_onset_to_adm"), get_session_int("seuil_jours", 2))
+
+    return {
+        "cases": int(kpi["n_cases"]),
+        "deaths": int(kpi["n_deaths"]),
+        "cfr": float(kpi["cfr_pct"]) if not pd.isna(kpi["cfr_pct"]) else np.nan,
+        "week_span": f"{week_min} -> {week_max}" if week_min != "-" and week_max != "-" else "-",
+        "week_min": week_min,
+        "week_max": week_max,
+        "reported_epid_provinces": reported_epid_provinces,
+        "total_provinces_epid": total_provinces_epid,
+        "reported_provinces": reported_provinces,
+        "total_provinces": total_provinces,
+        "reported_zs": reported_zs,
+        "coverage_epid_pct": safe_pct(reported_epid_provinces, total_provinces_epid),
+        "coverage_nat_pct": safe_pct(reported_provinces, total_provinces),
+        "weekly": weekly,
+        "latest": latest,
+        "previous": previous,
+        "promptitude_pct": promptitude_pct,
+        "promptitude_n": promptitude_n,
+        "top_province": _safe_top_label(df_, COL_PROV),
+        "top_zs": _safe_top_label(df_, COL_ZS),
+    }
+
+
+def render_context_row(files_used: list[str], disease_key: str, df_: pd.DataFrame, payload: Dict[str, Any]) -> None:
+    """Affiche quelques repères analytiques juste sous le bandeau principal."""
+    disease_label = DISEASE_SPECS.get(disease_key, {}).get("label", str(disease_key))
+    source_value = "Aucun fichier" if not files_used else str(files_used[0]).replace("upload:", "")
+    if len(source_value) > 42:
+        source_value = source_value[:39] + "..."
+
+    if DATE_NOTIF in df_.columns and pd.to_datetime(df_[DATE_NOTIF], errors="coerce").notna().any():
+        notif_dates = pd.to_datetime(df_[DATE_NOTIF], errors="coerce")
+        period_value = f"{notif_dates.min():%d/%m/%Y} -> {notif_dates.max():%d/%m/%Y}"
+    else:
+        period_value = payload.get("week_span", "-")
+
+    chips = [
+        ("Source", source_value),
+        ("Perimetre", disease_label),
+        ("Periode", period_value),
+        ("Couverture", f"{payload.get('reported_provinces', 0)} provinces | {payload.get('reported_zs', 0)} ZS"),
+    ]
+    html_blocks = []
+    for label, value in chips:
+        html_blocks.append(
+            f"""
+<div class="cousp-context-chip">
+  <div class="label">{label}</div>
+  <div class="value">{value}</div>
+</div>
+"""
+        )
+    st.markdown(f"<div class='cousp-context-row'>{''.join(html_blocks)}</div>", unsafe_allow_html=True)
+
+
+def build_dashboard_kpi_card_html(title: str, value: str, subtitle: str, theme: str, span: int = 1) -> str:
+    """Construit une carte KPI HTML pour la bande de synthese principale."""
+    span_class = " span-2" if int(span) >= 2 else ""
+    return f"""
+<div class="cousp-kpi-card {theme}{span_class}">
+  <div class="cousp-kpi-title">{title}</div>
+  <div class="cousp-kpi-value">{value}</div>
+  <div class="cousp-kpi-subtitle">{subtitle}</div>
+</div>
+"""
+
+
+def render_dashboard_kpis(payload: Dict[str, Any]) -> None:
+    """Affiche la ligne horizontale des KPI principaux."""
+    cards = [
+        ("Total cas", format_metric_value(payload.get("cases", 0)), "Perimetre filtre", "blue", 1),
+        ("Total deces", format_metric_value(payload.get("deaths", 0)), "Perimetre filtre", "navy", 1),
+        ("CFR (%)", format_metric_value(payload.get("cfr"), decimals=2), "Letalite observee", "orange", 1),
+        ("Semaine min -> max", payload.get("week_span", "-"), "Fenetre analytique", "blue", 2),
+        (
+            "Provinces epidemiques",
+            f"{payload.get('reported_epid_provinces', 0)} / {payload.get('total_provinces_epid', 0)}",
+            "-" if pd.isna(payload.get("coverage_epid_pct")) else f"{payload.get('coverage_epid_pct', 0):.1f}% de couverture",
+            "green",
+            1,
+        ),
+        (
+            "Couverture nationale",
+            f"{payload.get('reported_provinces', 0)} / {payload.get('total_provinces', 0)}",
+            "-" if pd.isna(payload.get("coverage_nat_pct")) else f"{payload.get('coverage_nat_pct', 0):.1f}% de couverture",
+            "green",
+            1,
+        ),
+        ("Zones de sante touchees", format_metric_value(payload.get("reported_zs", 0)), "Notifications consolidees", "green", 1),
+    ]
+    cards_html = "".join(build_dashboard_kpi_card_html(*card) for card in cards)
+    st.markdown(f"<div class='cousp-kpi-grid'>{cards_html}</div>", unsafe_allow_html=True)
+
+
+def build_static_map_overview(df_: pd.DataFrame, level: str) -> tuple[Optional[plt.Figure], str]:
+    """Construit une carte statique par province ou zone de sante avec les GeoJSON du depot."""
+    if gpd is None:
+        return None, "geopandas n'est pas disponible."
+
+    if level == "province":
+        geo_path = "data/geometry_rdc_provinces.geojson"
+        group_col = COL_PROV
+        value_col = "nb_cas_prov"
+        title = "RDC - cas notifies par province"
+    else:
+        geo_path = "data/geometry_rdc_zones_sante.geojson"
+        group_col = COL_ZS
+        value_col = "nb_cas_zs"
+        title = "RDC - cas notifies par zone de sante"
+
+    if not Path(geo_path).exists():
+        return None, "GeoJSON non disponible dans le depot."
+    if group_col not in df_.columns or df_[group_col].dropna().empty:
+        return None, "Variable geographique indisponible."
+
+    try:
+        gdf_geo = gpd.read_file(geo_path)
+        df_map = df_[[group_col]].dropna().copy()
+        df_map[value_col] = 1
+        df_map = df_map.groupby(group_col, as_index=False)[value_col].sum()
+        gdf_join, _, match_rate = joindre_donnees_fuzzy_geo(
+            carte_gdf=gdf_geo,
+            df_donnees=df_map,
+            colonne_cle_geo="name",
+            colonne_cle_data=group_col,
+            colonne_valeurs=value_col,
+            seuil=0.90,
+        )
+        fig = carte_statique_matplotlib(
+            gdf=gdf_join,
+            colonne_valeurs=value_col,
+            titre=title,
+            annoter=False,
+            nom_zone="name",
+            fmt_valeurs="{:.0f}",
+            seuil_affichage=1,
+            cmap="YlOrRd",
+            afficher_fond_carte=False,
+            longueur_barre_km=50,
+            figsize=(8.4, 6.6) if level == "province" else (8.4, 6.9),
+        )
+        note = f"Taux de correspondance carte/donnees : {match_rate:.1%}"
+        return fig, note
+    except Exception as exc:
+        return None, f"Carte indisponible : {exc}"
+
+
+def render_static_map_overview(title: str, fig: Optional[plt.Figure], note: str) -> None:
+    """Affiche une carte dans la synthese ou un message de fallback propre."""
+    st.markdown(f"<div class='cousp-panel-title'>{title}</div>", unsafe_allow_html=True)
+    if fig is None:
+        st.info(note)
+        return
+    st.pyplot(fig, width="stretch")
+    plt.close(fig)
+    st.caption(note)
+
+
+def render_overview_dashboard(
+    df_: pd.DataFrame,
+    files_used: list[str],
+    disease_key: str,
+    use_custom_viz_flag: bool,
+    annotate_values_flag: bool,
+    x_tick_step: int,
+) -> None:
+    """Assemble la page d'accueil institutionnelle avant les onglets detailles."""
+    if df_.empty:
+        st.info("Aucune donnee filtree n'est disponible pour la synthese d'accueil.")
+        return
+
+    payload = build_dashboard_kpi_payload(df_)
+    render_context_row(files_used, disease_key, df_, payload)
+    render_dashboard_kpis(payload)
+    render_standards_note()
+
+    weekly = payload.get("weekly", pd.DataFrame())
+    fig_map_prov, note_map_prov = build_static_map_overview(df_, level="province")
+    fig_map_zs, note_map_zs = build_static_map_overview(df_, level="zone")
+
+    c1, c2, c3 = st.columns([1.05, 1.35, 1.35])
+    with c1:
+        st.markdown("<div class='cousp-panel-title'>Indicateurs cles de la semaine</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div class='cousp-summary-box'><div class='summary-lead'>Bloc de synthese operationnelle</div></div>",
+            unsafe_allow_html=True,
+        )
+        w1, w2 = st.columns(2)
+        latest = payload.get("latest", {})
+        previous = payload.get("previous", {})
+        with w1:
+            st.metric(
+                "Cas semaine",
+                format_metric_value(latest.get("Cas", np.nan)),
+                format_pct_delta(latest.get("Cas", np.nan), previous.get("Cas", np.nan)),
+            )
+            st.metric(
+                "CFR semaine",
+                format_metric_value(latest.get("Letalite (%)", np.nan), decimals=2, suffix="%"),
+                format_pct_delta(latest.get("Letalite (%)", np.nan), previous.get("Letalite (%)", np.nan)),
+            )
+        with w2:
+            st.metric(
+                "Deces semaine",
+                format_metric_value(latest.get("Deces", np.nan)),
+                format_pct_delta(latest.get("Deces", np.nan), previous.get("Deces", np.nan)),
+            )
+            st.metric(
+                f"Admission <= {get_session_int('seuil_jours', 2)} jours",
+                format_metric_value(payload.get("promptitude_pct"), decimals=1, suffix="%"),
+                f"n={payload.get('promptitude_n', 0)}",
+            )
+
+        st.write(f"Province la plus notifiee : **{payload.get('top_province', 'non disponible')}**")
+        st.write(f"Zone de sante la plus notifiee : **{payload.get('top_zs', 'non disponible')}**")
+        st.write(
+            f"Fenetre couverte : **{payload.get('week_span', '-')}** avec **{format_metric_value(payload.get('cases', 0))}** cas analyses."
+        )
+
+    with c2:
+        render_static_map_overview("Carte statique par province", fig_map_prov, note_map_prov)
+
+    with c3:
+        render_static_map_overview("Carte statique par zone de sante", fig_map_zs, note_map_zs)
+
+    d1, d2 = st.columns(2)
+    with d1:
+        st.markdown("<div class='cousp-panel-title'>Surveillance temporelle hebdomadaire</div>", unsafe_allow_html=True)
+        if weekly.empty:
+            st.info("Serie hebdomadaire indisponible.")
+        else:
+            fig_surveillance = go.Figure()
+            fig_surveillance.add_trace(
+                go.Scatter(
+                    x=weekly["label"],
+                    y=weekly["Cas"],
+                    name="Cas",
+                    mode="lines+markers",
+                    line=dict(color=COLOR_CASES, width=3),
+                    marker=dict(size=8),
+                )
+            )
+            fig_surveillance.add_trace(
+                go.Bar(
+                    x=weekly["label"],
+                    y=weekly["Deces"],
+                    name="Deces",
+                    marker_color=COLOR_DEATHS,
+                    opacity=0.72,
+                )
+            )
+            fig_surveillance.update_layout(
+                title="Evolution hebdomadaire des cas et deces",
+                xaxis_title="Semaine epidemiologique",
+                yaxis_title="Nombre de cas",
+                bargap=0.22,
+            )
+            if x_tick_step > 1 and len(weekly) > x_tick_step:
+                fig_surveillance.update_xaxes(
+                    tickmode="array",
+                    tickvals=weekly["label"].iloc[:: max(int(x_tick_step), 1)],
+                    ticktext=weekly["label"].iloc[:: max(int(x_tick_step), 1)],
+                )
+            st_plot(fig_surveillance, key="overview_weekly_surveillance", annotate_values=annotate_values_flag)
+
+    with d2:
+        st.markdown("<div class='cousp-panel-title'>Tendance hebdomadaire des cas et de la letalite observee</div>", unsafe_allow_html=True)
+        if weekly.empty:
+            st.info("Tendance hebdomadaire indisponible.")
+        else:
+            week_col = resolve_week_column(df_)
+            fig_combo = build_weekly_cases_cfr_combo(
+                df=df_,
+                week_col=week_col,
+                death_col="is_death",
+                titre="Tendance hebdomadaire des cas et de la letalite observee",
+                rotation=45,
+                annot_bars=annotate_values_flag,
+                annot_line=annotate_values_flag,
+                pas_x=int(x_tick_step) if week_col in [COL_WNUM, "YW"] else None,
+                taille_fig=(1400, 550),
+            )
+            st_plot(fig_combo, key="overview_weekly_combo", annotate_values=annotate_values_flag)
+
+    p1, p2, p3 = st.columns([1.3, 0.95, 1.15])
+    with p1:
+        st.markdown("<div class='cousp-panel-title'>Distribution geographique des notifications</div>", unsafe_allow_html=True)
+        geo_col = COL_PROV if COL_PROV in df_.columns and df_[COL_PROV].notna().any() else COL_ZS
+        if geo_col in df_.columns and df_[geo_col].notna().any():
+            geo_tbl = build_frequency_table(df_, geo_col, top_n=10).sort_values("n", ascending=True)
+            fig_geo = px.bar(
+                geo_tbl,
+                x="n",
+                y=geo_col,
+                orientation="h",
+                text="n" if annotate_values_flag else None,
+                color="n",
+                color_continuous_scale=["#dbe8f9", "#2b74ca"],
+                labels={geo_col: "Lieu", "n": "Nombre de cas"},
+            )
+            fig_geo.update_layout(coloraxis_showscale=False, title="Top localites notifiantes")
+            st_plot(fig_geo, key="overview_geo_distribution", annotate_values=annotate_values_flag)
+        else:
+            st.info("Aucune variable geographique exploitable n'a ete detectee.")
+
+    with p2:
+        st.markdown("<div class='cousp-panel-title'>Repartition par sexe</div>", unsafe_allow_html=True)
+        if COL_SEX in df_.columns and df_[COL_SEX].notna().any():
+            sex_tbl = build_frequency_table(df_, COL_SEX)
+            fig_sex = px.pie(
+                sex_tbl,
+                names=COL_SEX,
+                values="n",
+                hole=0.62,
+                color=COL_SEX,
+                color_discrete_map=SEX_COLOR_MAP,
+            )
+            st_plot(fig_sex, key="overview_sex_pie", annotate_values=annotate_values_flag)
+        else:
+            st.info("La variable Sexe est absente ou vide.")
+
+    with p3:
+        st.markdown("<div class='cousp-panel-title'>Repartition par age</div>", unsafe_allow_html=True)
+        years = infer_age_years_generic(df_)
+        if years.notna().any():
+            age_hist = pd.DataFrame({"Age_en_ans": years.dropna()})
+            fig_age = px.histogram(
+                age_hist,
+                x="Age_en_ans",
+                nbins=18,
+                color_discrete_sequence=["#2d7d46"],
+                title="Distribution de l'age en annees",
+            )
+            st_plot(fig_age, key="overview_age_hist", annotate_values=annotate_values_flag)
+        else:
+            age_col = pick_age_col(df_)
+            if age_col is None:
+                st.info("Aucune information d'age exploitable n'est disponible.")
+            else:
+                age_tbl = build_frequency_table(df_, age_col)
+                fig_age = px.bar(age_tbl, x=age_col, y="n", color_discrete_sequence=["#2d7d46"])
+                fig_age.update_layout(xaxis_tickangle=-35)
+                st_plot(fig_age, key="overview_age_bar", annotate_values=annotate_values_flag)
+
+    p4, p5 = st.columns([1.55, 1.0])
+    with p4:
+        st.markdown("<div class='cousp-panel-title'>Pyramide age-sexe</div>", unsafe_allow_html=True)
+        df_pyr = df_.copy()
+        df_pyr["Tranche_age_5ans_dashboard"] = derive_age_5yr_generic(df_pyr)
+        if use_custom_viz_flag and HAS_CUSTOM_VIZ and COL_SEX in df_pyr.columns and df_pyr["Tranche_age_5ans_dashboard"].notna().any():
+            fig_pyr = plot_pyramide_symetrique(
+                df=df_pyr,
+                col_categorie="Tranche_age_5ans_dashboard",
+                col_groupe=COL_SEX,
+                valeurs_neg=["Masculin", "Homme", "M"],
+                titre="Pyramide age-sexe des cas",
+                seuil_min=0,
+                croissant=True,
+                afficher_signe_negatif_dans_label=False,
+            )
+            st_plot(fig_pyr, key="overview_pyramid", annotate_values=annotate_values_flag)
+        else:
+            st.info("Pyramide indisponible : variables Age/Sexe insuffisantes.")
+
+    with p5:
+        st.markdown("<div class='cousp-panel-title'>Distribution par tranche d'age</div>", unsafe_allow_html=True)
+        df_age_group = df_.copy()
+        age_group_col = pick_age_col(df_age_group)
+        if age_group_col is None:
+            df_age_group["Tranche_age_4cat_dashboard"] = derive_age_4cat_generic(df_age_group)
+            age_group_col = "Tranche_age_4cat_dashboard"
+
+        if age_group_col in df_age_group.columns and df_age_group[age_group_col].notna().any():
+            age_group_tbl = build_frequency_table(df_age_group, age_group_col)
+            fig_age_group = px.bar(
+                age_group_tbl,
+                x=age_group_col,
+                y="n",
+                text="n" if annotate_values_flag else None,
+                color_discrete_sequence=["#d97b16"],
+                title="Cas par tranche d'age",
+            )
+            fig_age_group.update_layout(xaxis_tickangle=-35)
+            st_plot(fig_age_group, key="overview_age_group", annotate_values=annotate_values_flag)
+        else:
+            st.info("Les classes d'age ne sont pas disponibles.")
+
+if not IDSR_MODE:
+    render_overview_dashboard(
+        df_=df_f,
+        files_used=files_used,
+        disease_key=disease_key,
+        use_custom_viz_flag=use_custom_viz,
+        annotate_values_flag=annot_vals,
+        x_tick_step=int(pas_x),
+    )
+    st.markdown("<div class='cousp-panel-title'>Analyses detaillees par onglet</div>", unsafe_allow_html=True)
+else:
+    st.markdown("<div class='cousp-panel-title'>Espaces analytiques detailles</div>", unsafe_allow_html=True)
+
+st.caption("Selectionnez un onglet detaille ci-dessous. Le contenu s'affiche en pleine largeur sans navigation compacte par boutons.")
+
+tab_overview_detail, tab_surveillance, tab_profil, tab_qualite, tab_sitrep, tab_idsr, tab_irep = st.tabs(
+    [
+        "Choisir un onglet",
+        "\U0001F4C8 Surveillance",
+        "\U0001F465 Profil",
+        "\U0001F5C2\ufe0f Qualite & export",
+        "\U0001F4DD SITREP",
+        "\U0001F4DA IDSR",
+        "\U0001F4CC IREP",
+    ]
+)
+
+with tab_overview_detail:
+    st.markdown(
+        """
+        <div class="cousp-detail-empty">
+            <strong>Analyses detaillees pretes a consulter</strong>
+            Choisissez un onglet horizontal pour afficher directement son contenu en pleine largeur, sans ouverture dans une colonne laterale.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # =========================
@@ -4267,19 +5249,19 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # =========================
 # TAB 1: DYNAMIQUE EPIDEMIOLOGIQUE ET PROMPTITUDE
 # =========================
-with tab1:
+with tab_surveillance:
     if IDSR_MODE:
         st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
     else:
         tab_help(
             "Comment lire cet onglet",
             """
-            **🎯 Objectif** : suivre la dynamique temporelle de l’événement, la distribution géographique des notifications et quelques indicateurs sentinelles de performance.
+            **🎯 Objectif** : suivre la dynamique temporelle de l’événement et apprécier la promptitude des principales étapes de notification et de prise en charge.
 
             **📖 Logique de lecture**
-            - Commencer par l’**évolution hebdomadaire** des cas et des décès pour apprécier la dynamique du signal.
-            - Interpréter ensuite la **tendance combinée cas + létalité observée** pour apprécier simultanément le volume de cas et la gravité apparente.
-            - Examiner enfin la **distribution géographique** et les **indicateurs sentinelles de performance** afin d’orienter la réponse opérationnelle.
+            - Lire d’abord la **tendance hebdomadaire consolidée** pour repérer les changements de volume et de gravité.
+            - Compléter ensuite par la **table hebdomadaire de synthèse** pour appuyer l’interprétation et l’export.
+            - Les visuels géographiques et les KPI sentinelles de haut niveau sont volontairement concentrés sur la **page d’accueil** afin d’éviter les redondances.
 
             **⚠️ Point d’attention**
             - Les tendances doivent être interprétées en tenant compte de la complétude, du retard de notification et de la disponibilité du diagnostic.
@@ -4309,25 +5291,6 @@ with tab1:
                 np.nan,
             )
 
-            c_week1, c_week2 = st.columns([2, 1])
-            with c_week1:
-                fig_cases_week = px.line(
-                    weekly_tbl,
-                    x=week_col_epi,
-                    y="Cas",
-                    markers=True,
-                    title="Cas par semaine (YW)" if week_col_epi == "YW" else "Cas par semaine",
-                )
-                st_plot(fig_cases_week, key="week_cases_primary")
-            with c_week2:
-                fig_deaths_week = px.bar(
-                    weekly_tbl,
-                    x=week_col_epi,
-                    y="Décès",
-                    title="Décès par semaine",
-                )
-                st_plot(fig_deaths_week, key="week_deaths_primary")
-
             st.markdown("### Tendance hebdomadaire des cas et de la létalité observée")
             fig_combo = build_weekly_cases_cfr_combo(
                 df=df_f,
@@ -4342,72 +5305,25 @@ with tab1:
             )
             st_plot(fig_combo, key="week_cases_cfr_combo_main")
 
-            with st.expander("Afficher la table hebdomadaire de synthèse"):
+            s1, s2, s3 = st.columns(3)
+            s1.metric("Cas dernière semaine", format_metric_value(weekly_tbl["Cas"].iloc[-1]))
+            s2.metric("Décès dernière semaine", format_metric_value(weekly_tbl["Décès"].iloc[-1]))
+            s3.metric(
+                "Létalité dernière semaine (%)",
+                format_metric_value(weekly_tbl["Létalité (%)"].iloc[-1], decimals=2),
+            )
+
+            with st.expander("Afficher la table hebdomadaire de synthèse", expanded=False):
                 st_dataframe_safe(weekly_tbl)
         else:
             st.info("Variable semaine indisponible : aucune colonne temporelle exploitable n’a été détectée.")
-
-        st.divider()
-        st.subheader("Distribution géographique des notifications")
-
-        geo_mode = st.radio(
-            "Choisir le niveau de lecture géographique",
-            ["Province de notification", "Zone de santé de notification"],
-            horizontal=True,
-            key="tab1_geo_mode",
+        st.caption(
+            "Les cartes statiques, la distribution géographique des notifications et les indicateurs sentinelles de performance "
+            "sont consolidés sur la page d’accueil pour éviter les répétitions dans cet onglet."
         )
-
-        if geo_mode == "Province de notification":
-            if COL_PROV in df_f.columns and df_f[COL_PROV].notna().any():
-                prov_counts = (
-                    df_f.groupby(COL_PROV, as_index=False)
-                    .size()
-                    .rename(columns={"size": "Cas"})
-                    .sort_values("Cas", ascending=False)
-                    .head(15)
-                )
-                fig_geo = px.bar(
-                    prov_counts,
-                    x=COL_PROV,
-                    y="Cas",
-                    title="Top 15 des provinces selon le nombre de cas notifiés",
-                    labels={COL_PROV: "Province de notification", "Cas": "Nombre de cas"},
-                )
-                st_plot(fig_geo, key="tab1_top_prov")
-            else:
-                st.info("La variable Province de notification n’est pas disponible.")
-        else:
-            if COL_ZS in df_f.columns and df_f[COL_ZS].notna().any():
-                zs_counts = (
-                    df_f.groupby(COL_ZS, as_index=False)
-                    .size()
-                    .rename(columns={"size": "Cas"})
-                    .sort_values("Cas", ascending=False)
-                    .head(20)
-                )
-                fig_geo = px.bar(
-                    zs_counts,
-                    x=COL_ZS,
-                    y="Cas",
-                    title="Top 20 des zones de santé selon le nombre de cas notifiés",
-                    labels={COL_ZS: "Zone de santé de notification", "Cas": "Nombre de cas"},
-                )
-                st_plot(fig_geo, key="tab1_top_zs")
-            else:
-                st.info("La variable Zone de santé de notification n’est pas disponible.")
-
-        st.divider()
-        st.subheader("Indicateurs sentinelles de performance")
-
-        kpi = compute_indicators(df_f)
-        s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Prélèvement réalisé (%)", "-" if np.isnan(kpi["prelev_pct"]) else f"{kpi['prelev_pct']:.1f}")
-        s2.metric("Couverture TDR (%)", "-" if np.isnan(kpi.get("tdr_coverage_pct", np.nan)) else f"{kpi['tdr_coverage_pct']:.1f}")
-        s3.metric("Positivité TDR (%)", "-" if np.isnan(kpi["pos_pct"]) else f"{kpi['pos_pct']:.1f}")
-        s4.metric("Hospitalisation (%)", "-" if np.isnan(kpi["hosp_pct"]) else f"{kpi['hosp_pct']:.1f}")
     # Section suivante : promptitude. Les indicateurs de performance et de létalité déjà présentés plus haut ne sont pas répétés ici afin d’éviter les redondances.
 
-with tab1:
+with tab_surveillance:
     st.divider()
     render_section_title(2, "Promptitude de notification, investigation et prise en charge")
     if IDSR_MODE:
@@ -4503,7 +5419,7 @@ with tab1:
     # =========================
     # TAB 4: Démographie
     # =========================
-with tab4:
+with tab_profil:
     if IDSR_MODE:
         st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
     else:
@@ -4524,29 +5440,10 @@ with tab4:
         )
         
         st.subheader("Description démographique des cas et structure par groupes de population")
-        
-        cA, cB = st.columns(2)
-        
-        with cA:
-            if COL_SEX in df_f.columns:
-                sex_counts = df_f[COL_SEX].fillna("Inconnu").astype(str).str.strip().value_counts().reset_index()
-                sex_counts.columns = [COL_SEX, "Cas"]
-                fig = px.bar(sex_counts, x=COL_SEX, y="Cas", title="Cas par sexe")
-                fig = apply_plotly_value_annotations(fig, annot_vals)
-                st.plotly_chart(fig, width="stretch")
-            else:
-                st.info("La variable Sexe est absente du fichier analysé.")
-        
-        with cB:
-            if age_col:
-                age_counts = df_f[age_col].fillna("Inconnu").astype(str).str.strip().value_counts().reset_index()
-                age_counts.columns = [age_col, "Cas"]
-                fig = px.bar(age_counts, x=age_col, y="Cas", title=f"Cas par {age_col}")
-                fig.update_layout(xaxis_tickangle=-45)
-                fig = apply_plotly_value_annotations(fig, annot_vals)
-                st.plotly_chart(fig, width="stretch")
-            else:
-                st.info("Les variables de tranche d’âge sont absentes ou non exploitables.")
+        st.info(
+            "Les visuels synthétiques sur le sexe, l’âge et la pyramide âge-sexe ont été regroupés sur la page d’accueil "
+            "et dans l’onglet Profil afin d’éviter leur répétition dans cet espace."
+        )
         
         st.divider()
 
@@ -4646,257 +5543,23 @@ with tab4:
         st.divider()
 
         st.subheader("Répartition proportionnelle des cas selon la variable analytique sélectionnée")
-
-        if use_custom_viz and HAS_CUSTOM_VIZ:
-            # ------------------------------------------------------------------
-            # 1) Tranche_age (4 catégories): 0-11 mois / 12-59 mois / 5-15 ans / >15 ans
-            # 2) Tranche_age_en_ans (classes 5 ans): 0-4, 5-9, ..., 60+
-            # Objectif: avoir 2 camemberts disponibles quelle que soit la maladie
-            # (si Age + Unite_age existent, on peut reconstruire les tranches)
-            # ------------------------------------------------------------------
-
-            def _age_to_years(df_):
-                """Convertit Age + Unite_age en années (float), de façon robuste.
-
-                - Supporte unités FR/EN (ans/années/years, mois/months, semaines/weeks, jours/days)
-                - Supporte Age sous forme texte (ex: "6 mois", "2 ans")
-                - Si Unite_age manquante: suppose Age en années (fallback)
-                """
-                # 1) récupérer âge brut (peut être numérique ou texte)
-                age_raw = df_[COL_AGE] if (COL_AGE in df_.columns) else pd.Series([pd.NA] * len(df_), index=df_.index)
-                age_num = pd.to_numeric(age_raw, errors="coerce")
-
-                # 2) déterminer unité (si disponible)
-                if COL_UNIT in df_.columns:
-                    unit_raw = df_[COL_UNIT].astype("string").str.lower().str.strip()
-                else:
-                    unit_raw = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
-
-                # 3) tenter d'extraire unité depuis Age texte si unit manquante
-                # Ex: "6 mois", "2 ans", "18 months", "3 weeks"
-                age_txt = age_raw.astype("string").str.lower()
-                # extraire premier nombre du texte
-                extracted_num = age_txt.str.extract(r"(?P<num>\d+(?:[\.,]\d+)?)")["num"].str.replace(",", ".", regex=False)
-                extracted_num = pd.to_numeric(extracted_num, errors="coerce")
-
-                # si age_num est NA mais extracted_num existe, on l'utilise
-                age_val = age_num.combine_first(extracted_num)
-
-                # unité extraite depuis texte
-                unit_from_age = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
-                unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:mois|month)s?\b", na=False), "mois")
-                unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:semaine|week)s?\b|\bsem\b", na=False), "semaine")
-                unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:jour|day)s?\b", na=False), "jour")
-                unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:an|ans|annee|ann[eé]es|year|yr|yrs)\b", na=False), "an")
-
-                unit = unit_raw.combine_first(unit_from_age)
-
-                # 4) conversion en années
-                years = pd.Series(np.nan, index=df_.index, dtype="float")
-                years = years.mask(unit.str.contains(r"\b(?:mois|month)s?\b", na=False), age_val / 12.0)
-                years = years.mask(unit.str.contains(r"\b(?:semaine|week)s?\b|\bsem\b", na=False), age_val / 52.0)
-                years = years.mask(unit.str.contains(r"\b(?:jour|day)s?\b", na=False), age_val / 365.25)
-                years = years.mask(unit.str.contains(r"\b(?:an|ans|annee|ann[eé]es|year|yr|yrs)\b", na=False), age_val)
-
-                # 5) fallback: si unité inconnue mais age_val numérique -> supposer années
-                years = years.mask(years.isna() & age_val.notna(), age_val)
-
-                return pd.to_numeric(years, errors="coerce")
-
-            def _derive_tranche_4(df_):
-                """Construit une tranche d'âge 4 catégories:
-                  - 0-11 mois
-                  - 12-59 mois
-                  - 5-15 ans
-                  - >15 ans
-            
-                Stratégie:
-                1) Si COL_AGEG2 existe -> on tente de recoder les valeurs (regex) vers les 4 catégories.
-                2) Sinon -> on dérive depuis Age/Unite_age via _age_to_years().
-                3) Fallback: garde la valeur initiale si rien ne matche.
-                """
-                # --- 1) base: tranche existante si dispo, sinon dérivée ---
-                if COL_AGEG2 in df_.columns and df_[COL_AGEG2].notna().any():
-                    s_raw = df_[COL_AGEG2].astype("string").str.strip()
-                    years = _age_to_years(df_)  # utile si on veut compléter les NA
-                    s_from_years = pd.Series(pd.NA, index=df_.index, dtype="string")
-                    s_from_years = s_from_years.mask(years.notna() & (years < 1), "0-11 mois")
-                    s_from_years = s_from_years.mask(years.notna() & (years >= 1) & (years < 5), "12-59 mois")
-                    s_from_years = s_from_years.mask(years.notna() & (years >= 5) & (years <= 15), "5-15 ans")
-                    s_from_years = s_from_years.mask(years.notna() & (years > 15), ">15 ans")
-                    # si tranche existante est vide sur certaines lignes, on peut la compléter par l'âge dérivé
-                    s_base = s_raw.combine_first(s_from_years)
-                else:
-                    years = _age_to_years(df_)
-                    s_base = pd.Series(pd.NA, index=df_.index, dtype="string")
-                    s_base = s_base.mask(years.notna() & (years < 1), "0-11 mois")
-                    s_base = s_base.mask(years.notna() & (years >= 1) & (years < 5), "12-59 mois")
-                    s_base = s_base.mask(years.notna() & (years >= 5) & (years <= 15), "5-15 ans")
-                    s_base = s_base.mask(years.notna() & (years > 15), ">15 ans")
-            
-                # --- 2) recodage regex sur la base (utile si s_base contient des libellés hétérogènes) ---
-                s_low = s_base.astype("string").str.lower().str.strip()
-                s2 = pd.Series(pd.NA, index=df_.index, dtype="string")
-            
-                # 0-11 mois
-                s2 = s2.mask(
-                    s_low.str.contains(r"0\s*[-–àa]\s*11", na=False)
-                    | (s_low.str.contains("0", na=False) & s_low.str.contains("11", na=False) & s_low.str.contains("mois", na=False))
-                    | s_low.str.contains(r"\b(?:0\s*[-–àa]\s*1|0\s*[-–àa]\s*0)\b\s*an", na=False),
-                    "0-11 mois"
-                )
-            
-                # 12-59 mois (≈ 1-4 ans)
-                s2 = s2.mask(
-                    s_low.str.contains(r"12\s*[-–àa]\s*59", na=False)
-                    | ((s_low.str.contains("12", na=False) & s_low.str.contains("59", na=False)))
-                    | (s_low.str.contains(r"\b1\s*[-–àa]\s*4\b", na=False) & s_low.str.contains(r"an|anne", na=False))
-                    | (s_low.str.contains(r"\b(?:1|2|3|4)\b", na=False) & s_low.str.contains(r"an|anne", na=False)),
-                    "12-59 mois"
-                )
-            
-                # 5-15 ans
-                s2 = s2.mask(
-                    s_low.str.contains(r"5\s*[-–àa]\s*15", na=False)
-                    | ((s_low.str.contains("5", na=False) & s_low.str.contains("15", na=False))),
-                    "5-15 ans"
-                )
-            
-                # >15 ans (15+, > 15, plus de 15, supérieur à 15)
-                s2 = s2.mask(
-                    s_low.str.contains(r">\s*15", na=False)
-                    | s_low.str.contains(r"15\s*\+", na=False)
-                    | s_low.str.contains(r"plus\s*de\s*15", na=False)
-                    | s_low.str.contains(r"superieur\s*a\s*15|sup[eé]rieur\s*[àa]\s*15", na=False),
-                    ">15 ans"
-                )
-            
-                # --- 3) final: prioriser recodage, sinon garder base ---
-                s_final = s2.combine_first(s_base.astype("string"))
-                return s_final
-            def _derive_tranche_5ans(df_):
-                if COL_AGEG in df_.columns and df_[COL_AGEG].notna().any():
-                    s = df_[COL_AGEG].astype("string").str.strip()
-                    # on tente de convertir en début de classe si c'est du type "0-4", "5-9", etc.
-                    # sinon on reconstruit plus bas.
-                    ok = s.str.match(r"^\d+\s*-\s*\d+$", na=False) | s.str.contains("60", na=False)
-                    if ok.mean() > 0.6:
-                        return s
-                years = _age_to_years(df_)
-                bins = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, np.inf]
-                labels = ["0-4", "5-9", "10-14", "15-19", "20-24", "25-29", "30-34", "35-39",
-                          "40-44", "45-49", "50-54", "55-59", "60+"]
-                return pd.cut(years, bins=bins, labels=labels, right=False).astype("string")
-
-            df_pie = df_f.copy()
-            df_pie["Tranche_age_4cat"] = _derive_tranche_4(df_pie)
-            df_pie["Tranche_age_en_ans_5ans"] = _derive_tranche_5ans(df_pie)
-
-            p1, p2 = st.columns(2)
-
-            with p1:
-                st.caption("**Tranche_age (4 catégories)** : 0-11 mois • 12-59 mois • 5-15 ans • >15 ans")
-                if df_pie["Tranche_age_4cat"].notna().any():
-                    fig = plot_camembert_interactif(
-                        df=df_pie,
-                        colonne="Tranche_age_4cat",
-                        titre="Proportion des cas – Tranche_age (4 catégories)",
-                        seuil_min=int(seuil_min_count),
-                        afficher_legende=True,
-                        annot=annot_vals,
-                        taille_fig=(700, 500),
-                    )
-                    st_plot(fig, key="pie_age_4cat")
-                else:
-                    st.info("Impossible de construire la variable Tranche_age (4 catégories) : âge ou unité d’âge manquant.")
-
-            with p2:
-                st.caption("**Tranche_age_en_ans (classes 5 ans)** : 0-4 … 60+")
-                if df_pie["Tranche_age_en_ans_5ans"].notna().any():
-                    fig = plot_camembert_interactif(
-                        df=df_pie,
-                        colonne="Tranche_age_en_ans_5ans",
-                        titre="Proportion des cas – Tranche_age_en_ans (5 ans)",
-                        seuil_min=int(seuil_min_count),
-                        afficher_legende=True,
-                        annot=annot_vals,
-                        taille_fig=(700, 500),
-                    )
-                    st_plot(fig, key="pie_age_5ans")
-                else:
-                    st.info("Impossible de construire la variable Tranche_age_en_ans (classes de 5 ans) : âge ou unité d’âge manquant.")
-
-        else:
-            st.info("Camemberts: nécessite visualisations custom (HAS_CUSTOM_VIZ=True).")
+        st.info(
+            "Les représentations proportionnelles par tranche d’âge ont été conservées sur la page d’accueil et dans l’onglet Profil. "
+            "Elles sont volontairement retirées ici pour alléger la lecture."
+        )
 
         st.divider()
 
-        st.subheader("Pyramide des âges par sexe biologique déclaré")
-        if use_custom_viz and HAS_CUSTOM_VIZ and COL_SEX in df_pie.columns:
-            py1, py2 = st.columns(2)
-
-            with py1:
-                st.caption("**Pyramide âge / sexe : Tranche_age (4 catégories)**")
-                if df_pie["Tranche_age_4cat"].notna().any():
-                    fig = plot_pyramide_symetrique(
-                        df=df_pie,
-                        col_categorie="Tranche_age_4cat",
-                        col_groupe=COL_SEX,
-                        valeurs_neg=["Masculin", "Homme", "M"],
-                        titre="Pyramide âge / sexe – Tranche_age (4 catégories)",
-                        seuil_min=0,
-                        croissant=True,
-                        afficher_signe_negatif_dans_label=False
-                    )
-                    st_plot(fig, key="pyr_age_4cat")
-                else:
-                    st.info("Impossible de générer la pyramide des âges en 4 catégories.")
-
-            with py2:
-                st.caption("**Pyramide âge / sexe : Tranche_age_en_ans (classes 5 ans)**")
-                if df_pie["Tranche_age_en_ans_5ans"].notna().any():
-                    fig = plot_pyramide_symetrique(
-                        df=df_pie,
-                        col_categorie="Tranche_age_en_ans_5ans",
-                        col_groupe=COL_SEX,
-                        valeurs_neg=["Masculin", "Homme", "M"],
-                        titre="Pyramide âge / sexe – Tranche_age_en_ans (5 ans)",
-                        seuil_min=0,
-                        croissant=True,
-                        afficher_signe_negatif_dans_label=False
-                    )
-                    st_plot(fig, key="pyr_age_5ans")
-                else:
-                    st.info("Impossible de générer la pyramide des âges en classes de 5 ans.")
-        else:
-            st.info("Les pyramides nécessitent la variable Sexe et l’activation des visualisations personnalisées.")
-        
-        st.subheader("Pyramides âge-sexe par province de notification")
-        if use_custom_viz and HAS_CUSTOM_VIZ and age_col and COL_SEX in df_f.columns and COL_PROV in df_f.columns:
-            fig = graphique_pyramide_age(
-                df=df_f,
-                col_tranche=age_col,
-                col_sexe=COL_SEX,
-                col_valeur=COL_UNIT if COL_UNIT in df_f.columns else COL_SEX,  # si non numérique => comptage
-                valeurs_neg=["Masculin", "Homme", "M"],
-                titre="Pyramides âge/sex par province",
-                seuil_min=10,
-                croissant=False,
-                afficher_signe_negatif_dans_label=False,
-                facette_col=COL_PROV,
-                annot=annot_vals,
-                taille_fig=(1500, 900),
-                return_fig=True,
-                couleur_contour_facette="#777772"
-            )
-            st_plot(fig, key="pyr_fac_prov")
-        else:
-            st.info("Cette analyse nécessite Province, Sexe, une variable de tranche d’âge et les visualisations personnalisées.")
+        st.subheader("Pyramides âge-sexe")
+        st.info(
+            "Les pyramides âge-sexe de synthèse et la version détaillée par province sont désormais concentrées "
+            "dans la page d’accueil et dans l’onglet Profil épidémiologique des cas."
+        )
         
     # =========================
     # TAB 4B: Analyse descriptive standard
     # =========================
-with tab2:
+with tab_profil:
     st.divider()
     render_section_title(3, "Analyse descriptive selon le modèle Temps-Lieu-Personne")
     if IDSR_MODE:
@@ -4909,11 +5572,11 @@ with tab2:
 
             **📖 Structure **
             - Vue d'ensemble
-            - Temps
+            - Temps (sans redondance avec l’onglet Surveillance)
             - Personne
             - Lieu
             - Laboratoire
-            - Délais et autres indicateurs descriptifs
+            - Tableaux descriptifs complémentaires
             """,
             expanded=False
         )
@@ -4929,14 +5592,13 @@ with tab2:
         st.info("Les graphiques temporels détaillés (cas hebdomadaires, décès hebdomadaires et létalité observée) sont présentés dans l’onglet **Surveillance épidémiologique, létalité et promptitude de notification** afin d’éviter les redondances et de conserver une lecture OMS/IDSR plus lisible.")
 
         st.divider()
-        st.subheader("3. Dimension personne — sexe, âge et pyramides âge-sexe")
+        st.subheader("3. Dimension personne — tableaux détaillés et structure avancée")
+        st.caption("Les visuels rapides sexe, âge et pyramide de synthèse sont regroupés sur la page d’accueil. Ici, l’accent est mis sur les tableaux analytiques détaillés.")
         a1, a2 = st.columns(2)
         with a1:
             if COL_SEX in df_f.columns:
                 sex_tbl = build_frequency_table(df_f, COL_SEX)
-                fig = px.pie(sex_tbl, names=COL_SEX, values='n', title='Répartition des cas par sexe', color=COL_SEX, color_discrete_map=SEX_COLOR_MAP)
-                fig = apply_plotly_value_annotations(fig, annot_vals)
-                st.plotly_chart(fig, width='stretch', key='oms_sex_pie')
+                st.markdown("**Table de fréquence par sexe**")
                 st_dataframe_safe(sex_tbl)
             else:
                 st.info("La variable Sexe est absente du fichier analysé.")
@@ -4948,18 +5610,13 @@ with tab2:
                 age_display_col = COL_AGEG
             if age_display_col is not None:
                 age_tbl = build_frequency_table(df_f, age_display_col)
-                fig = px.bar(age_tbl, x=age_display_col, y='n', title=f'Répartition des cas par {age_display_col}')
-                fig.update_layout(xaxis_tickangle=-45)
-                fig = apply_plotly_value_annotations(fig, annot_vals)
-                st.plotly_chart(fig, width='stretch', key='oms_age_bar')
+                st.markdown(f"**Table de fréquence par {age_display_col}**")
                 st_dataframe_safe(age_tbl)
             else:
                 years = infer_age_years_generic(df_f)
                 if years.notna().any():
                     age_num = pd.DataFrame({'Age_en_ans': years.dropna()})
-                    fig = px.histogram(age_num, x='Age_en_ans', nbins=20, title="Distribution de l'âge (années)")
-                    fig = apply_plotly_value_annotations(fig, annot_vals)
-                    st.plotly_chart(fig, width='stretch', key='oms_age_hist')
+                    st.markdown("**Résumé statistique de l’âge en années**")
                     st.dataframe(age_num.describe().T, width='stretch')
                 else:
                     st.info("Aucune information d’âge exploitable n’a été détectée.")
@@ -4967,40 +5624,27 @@ with tab2:
         df_desc = df_f.copy()
         df_desc['Tranche_age_4cat_std'] = derive_age_4cat_generic(df_desc)
         df_desc['Tranche_age_5ans_std'] = derive_age_5yr_generic(df_desc)
-        p1, p2 = st.columns(2)
-        if use_custom_viz and HAS_CUSTOM_VIZ and COL_SEX in df_desc.columns:
-            with p1:
-                if df_desc['Tranche_age_4cat_std'].notna().any():
-                    fig = plot_pyramide_symetrique(
-                        df=df_desc,
-                        col_categorie='Tranche_age_4cat_std',
-                        col_groupe=COL_SEX,
-                        valeurs_neg=['Masculin', 'Homme', 'M'],
-                        titre='Pyramide âge / sexe — 4 catégories',
-                        seuil_min=0,
-                        croissant=True,
-                        afficher_signe_negatif_dans_label=False
-                    )
-                    st_plot(fig, key='oms_pyr_4cat')
-                else:
-                    st.info("Impossible de générer la pyramide des âges en 4 catégories.")
-            with p2:
-                if df_desc['Tranche_age_5ans_std'].notna().any():
-                    fig = plot_pyramide_symetrique(
-                        df=df_desc,
-                        col_categorie='Tranche_age_5ans_std',
-                        col_groupe=COL_SEX,
-                        valeurs_neg=['Masculin', 'Homme', 'M'],
-                        titre='Pyramide âge / sexe — classes de 5 ans',
-                        seuil_min=0,
-                        croissant=True,
-                        afficher_signe_negatif_dans_label=False
-                    )
-                    st_plot(fig, key='oms_pyr_5ans')
-                else:
-                    st.info("Impossible de générer la pyramide des âges en classes de 5 ans.")
+        if use_custom_viz and HAS_CUSTOM_VIZ and age_col and COL_SEX in df_desc.columns and COL_PROV in df_desc.columns:
+            st.markdown("**Structure âge-sexe détaillée par province**")
+            fig = graphique_pyramide_age(
+                df=df_desc,
+                col_tranche=age_col,
+                col_sexe=COL_SEX,
+                col_valeur=COL_UNIT if COL_UNIT in df_desc.columns else COL_SEX,
+                valeurs_neg=['Masculin', 'Homme', 'M'],
+                titre='Pyramides âge-sexe par province',
+                seuil_min=10,
+                croissant=False,
+                afficher_signe_negatif_dans_label=False,
+                facette_col=COL_PROV,
+                annot=annot_vals,
+                taille_fig=(1500, 900),
+                return_fig=True,
+                couleur_contour_facette="#777772"
+            )
+            st_plot(fig, key='oms_pyr_faceted_prov')
         else:
-            st.info("Les pyramides ne sont pas disponibles : la variable Sexe et les visualisations personnalisées sont requises.")
+            st.info("La structure âge-sexe détaillée par province n’est pas disponible : Province, Sexe et une variable de tranche d’âge sont requis.")
 
         st.divider()
         st.subheader("4. Dimension lieu — répartition par province, zone de santé et aire de santé")
@@ -5029,32 +5673,74 @@ with tab2:
                 fig.update_layout(xaxis_tickangle=-45)
                 fig = apply_plotly_value_annotations(fig, annot_vals)
                 st.plotly_chart(fig, width='stretch', key='oms_lab_bar')
+
+            weekly_lab = build_weekly_lab_summary(df_f)
+            if not weekly_lab.empty:
+                st.markdown("**Suivi hebdomadaire des tests valides, tests positifs et taux de positivité**")
+                fig_lab_combo = go.Figure()
+                fig_lab_combo.add_trace(
+                    go.Bar(
+                        x=weekly_lab["Semaine"],
+                        y=weekly_lab["Tests valides"],
+                        name="Tests valides",
+                        marker_color="#4f81bd",
+                    )
+                )
+                fig_lab_combo.add_trace(
+                    go.Bar(
+                        x=weekly_lab["Semaine"],
+                        y=weekly_lab["Tests positifs"],
+                        name="Tests positifs",
+                        marker_color="#d97b16",
+                    )
+                )
+                fig_lab_combo.add_trace(
+                    go.Scatter(
+                        x=weekly_lab["Semaine"],
+                        y=weekly_lab["Positivite (%)"],
+                        name="Positivite (%)",
+                        mode="lines+markers",
+                        line=dict(color="#b9353f", width=3),
+                        marker=dict(size=8),
+                        yaxis="y2",
+                    )
+                )
+                fig_lab_combo.update_layout(
+                    title="Tests valides et positivite hebdomadaire",
+                    barmode="group",
+                    xaxis_title="Semaine epidemiologique",
+                    yaxis_title="Nombre de tests",
+                    yaxis2=dict(
+                        title="Positivite (%)",
+                        overlaying="y",
+                        side="right",
+                        rangemode="tozero",
+                    ),
+                )
+                st_plot(fig_lab_combo, key="lab_weekly_combo", annotate_values=False)
+                with st.expander("Afficher la table hebdomadaire des indicateurs laboratoire", expanded=False):
+                    st_dataframe_safe(weekly_lab, height=320)
+
+            if COL_PROV in df_f.columns:
+                st.markdown("**Tableau provincial consolidé des indicateurs clés de surveillance**")
+                prov_kpi = compute_group_indicators(df_f, COL_PROV).sort_values("Cas", ascending=False).head(15).copy()
+                prov_kpi = prov_kpi.rename(
+                    columns={
+                        "Décès": "Deces",
+                        "CFR_%": "CFR (%)",
+                        "Prélèvement_%": "Prelevement (%)",
+                        "Hospitalisation_%": "Hospitalisation (%)",
+                        "TDR_réalisé_%": "TDR realise (%)",
+                        "Positivité_TDR_%": "Positivite TDR (%)",
+                    }
+                )
+                st_dataframe_safe(prov_kpi, height=420)
         else:
             st.info("Aucune variable laboratoire simple n’a été détectée (prélèvement, TDR ou résultat).")
 
         st.divider()
-        st.subheader("6. Délais et autres variables descriptives complémentaires")
-        delay_cols_std = [c for c in ['delai_onset_to_adm', 'delai_onset_to_prel'] if c in df_f.columns]
-        delay_tbl = build_delay_summary_table(df_f, delay_cols_std)
-        if not delay_tbl.empty:
-            d1, d2 = st.columns([1, 1])
-            with d1:
-                st_dataframe_safe(delay_tbl)
-            with d2:
-                delay_long = (
-                    df_f[delay_cols_std]
-                    .apply(pd.to_numeric, errors='coerce')
-                    .melt(var_name='Type_delai', value_name='Jours')
-                    .dropna()
-                )
-                delay_long = delay_long[delay_long['Jours'] >= 0]
-                fig = px.box(delay_long, x='Type_delai', y='Jours', points='outliers', title='Distribution des délais observés')
-                fig = apply_plotly_value_annotations(fig, annot_vals)
-                st.plotly_chart(fig, width='stretch', key='oms_delay_box')
-        else:
-            st.info("Les délais sont indisponibles : les dates nécessaires sont absentes ou non exploitables.")
-
-        st.markdown("**Tableaux descriptifs des variables catégorielles**")
+        st.subheader("6. Tableaux descriptifs des variables catégorielles")
+        st.caption("Les analyses de délais sont centralisées dans l’onglet Surveillance afin d’éviter leur répétition ici.")
         default_cat_candidates = [COL_SEX, COL_PROV, COL_ZS, COL_AS, COL_AGEG2, COL_AGEG, COL_ISSUE, COL_PREL, COL_TDR, COL_TDRR, COL_HOSP, COL_CLASS]
         cat_candidates = [c for c in default_cat_candidates if c in df_f.columns]
         extra_candidates = [c for c in df_f.columns if (not is_numeric_dtype(df_f[c])) and c not in cat_candidates]
@@ -5107,7 +5793,7 @@ with tab2:
     # =========================
     # TAB 5: Complétude
     # =========================
-with tab3:
+with tab_qualite:
     render_section_title(4, "Complétude des données et couverture des rapports")
     if IDSR_MODE:
         st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
@@ -5507,7 +6193,7 @@ with tab3:
     # =========================
     # TAB 6: DATA & EXPORT
     # =========================
-with tab3:
+with tab_qualite:
     st.divider()
     render_section_title(5, "Extraction, revue et export des données")
     if IDSR_MODE:
@@ -5557,7 +6243,7 @@ with tab3:
     # =========================
     # TAB 7 — Labo / qualité / signaux
     # =========================
-with tab3:
+with tab_qualite:
     st.divider()
     render_section_title(6, "Qualité des données et alertes de gestion")
     if IDSR_MODE:
@@ -5862,7 +6548,7 @@ with tab3:
                     st.plotly_chart(figa, width="stretch")
                 else:
                     st.success("Aucun signal n’a été détecté avec les seuils actuellement définis (baseline × 1,5 et cas ≥ 10).")
-with tab4:
+with tab_sitrep:
     if IDSR_MODE:
         st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
     else:
@@ -5906,9 +6592,9 @@ with tab4:
             - Tableau provinces (Cas/Décès/CFR)
             - ZS à létalité critique (seuil configurable)
 
-            **5️⃣ Démographie & délais**  
-            - Répartition par sexe / tranche d’âge
-            - Délais : début de maladie → admission
+            **5️⃣ Interprétation complémentaire pour la décision**  
+            - Lecture automatisée des principaux signaux observés
+            - Renvoi vers les onglets Profil et Surveillance pour les détails démographiques et de délais
 
             ---
 
@@ -6385,27 +7071,20 @@ with tab4:
             else:
                 st.caption("Aucune ZS ne dépasse le seuil (ou données insuffisantes).")
 
-        with st.expander("5) Démographie & délais", expanded=False):
-            sext = sitrep_payload.get("sex_table")
-            if sext is not None and isinstance(sext, pd.DataFrame) and not sext.empty:
-                st.markdown("### Répartition des cas par sexe (semaine sélectionnée)")
-                st_dataframe_safe(sext, height=220)
-
-            aget = sitrep_payload.get("age_table")
-            if aget is not None and isinstance(aget, pd.DataFrame) and not aget.empty:
-                st.markdown("### Répartition des cas par tranches d’âge (semaine sélectionnée)")
-                st_dataframe_safe(aget, height=320)
-
-            delais = sitrep_payload.get("delais")
-            if delais is not None and isinstance(delais, pd.DataFrame) and not delais.empty:
-                st.markdown("### Délais : début de maladie → admission")
-                st_dataframe_safe(delais, height=140)
+        with st.expander("5) Interprétation complémentaire", expanded=False):
+            st.caption(
+                "Les détails démographiques et les analyses de délais sont consolidés dans les onglets "
+                "**Profil épidémiologique des cas** et **Surveillance épidémiologique, létalité et promptitude** "
+                "afin d’éviter leur répétition dans le SITREP."
+            )
 
             interp = sitrep_payload.get("interpretation", [])
             if interp:
                 st.markdown("### Interprétation épidémiologique automatisée pour la décision")
                 for line in interp:
                     st.markdown(f"- {line}")
+            else:
+                st.info("Aucune interprétation automatisée complémentaire n’est disponible pour le périmètre sélectionné.")
 
         # =========================================================
         # 5) Exportation PDF
@@ -6640,7 +7319,7 @@ def to_numeric_cols(df: pd.DataFrame, cols) -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
-with tab5:
+with tab_idsr:
     st.markdown("## IDSR — Surveillance agrégée hebdomadaire")
 
     tab_help(
@@ -8815,7 +9494,7 @@ def compute_irep_province(
 
     return out
 
-with tab6:
+with tab_irep:
     st.subheader("Indice provincial composite de risque épidémique (IREP)")
     tab_help(
         "Lecture et interprétation",
@@ -9148,3 +9827,5 @@ if show_maps:
                 st.error("Impossible de générer la carte ZS.")
         else:
             st.info("Carte ZS: charge un GeoJSON ZS et assure-toi que la colonne Zone de santé est présente.")
+
+render_footer()

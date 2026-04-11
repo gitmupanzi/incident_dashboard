@@ -1,8 +1,19 @@
+# Core dashboard stack
 streamlit>=1.32,<2.0
 pandas>=2.1,<3.0
 numpy>=1.26,<3.0
+matplotlib>=3.8,<4.0
+plotly>=5.18,<6.0
+kaleido>=0.2.1,<1.0
+
+# Geospatial stack for static maps
+geopandas>=0.14,<1.2
+shapely>=2.0,<3.0
+
+# Database connectivity used by call_center*.py
 sqlalchemy>=2.0,<3.0
 psycopg2-binary>=2.9,<3.0
-plotly>=5.18,<6.0
+
+# Excel import / export
 openpyxl>=3.1,<4.0
 xlsxwriter>=3.2,<4.0
