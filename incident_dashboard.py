@@ -97,11 +97,20 @@ def safe_pct(num: Union[int, float], den: Union[int, float]) -> float:
 # =========================================================
 # ✅ BLOC CARTE (INTÉGRÉ) – AUTONOME
 # =========================================================
+MAP_ANNOTATION_MODE_OPTIONS = {
+    "Aucune annotation": "aucun",
+    "Noms uniquement": "nom",
+    "Valeurs uniquement": "valeur",
+    "Noms + valeurs": "nom_valeur",
+}
+
+
 def carte_statique_matplotlib(
     gdf,
     colonne_valeurs: str,
     titre: str,
     annoter: bool = True,
+    mode_annotation: str = "nom_valeur",
     nom_zone: str = "name",
     fmt_valeurs: str = "{:.0f}",
     seuil_affichage: float = 1,
@@ -210,6 +219,9 @@ def carte_statique_matplotlib(
 
     # ---- labels ----
     if annoter:
+        mode_annotation_normalise = str(mode_annotation or "nom_valeur").strip().lower()
+        inclure_nom = mode_annotation_normalise in {"nom", "noms", "nom_valeur", "noms_valeurs", "both", "label"}
+        inclure_valeur = mode_annotation_normalise in {"valeur", "valeurs", "nom_valeur", "noms_valeurs", "both", "label"}
         for _, row in gdf.iterrows():
             if row.geometry is None or row.geometry.is_empty:
                 continue
@@ -225,12 +237,17 @@ def carte_statique_matplotlib(
                 x, y = row.geometry.x, row.geometry.y
 
             parts = []
-            if nom_zone in gdf.columns:
-                parts.append(str(row[nom_zone]))
-            try:
-                parts.append(fmt_valeurs.format(val))
-            except Exception:
-                parts.append(str(val))
+            if inclure_nom and nom_zone in gdf.columns and pd.notna(row[nom_zone]):
+                zone_label = str(row[nom_zone]).strip()
+                if zone_label:
+                    parts.append(zone_label)
+            if inclure_valeur:
+                try:
+                    parts.append(fmt_valeurs.format(val))
+                except Exception:
+                    parts.append(str(val))
+            if not parts:
+                continue
 
             ax.text(
                 x, y, "\n".join(parts),
@@ -4906,7 +4923,12 @@ def render_dashboard_kpis(payload: Dict[str, Any]) -> None:
     st.markdown(f"<div class='cousp-kpi-grid'>{cards_html}</div>", unsafe_allow_html=True)
 
 
-def build_static_map_overview(df_: pd.DataFrame, level: str) -> tuple[Optional[plt.Figure], str]:
+def build_static_map_overview(
+    df_: pd.DataFrame,
+    level: str,
+    annotation_mode: str = "aucun",
+    annotation_threshold: float = 1,
+) -> tuple[Optional[plt.Figure], str]:
     """Construit une carte statique par province ou zone de sante avec les GeoJSON du depot."""
     if gpd is None:
         return None, "geopandas n'est pas disponible."
@@ -4944,10 +4966,11 @@ def build_static_map_overview(df_: pd.DataFrame, level: str) -> tuple[Optional[p
             gdf=gdf_join,
             colonne_valeurs=value_col,
             titre=title,
-            annoter=False,
+            annoter=annotation_mode != "aucun",
+            mode_annotation=annotation_mode,
             nom_zone="name",
             fmt_valeurs="{:.0f}",
-            seuil_affichage=1,
+            seuil_affichage=annotation_threshold,
             cmap="YlOrRd",
             afficher_fond_carte=False,
             longueur_barre_km=50,
@@ -4989,8 +5012,35 @@ def render_overview_dashboard(
     render_standards_note()
 
     weekly = payload.get("weekly", pd.DataFrame())
-    fig_map_prov, note_map_prov = build_static_map_overview(df_, level="province")
-    fig_map_zs, note_map_zs = build_static_map_overview(df_, level="zone")
+    with st.expander("Options des cartes statiques", expanded=False):
+        overview_map_mode_label = st.selectbox(
+            "Annotations sur les cartes de synthese",
+            options=list(MAP_ANNOTATION_MODE_OPTIONS.keys()),
+            index=0,
+            key="overview_map_annotation_mode",
+        )
+        overview_map_threshold = st.number_input(
+            "Seuil d'affichage des annotations (valeur >)",
+            min_value=0,
+            max_value=100000,
+            value=1,
+            step=1,
+            key="overview_map_annotation_threshold",
+        )
+
+    overview_map_mode = MAP_ANNOTATION_MODE_OPTIONS[overview_map_mode_label]
+    fig_map_prov, note_map_prov = build_static_map_overview(
+        df_,
+        level="province",
+        annotation_mode=overview_map_mode,
+        annotation_threshold=float(overview_map_threshold),
+    )
+    fig_map_zs, note_map_zs = build_static_map_overview(
+        df_,
+        level="zone",
+        annotation_mode=overview_map_mode,
+        annotation_threshold=float(overview_map_threshold),
+    )
 
     c1, c2, c3 = st.columns([1.05, 1.35, 1.35])
     with c1:
@@ -9735,7 +9785,14 @@ if show_maps:
         seuil_match = st.slider("Seuil de matching (fuzzy)", 0.70, 1.00, 0.90, 0.01)
 
         # Options d'affichage
-        annoter_map = st.checkbox("Annoter (nom + valeur)", value=True)
+        annoter_map_label = st.selectbox(
+            "Contenu des annotations",
+            options=list(MAP_ANNOTATION_MODE_OPTIONS.keys()),
+            index=3,
+            key="detail_map_annotation_mode",
+        )
+        annoter_map_mode = MAP_ANNOTATION_MODE_OPTIONS[annoter_map_label]
+        annoter_map = annoter_map_mode != "aucun"
         seuil_aff = st.number_input("Seuil affichage annotation (valeur >)", min_value=0, max_value=100000, value=1, step=1)
         afficher_fond = st.checkbox("Afficher fond de carte (contextily)", value=False)
         longueur_km = st.number_input("Longueur barre échelle (km)", min_value=5, max_value=300, value=50, step=5)
@@ -9767,6 +9824,7 @@ if show_maps:
                 colonne_valeurs="nb_cas_prov",
                 titre="RDC - Cas Cholera cumulés par province",
                 annoter=annoter_map,
+                mode_annotation=annoter_map_mode,
                 nom_zone="name",
                 fmt_valeurs="{:.0f}",
                 seuil_affichage=float(seuil_aff),
@@ -9812,6 +9870,7 @@ if show_maps:
                 colonne_valeurs="nb_cas_zs",
                 titre="RDC - Cas Cholera cumulés par zone",
                 annoter=annoter_map,
+                mode_annotation=annoter_map_mode,
                 nom_zone="name",
                 fmt_valeurs="{:.0f}",
                 seuil_affichage=float(seuil_aff),
