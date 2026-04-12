@@ -1,4 +1,5 @@
 import html
+import json
 import re
 import unicodedata
 from pathlib import Path
@@ -165,24 +166,30 @@ def format_number(value):
 
 
 @st.cache_data(show_spinner=False)
-def load_provinces_geojson(path):
+def load_provinces_gdf(path):
     return gpd.read_file(path)
+
+
+@st.cache_data(show_spinner=False)
+def load_provinces_geojson(path):
+    with open(path, "r", encoding="utf-8") as file_obj:
+        return json.load(file_obj)
 
 
 def resolve_provinces_geojson_path():
     for path in [GEOJSON_PROVINCES, GEOJSON_PROVINCES_FALLBACK]:
         if Path(path).exists():
             return path
-    return GEOJSON_PROVINCES
+    return None
 
 
 def orient_for_plotly(geometry):
     if geometry is None or geometry.is_empty:
         return geometry
     if geometry.geom_type == "Polygon":
-        return orient(geometry, sign=1.0)
+        return orient(geometry, sign=-1.0)
     if geometry.geom_type == "MultiPolygon":
-        return MultiPolygon([orient(polygon, sign=1.0) for polygon in geometry.geoms])
+        return MultiPolygon([orient(polygon, sign=-1.0) for polygon in geometry.geoms])
     return geometry
 
 
@@ -478,6 +485,12 @@ section[data-testid="stSidebar"] label {color: #001b47; font-weight: 700;}
     box-shadow: 0 4px 12px rgba(0, 31, 84, 0.08);
     min-height: 100%;
 }
+.map-mode-note {
+    color: #4a607a;
+    font-size: 12px;
+    font-weight: 700;
+    margin: 2px 0 8px;
+}
 .block-title {
     color: #001b47;
     font-size: 14px;
@@ -617,8 +630,6 @@ def filter_data(df_loaded):
     top_n = st.sidebar.slider("Nombre d'elements dans les tops", min_value=3, max_value=15, value=5, step=1)
     time_grain = st.sidebar.selectbox("Granularite de la courbe", ["Jour", "Semaine", "Mois"], index=0)
     show_curve_labels = st.sidebar.checkbox("Afficher les valeurs sur la courbe", value=True)
-    static_map = st.sidebar.checkbox("Carte statique si la carte interactive bloque", value=True)
-
     df_filtered = df_by_date.copy()
     df_filtered = apply_multiselect_filter(df_filtered, COL_PROVINCE_NORM, province_sel)
     df_filtered = apply_multiselect_filter(df_filtered, COL_TERRITOIRE, territoire_sel)
@@ -638,7 +649,6 @@ def filter_data(df_loaded):
         "top_n": top_n,
         "time_grain": time_grain,
         "show_curve_labels": show_curve_labels,
-        "static_map": static_map,
     }
 
 
@@ -703,8 +713,13 @@ def render_kpis(df_filtered):
 
 
 def build_map_gdf(df_filtered):
+    geojson_path = resolve_provinces_geojson_path()
+    if geojson_path is None:
+        st.error("GeoJSON introuvable. Ajoute 'data/geometry_rdc_provinces.geojson' ou 'geometry_rdc_provinces.geojson'.")
+        st.stop()
+
     try:
-        gdf = load_provinces_geojson(resolve_provinces_geojson_path()).copy()
+        gdf = load_provinces_gdf(geojson_path).copy()
     except Exception as exc:
         st.error(f"Impossible de charger la carte RDC : {exc}")
         st.stop()
@@ -730,8 +745,63 @@ def build_map_gdf(df_filtered):
     return gdf, geo_col
 
 
+@st.cache_data(show_spinner=False)
+def build_map_dataset(df_filtered, geojson_path):
+    geojson = load_provinces_geojson(geojson_path)
+    features = geojson.get("features", [])
+    if not features:
+        raise ValueError("Le GeoJSON ne contient aucune feature.")
+
+    candidate_keys = ["province", "name", "name_1", "nom", "adm1_name", "shapeName"]
+    feature_key = None
+    for key in candidate_keys:
+        if all(key in feature.get("properties", {}) for feature in features[: min(5, len(features))]):
+            feature_key = key
+            break
+
+    if feature_key is None:
+        sample_keys = list(features[0].get("properties", {}).keys())
+        for key in sample_keys:
+            values = [str(feature.get("properties", {}).get(key, "")).strip() for feature in features]
+            if sum(bool(v) for v in values) >= max(5, len(values) // 2):
+                feature_key = key
+                break
+
+    if feature_key is None:
+        raise ValueError("Impossible d'identifier le champ province dans le GeoJSON.")
+
+    rows = []
+    for idx, feature in enumerate(features):
+        province_raw = feature.get("properties", {}).get(feature_key, "")
+        province_norm = normalize_province_name(province_raw)
+        feature["properties"]["feature_id"] = str(idx)
+        feature["properties"]["province_norm"] = province_norm
+        rows.append(
+            {
+                "feature_id": str(idx),
+                "Province_geojson": str(province_raw),
+                "prov_norm": province_norm,
+            }
+        )
+
+    map_df = pd.DataFrame(rows)
+    counts = (
+        df_filtered[[COL_PROVINCE_NORM]]
+        .rename(columns={COL_PROVINCE_NORM: "prov_norm"})
+        .groupby("prov_norm", as_index=False)
+        .size()
+        .rename(columns={"size": "nb"})
+    )
+    map_df = map_df.merge(counts, on="prov_norm", how="left")
+    map_df["nb"] = map_df["nb"].fillna(0).astype(int)
+
+    return geojson, map_df
+
+
 def carte_rdc(df_filtered):
     gdf, geo_col = build_map_gdf(df_filtered)
+    gdf = gdf.copy()
+    gdf["nb"] = gdf["nb"].fillna(0).astype(int)
 
     fig = px.choropleth(
         gdf,
@@ -739,33 +809,30 @@ def carte_rdc(df_filtered):
         locations="map_id",
         featureidkey="properties.map_id",
         color="nb",
+        custom_data=[geo_col, "prov_norm"],
         color_continuous_scale=[
-            [0.0, "#fff7f3"],
-            [0.15, "#fde7df"],
-            [0.45, "#fca487"],
-            [0.75, "#fb5a49"],
-            [1.0, "#9b001f"],
+            [0.0, "#fff5f0"],
+            [0.2, "#fee0d2"],
+            [0.45, "#fcbba1"],
+            [0.7, "#fb6a4a"],
+            [1.0, "#99000d"],
         ],
         projection="mercator",
     )
 
     fig.update_traces(
-        customdata=gdf[[geo_col, "prov_norm"]],
-        marker_line_color="#d2d2cc",
-        marker_line_width=1.0,
+        marker_line_color="#475569",
+        marker_line_width=1.25,
         hovertemplate="<b>%{customdata[0]}</b><br>Appels: %{z}<extra></extra>",
     )
     fig.update_geos(
         fitbounds="locations",
         visible=False,
-        bgcolor="#fbfaf7",
         domain=dict(x=[0.02, 0.98], y=[0.02, 0.98]),
-        showland=True,
-        lakecolor="#fbfaf7",
-        landcolor="#fbfaf7",
-        showocean=True,
-        oceancolor="#fbfaf7",
-        showlakes=True,
+        bgcolor="#c6d6ee",
+        showland=False,
+        showocean=False,
+        showlakes=False,
         showcountries=False,
         showcoastlines=False,
         showframe=False,
@@ -773,10 +840,11 @@ def carte_rdc(df_filtered):
     fig.update_layout(
         height=500,
         margin=dict(l=8, r=8, t=4, b=4),
-        paper_bgcolor="#fbfaf7",
-        plot_bgcolor="#fbfaf7",
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
         coloraxis_showscale=False,
         dragmode="pan",
+        uirevision="province-map",
     )
 
     return fig, gdf, geo_col
@@ -786,8 +854,8 @@ def carte_rdc_statique(df_filtered):
     gdf, geo_col = build_map_gdf(df_filtered)
     gdf_plot = gdf.to_crs(epsg=3857)
 
-    fig, ax = plt.subplots(figsize=(7.8, 5.6), facecolor="#fbfaf7")
-    ax.set_facecolor("#fbfaf7")
+    fig, ax = plt.subplots(figsize=(7.8, 5.6), facecolor="#ffffff")
+    ax.set_facecolor("#ffffff")
     gdf_plot.plot(
         column="nb",
         cmap="Reds",
@@ -859,18 +927,33 @@ def get_clicked_province(point, gdf_map, geo_col):
     return None, None
 
 
-def render_map(df_filtered, static_map=False):
+def render_map(df_filtered):
     st.markdown("<div class='map-card'><div class='block-title'>Repartition des appels par province</div>", unsafe_allow_html=True)
 
-    if static_map:
+    st.markdown("<div class='map-mode-note'>Mode de carte</div>", unsafe_allow_html=True)
+    map_mode = st.radio(
+        "Mode de carte",
+        ["Interactive", "Statique"],
+        index=0,
+        horizontal=True,
+        key="map_display_mode",
+        label_visibility="collapsed",
+    )
+
+    if map_mode == "Statique":
         fig_static = carte_rdc_statique(df_filtered)
         st.pyplot(fig_static, width="stretch")
         plt.close(fig_static)
-        st.markdown("<div class='hint'>Carte statique activee. Decoche l'option sidebar pour reactiver le clic.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='hint'>Carte statique activee. Repasse en mode Interactive pour retrouver le clic sur les provinces.</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
         return df_filtered
 
-    fig_map, gdf_map, geo_col = carte_rdc(df_filtered)
+    try:
+        fig_map, gdf_map, geo_col = carte_rdc(df_filtered)
+    except Exception as exc:
+        st.warning(f"Carte interactive indisponible : {exc}")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return df_filtered
 
     selection_state = st.plotly_chart(
         fig_map,
@@ -1165,7 +1248,7 @@ def render_charts(df_filtered, chart_options):
     c1, c2, c3 = st.columns([1.18, 1.62, 1.0])
 
     with c1:
-        df_filtered = render_map(df_filtered, static_map=chart_options["static_map"])
+        df_filtered = render_map(df_filtered)
 
     with c2:
         mid_top_left, mid_top_right = st.columns(2)

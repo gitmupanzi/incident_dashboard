@@ -4,9 +4,13 @@ import re
 import unicodedata
 from pathlib import Path
 
+import geopandas as gpd
+import matplotlib.pyplot as plt
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from shapely.geometry import MultiPolygon
+from shapely.geometry.polygon import orient
 
 try:
     from sqlalchemy import create_engine, text
@@ -112,9 +116,11 @@ COLUMN_NAME_ALIASES = {
     "nom_qualification": COL_QUALIFICATION,
     "qualification": COL_QUALIFICATION,
     "numero_appelant": "Numero_appelant",
+    "numero_appelant": "Numero_appelant",
     "numero_de_l_appelant": "Numero_appelant",
     "num_appelant": "Numero_appelant",
     "autre_numero": "Autre_numero",
+    "autre_numero_telephone": "Autre_numero",
     "autre_numero_telephone": "Autre_numero",
     "nom": "Nom_complet",
     "nom_complet": "Nom_complet",
@@ -160,6 +166,11 @@ def format_number(value):
 
 
 @st.cache_data(show_spinner=False)
+def load_provinces_gdf(path):
+    return gpd.read_file(path)
+
+
+@st.cache_data(show_spinner=False)
 def load_provinces_geojson(path):
     with open(path, "r", encoding="utf-8") as file_obj:
         return json.load(file_obj)
@@ -170,6 +181,16 @@ def resolve_provinces_geojson_path():
         if Path(path).exists():
             return path
     return None
+
+
+def orient_for_plotly(geometry):
+    if geometry is None or geometry.is_empty:
+        return geometry
+    if geometry.geom_type == "Polygon":
+        return orient(geometry, sign=-1.0)
+    if geometry.geom_type == "MultiPolygon":
+        return MultiPolygon([orient(polygon, sign=-1.0) for polygon in geometry.geoms])
+    return geometry
 
 
 def reset_file_pointer(file_obj):
@@ -464,6 +485,12 @@ section[data-testid="stSidebar"] label {color: #001b47; font-weight: 700;}
     box-shadow: 0 4px 12px rgba(0, 31, 84, 0.08);
     min-height: 100%;
 }
+.map-mode-note {
+    color: #4a607a;
+    font-size: 12px;
+    font-weight: 700;
+    margin: 2px 0 8px;
+}
 .block-title {
     color: #001b47;
     font-size: 14px;
@@ -523,7 +550,7 @@ def render_header():
         """
 <div class="header">
 <h2>DASHBOARD DE CALL CENTER SANTE PUBLIQUE</h2>
-<p>Suivi des appels et surveillance epidemiologique</p>
+<p>Suivi des appels et surveillance epidémiologique</p>
 </div>
 """,
         unsafe_allow_html=True,
@@ -551,11 +578,18 @@ def filter_data(df_loaded):
 
     province_sel = selected_values("Province", province_options, "province_sel")
 
-    df_for_territoire = apply_multiselect_filter(df_by_date, COL_PROVINCE_NORM, province_sel)
+    df_for_territoire = df_by_date
+    df_for_territoire = apply_multiselect_filter(df_for_territoire, COL_PROVINCE_NORM, province_sel)
+
     territoire_sel = selected_values("Territoire", sorted_options(df_for_territoire[COL_TERRITOIRE]), "territoire_sel")
     df_for_zone_sante = apply_multiselect_filter(df_for_territoire, COL_TERRITOIRE, territoire_sel)
 
-    zone_sante_sel = optional_selected_values("Zone de santé", df_for_zone_sante, COL_ZONE_SANTE, "zone_sante_sel")
+    zone_sante_sel = optional_selected_values(
+        "Zone de santé",
+        df_for_zone_sante,
+        COL_ZONE_SANTE,
+        "zone_sante_sel",
+    )
     df_for_pathologie = apply_optional_multiselect(df_for_zone_sante, COL_ZONE_SANTE, zone_sante_sel)
 
     pathologie_sel = selected_values("Pathologie", sorted_options(df_for_pathologie[COL_PATHOLOGIE]), "pathologie_sel")
@@ -596,7 +630,6 @@ def filter_data(df_loaded):
     top_n = st.sidebar.slider("Nombre d'elements dans les tops", min_value=3, max_value=15, value=5, step=1)
     time_grain = st.sidebar.selectbox("Granularite de la courbe", ["Jour", "Semaine", "Mois"], index=0)
     show_curve_labels = st.sidebar.checkbox("Afficher les valeurs sur la courbe", value=True)
-
     df_filtered = df_by_date.copy()
     df_filtered = apply_multiselect_filter(df_filtered, COL_PROVINCE_NORM, province_sel)
     df_filtered = apply_multiselect_filter(df_filtered, COL_TERRITOIRE, territoire_sel)
@@ -679,6 +712,39 @@ def render_kpis(df_filtered):
     )
 
 
+def build_map_gdf(df_filtered):
+    geojson_path = resolve_provinces_geojson_path()
+    if geojson_path is None:
+        st.error("GeoJSON introuvable. Ajoute 'data/geometry_rdc_provinces.geojson' ou 'geometry_rdc_provinces.geojson'.")
+        st.stop()
+
+    try:
+        gdf = load_provinces_gdf(geojson_path).copy()
+    except Exception as exc:
+        st.error(f"Impossible de charger la carte RDC : {exc}")
+        st.stop()
+
+    geo_columns = [column for column in gdf.columns if column.lower() in ["name", "province", "name_1"]]
+    if not geo_columns:
+        st.error("Impossible d'identifier la colonne province dans le GeoJSON.")
+        st.stop()
+
+    geo_col = geo_columns[0]
+    gdf["map_id"] = gdf.index.astype(str)
+    gdf["prov_norm"] = gdf[geo_col].apply(normalize_province_name)
+
+    data = df_filtered[[COL_PROVINCE_NORM]].copy()
+    data = data.rename(columns={COL_PROVINCE_NORM: "prov_norm"})
+    data = data.groupby("prov_norm", as_index=False).size()
+    data.columns = ["prov_norm", "nb"]
+
+    gdf = gdf.merge(data, on="prov_norm", how="left")
+    gdf["nb"] = gdf["nb"].fillna(0)
+    gdf["geometry"] = gdf.geometry.apply(orient_for_plotly)
+
+    return gdf, geo_col
+
+
 @st.cache_data(show_spinner=False)
 def build_map_dataset(df_filtered, geojson_path):
     geojson = load_provinces_geojson(geojson_path)
@@ -710,11 +776,13 @@ def build_map_dataset(df_filtered, geojson_path):
         province_norm = normalize_province_name(province_raw)
         feature["properties"]["feature_id"] = str(idx)
         feature["properties"]["province_norm"] = province_norm
-        rows.append({
-            "feature_id": str(idx),
-            "Province_geojson": str(province_raw),
-            "prov_norm": province_norm,
-        })
+        rows.append(
+            {
+                "feature_id": str(idx),
+                "Province_geojson": str(province_raw),
+                "prov_norm": province_norm,
+            }
+        )
 
     map_df = pd.DataFrame(rows)
     counts = (
@@ -730,86 +798,162 @@ def build_map_dataset(df_filtered, geojson_path):
     return geojson, map_df
 
 
+def carte_rdc(df_filtered):
+    gdf, geo_col = build_map_gdf(df_filtered)
+    gdf = gdf.copy()
+    gdf["nb"] = gdf["nb"].fillna(0).astype(int)
+
+    fig = px.choropleth(
+        gdf,
+        geojson=gdf.__geo_interface__,
+        locations="map_id",
+        featureidkey="properties.map_id",
+        color="nb",
+        custom_data=[geo_col, "prov_norm"],
+        color_continuous_scale=[
+            [0.0, "#fff5f0"],
+            [0.2, "#fee0d2"],
+            [0.45, "#fcbba1"],
+            [0.7, "#fb6a4a"],
+            [1.0, "#99000d"],
+        ],
+        projection="mercator",
+    )
+
+    fig.update_traces(
+        marker_line_color="#475569",
+        marker_line_width=1.25,
+        hovertemplate="<b>%{customdata[0]}</b><br>Appels: %{z}<extra></extra>",
+    )
+    fig.update_geos(
+        fitbounds="locations",
+        visible=False,
+        domain=dict(x=[0.02, 0.98], y=[0.02, 0.98]),
+        bgcolor="#c6d6ee",
+        showland=False,
+        showocean=False,
+        showlakes=False,
+        showcountries=False,
+        showcoastlines=False,
+        showframe=False,
+    )
+    fig.update_layout(
+        height=500,
+        margin=dict(l=8, r=8, t=4, b=4),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        coloraxis_showscale=False,
+        dragmode="pan",
+        uirevision="province-map",
+    )
+
+    return fig, gdf, geo_col
+
+
+def carte_rdc_statique(df_filtered):
+    gdf, geo_col = build_map_gdf(df_filtered)
+    gdf_plot = gdf.to_crs(epsg=3857)
+
+    fig, ax = plt.subplots(figsize=(7.8, 5.6), facecolor="#ffffff")
+    ax.set_facecolor("#ffffff")
+    gdf_plot.plot(
+        column="nb",
+        cmap="Reds",
+        ax=ax,
+        legend=True,
+        edgecolor="#d2d2cc",
+        linewidth=0.8,
+        missing_kwds={"color": "#fff7f3"},
+    )
+
+    for _, row in gdf_plot.iterrows():
+        if row["nb"] <= 0:
+            continue
+        point = row.geometry.representative_point()
+        ax.text(
+            point.x,
+            point.y,
+            f"{row[geo_col]}\n{int(row['nb'])}",
+            ha="center",
+            va="center",
+            fontsize=6,
+            color="#1f2a44",
+            bbox=dict(boxstyle="round,pad=0.18", facecolor="#ffffff", edgecolor="none", alpha=0.75),
+        )
+
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    scale_km = 100
+    x_start = x_min + (x_max - x_min) * 0.08
+    y_start = y_min + (y_max - y_min) * 0.08
+    ax.plot([x_start, x_start + scale_km * 1000], [y_start, y_start], color="#1f2a44", linewidth=1.5)
+    ax.text(x_start + scale_km * 500, y_start + (y_max - y_min) * 0.02, f"{scale_km} km", ha="center", fontsize=7)
+
+    ax.set_title("RDC - Appels par province", fontsize=11, fontweight="bold", color="#001b47")
+    ax.axis("off")
+    fig.tight_layout()
+    return fig
+
+
 def get_selected_map_point(selection_state):
     if not selection_state:
         return None
+
     selection = selection_state.get("selection", {}) if hasattr(selection_state, "get") else {}
     points = selection.get("points", []) if isinstance(selection, dict) else []
     return points[0] if points else None
 
 
+def get_clicked_province(point, gdf_map, geo_col):
+    customdata = point.get("customdata") or []
+    province = customdata[0] if len(customdata) > 0 else None
+    province_norm = customdata[1] if len(customdata) > 1 else None
+
+    if province_norm:
+        return province, province_norm
+
+    location = point.get("location")
+    if location is not None:
+        match = gdf_map[gdf_map["map_id"] == str(location)]
+        if not match.empty:
+            row = match.iloc[0]
+            return row[geo_col], row["prov_norm"]
+
+    point_index = point.get("pointIndex", point.get("point_number"))
+    if point_index is not None and 0 <= point_index < len(gdf_map):
+        row = gdf_map.iloc[point_index]
+        return row[geo_col], row["prov_norm"]
+
+    return None, None
+
+
 def render_map(df_filtered):
     st.markdown("<div class='map-card'><div class='block-title'>Repartition des appels par province</div>", unsafe_allow_html=True)
 
-    geojson_path = resolve_provinces_geojson_path()
-    if geojson_path is None:
-        st.info("GeoJSON introuvable. Ajoute 'data/geometry_rdc_provinces.geojson' ou 'geometry_rdc_provinces.geojson'.")
-        province_counts = df_filtered[COL_PROVINCE_NORM].value_counts().reset_index()
-        province_counts.columns = ["Province", "Nombre"]
-        if not province_counts.empty:
-            fig_fallback = px.bar(
-                province_counts.sort_values("Nombre", ascending=True),
-                x="Nombre",
-                y="Province",
-                orientation="h",
-                color_discrete_sequence=["#9b001f"],
-            )
-            fig_fallback.update_layout(height=500, margin=dict(l=8, r=8, t=8, b=8), showlegend=False)
-            st.plotly_chart(fig_fallback, width="stretch")
+    st.markdown("<div class='map-mode-note'>Mode de carte</div>", unsafe_allow_html=True)
+    map_mode = st.radio(
+        "Mode de carte",
+        ["Interactive", "Statique"],
+        index=0,
+        horizontal=True,
+        key="map_display_mode",
+        label_visibility="collapsed",
+    )
+
+    if map_mode == "Statique":
+        fig_static = carte_rdc_statique(df_filtered)
+        st.pyplot(fig_static, width="stretch")
+        plt.close(fig_static)
+        st.markdown("<div class='hint'>Carte statique activee. Repasse en mode Interactive pour retrouver le clic sur les provinces.</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
         return df_filtered
 
     try:
-        geojson, map_df = build_map_dataset(df_filtered, geojson_path)
+        fig_map, gdf_map, geo_col = carte_rdc(df_filtered)
     except Exception as exc:
-        st.warning(f"Carte indisponible : {exc}")
+        st.warning(f"Carte interactive indisponible : {exc}")
         st.markdown("</div>", unsafe_allow_html=True)
         return df_filtered
-
-    fig_map = px.choropleth(
-        map_df,
-        geojson=geojson,
-        locations="feature_id",
-        featureidkey="properties.feature_id",
-        color="nb",
-        custom_data=["Province_geojson", "prov_norm"],
-        color_continuous_scale=[
-            [0.0, "#fff7f3"],
-            [0.15, "#fde7df"],
-            [0.45, "#fca487"],
-            [0.75, "#fb5a49"],
-            [1.0, "#9b001f"],
-        ],
-        projection="mercator",
-    )
-    fig_map.update_traces(
-        marker_line_color="#d2d2cc",
-        marker_line_width=1.0,
-        hovertemplate="<b>%{customdata[0]}</b><br>Appels: %{z}<extra></extra>",
-    )
-    fig_map.update_geos(
-        fitbounds="locations",
-        visible=False,
-        bgcolor="#fbfaf7",
-        domain=dict(x=[0.02, 0.98], y=[0.02, 0.98]),
-        showland=True,
-        lakecolor="#fbfaf7",
-        landcolor="#fbfaf7",
-        showocean=True,
-        oceancolor="#fbfaf7",
-        showlakes=True,
-        showcountries=False,
-        showcoastlines=False,
-        showframe=False,
-    )
-    fig_map.update_layout(
-        height=500,
-        margin=dict(l=8, r=8, t=4, b=4),
-        paper_bgcolor="#fbfaf7",
-        plot_bgcolor="#fbfaf7",
-        coloraxis_showscale=False,
-        dragmode="pan",
-    )
 
     selection_state = st.plotly_chart(
         fig_map,
@@ -829,23 +973,16 @@ def render_map(df_filtered):
 
     clicked_point = get_selected_map_point(selection_state)
     if clicked_point:
-        customdata = clicked_point.get("customdata") or []
-        province = customdata[0] if len(customdata) > 0 else None
-        province_norm = customdata[1] if len(customdata) > 1 else None
+        province, province_norm = get_clicked_province(clicked_point, gdf_map, geo_col)
         current_selection = st.session_state.get("province_sel", [])
         if province_norm and current_selection != [province_norm]:
             st.session_state["map_clicked_province"] = province_norm
-            st.markdown(
-                "<div class='hint'>Filtre actif : {}</div>".format(html.escape(str(province))),
-                unsafe_allow_html=True,
-            )
+            st.markdown("<div class='hint'>Filtre actif : {}</div>".format(html.escape(str(province))), unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
             st.rerun()
 
-    st.markdown(
-        "<div class='hint'>Clique sur une province pour filtrer. Utilise la molette ou la barre d'outils pour zoomer/dezoomer.</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown("<div class='hint'>Clique sur une province pour filtrer. Utilise la molette ou la barre d'outils pour zoomer/dezoomer.</div>", unsafe_allow_html=True)
+
     st.markdown("</div>", unsafe_allow_html=True)
     return df_filtered
 
@@ -901,18 +1038,14 @@ def render_sexe_chart(df_filtered):
     if COL_SEXE not in df_filtered.columns:
         st.info("La colonne Sexe n'est pas presente dans le fichier Excel.")
     else:
-        df_sexe = df_filtered[df_filtered[COL_SEXE] != ""]
-        if df_sexe.empty:
-            st.info("Aucune valeur exploitable dans la colonne Sexe.")
-        else:
-            fig_sexe = px.pie(
-                df_sexe,
-                names=COL_SEXE,
-                hole=0.58,
-                color_discrete_sequence=["#1f7ae0", "#e3342f", "#16a34a", "#d97706"],
-            )
-            fig_sexe.update_traces(textinfo="percent+label")
-            st.plotly_chart(style_figure(fig_sexe, height=220), width="stretch")
+        fig_sexe = px.pie(
+            df_filtered[df_filtered[COL_SEXE] != ""],
+            names=COL_SEXE,
+            hole=0.58,
+            color_discrete_sequence=["#1f7ae0", "#e3342f", "#16a34a", "#d97706"],
+        )
+        fig_sexe.update_traces(textinfo="percent+label")
+        st.plotly_chart(style_figure(fig_sexe, height=220), width="stretch")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -1191,8 +1324,8 @@ def render_footer():
         """
 <div class="footer">
   <div>Pour toute urgence sanitaire, appelez le<br><small>+243 800 000 115</small></div>
-  <div>Donnees fiables pour des decisions rapides<br><small>Protegeons nos communautes</small></div>
-  <div>Source : Base de donnees Call Center<br><small>COUSP - RDC</small></div>
+  <div>Données fiables pour des decisions rapides<br><small>Protegeons nos communautes</small></div>
+  <div>Source : Base de données Call Center<br><small>COUSP - RDC</small></div>
 </div>
 """,
         unsafe_allow_html=True,
