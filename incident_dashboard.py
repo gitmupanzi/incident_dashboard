@@ -5489,12 +5489,7 @@ with tab_profil:
             expanded=False
         )
         
-        st.subheader("Description démographique des cas et structure par groupes de population")
-        st.info(
-            "Les visuels synthétiques sur le sexe, l’âge et la pyramide âge-sexe ont été regroupés sur la page d’accueil "
-            "et dans l’onglet Profil afin d’éviter leur répétition dans cet espace."
-        )
-        
+      
         st.divider()
 
         st.subheader("Contrôle qualité des variables d’âge")
@@ -5590,22 +5585,7 @@ with tab_profil:
             else:
                 st.success("Aucune valeur d’âge extrême n’a été détectée selon les règles en vigueur.")
 
-        st.divider()
-
-        st.subheader("Répartition proportionnelle des cas selon la variable analytique sélectionnée")
-        st.info(
-            "Les représentations proportionnelles par tranche d’âge ont été conservées sur la page d’accueil et dans l’onglet Profil. "
-            "Elles sont volontairement retirées ici pour alléger la lecture."
-        )
-
-        st.divider()
-
-        st.subheader("Pyramides âge-sexe")
-        st.info(
-            "Les pyramides âge-sexe de synthèse et la version détaillée par province sont désormais concentrées "
-            "dans la page d’accueil et dans l’onglet Profil épidémiologique des cas."
-        )
-        
+      
     # =========================
     # TAB 4B: Analyse descriptive standard
     # =========================
@@ -5622,7 +5602,6 @@ with tab_profil:
 
             **📖 Structure **
             - Vue d'ensemble
-            - Temps (sans redondance avec l’onglet Surveillance)
             - Personne
             - Lieu
             - Laboratoire
@@ -5636,13 +5615,9 @@ with tab_profil:
 
         st.subheader("1. Situation générale")
         st_dataframe_safe(build_global_summary_table(df_f))
-
+                
         st.divider()
-        st.subheader("2. Dimension temporelle — synthèse renvoyée à l’onglet de surveillance")
-        st.info("Les graphiques temporels détaillés (cas hebdomadaires, décès hebdomadaires et létalité observée) sont présentés dans l’onglet **Surveillance épidémiologique, létalité et promptitude de notification** afin d’éviter les redondances et de conserver une lecture OMS/IDSR plus lisible.")
-
-        st.divider()
-        st.subheader("3. Dimension personne — tableaux détaillés et structure avancée")
+        st.subheader("2. Dimension personne — tableaux détaillés et structure avancée")
         st.caption("Les visuels rapides sexe, âge et pyramide de synthèse sont regroupés sur la page d’accueil. Ici, l’accent est mis sur les tableaux analytiques détaillés.")
         a1, a2 = st.columns(2)
         with a1:
@@ -5697,7 +5672,7 @@ with tab_profil:
             st.info("La structure âge-sexe détaillée par province n’est pas disponible : Province, Sexe et une variable de tranche d’âge sont requis.")
 
         st.divider()
-        st.subheader("4. Dimension lieu — répartition par province, zone de santé et aire de santé")
+        st.subheader("3. Dimension lieu — répartition par province, zone de santé et aire de santé")
         geo_cols = [c for c in [COL_PROV, COL_ZS, COL_AS] if c in df_f.columns]
         if geo_cols:
             geo_choice = st.selectbox('Niveau géographique d’analyse', geo_cols, key='oms_geo_choice')
@@ -5712,7 +5687,7 @@ with tab_profil:
             st.info("Aucune variable géographique standard n’a été détectée.")
 
         st.divider()
-        st.subheader("5. Composante laboratoire — résumé opérationnel")
+        st.subheader("4. Composante laboratoire — résumé opérationnel")
         lab_tbl = build_simple_lab_table(df_f)
         if not lab_tbl.empty:
             l1, l2 = st.columns([1, 1])
@@ -5789,7 +5764,7 @@ with tab_profil:
             st.info("Aucune variable laboratoire simple n’a été détectée (prélèvement, TDR ou résultat).")
 
         st.divider()
-        st.subheader("6. Tableaux descriptifs des variables catégorielles")
+        st.subheader("5. Tableaux descriptifs des variables catégorielles")
         st.caption("Les analyses de délais sont centralisées dans l’onglet Surveillance afin d’éviter leur répétition ici.")
         default_cat_candidates = [COL_SEX, COL_PROV, COL_ZS, COL_AS, COL_AGEG2, COL_AGEG, COL_ISSUE, COL_PREL, COL_TDR, COL_TDRR, COL_HOSP, COL_CLASS]
         cat_candidates = [c for c in default_cat_candidates if c in df_f.columns]
