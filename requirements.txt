@@ -9,6 +9,7 @@ kaleido>=0.2.1,<1.0
 # Geospatial stack for static maps
 geopandas>=0.14,<1.2
 shapely>=2.0,<3.0
+pyogrio>=0.9,<1.0
 
 # Database connectivity used by call_center*.py
 sqlalchemy>=2.0,<3.0
