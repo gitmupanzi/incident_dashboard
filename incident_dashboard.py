@@ -3463,6 +3463,77 @@ def build_standard_delay_summary(df: pd.DataFrame) -> pd.DataFrame:
                 })
     return pd.DataFrame(rows)
 
+STANDARD_DELAY_LABELS = {
+    "delai_onset_to_consult": "Debut -> consultation",
+    "delai_onset_to_notif": "Debut -> notification",
+    "delai_onset_to_adm": "Debut -> admission",
+    "delai_onset_to_prel": "Debut -> prelevement",
+    "delai_prel_to_result": "Prelevement -> resultat",
+    "delai_notif_to_invest": "Notification -> investigation",
+    "delai_adm_to_issue": "Admission -> issue",
+}
+
+def list_available_standard_delays(df: pd.DataFrame) -> List[Tuple[str, str]]:
+    """Retourne les delais standards exploitables dans le perimetre filtre."""
+    available = []
+    if df is None or df.empty:
+        return available
+
+    for col, label in STANDARD_DELAY_LABELS.items():
+        if col not in df.columns:
+            continue
+        s = pd.to_numeric(df[col], errors="coerce")
+        s = s[s >= 0].dropna()
+        if len(s):
+            available.append((col, label))
+    return available
+
+def build_delay_group_summary(df: pd.DataFrame, delay_col: str, group_col: str, threshold: float = 2) -> pd.DataFrame:
+    """Resume un delai standard par groupe avec indicateurs robustes."""
+    threshold_val = float(threshold)
+    threshold_lab = int(threshold_val) if threshold_val.is_integer() else round(threshold_val, 1)
+    pct_col = f"% <= {threshold_lab} j"
+    out_cols = [group_col, "n", "Mediane_j", "P25_j", "P75_j", "Min_j", "Max_j", pct_col]
+
+    if (
+        df is None
+        or df.empty
+        or delay_col not in df.columns
+        or group_col not in df.columns
+    ):
+        return pd.DataFrame(columns=out_cols)
+
+    tmp = df[[group_col, delay_col]].copy()
+    tmp[delay_col] = pd.to_numeric(tmp[delay_col], errors="coerce")
+    tmp = tmp[tmp[group_col].notna() & tmp[delay_col].notna()].copy()
+    tmp = tmp[tmp[delay_col] >= 0]
+
+    if tmp.empty:
+        return pd.DataFrame(columns=out_cols)
+
+    grouped = (
+        tmp.groupby(group_col, as_index=False)
+        .agg(
+            n=(delay_col, "size"),
+            Mediane_j=(delay_col, "median"),
+            P25_j=(delay_col, lambda x: x.quantile(0.25)),
+            P75_j=(delay_col, lambda x: x.quantile(0.75)),
+            Min_j=(delay_col, "min"),
+            Max_j=(delay_col, "max"),
+        )
+    )
+    pct_tbl = (
+        tmp.groupby(group_col)[delay_col]
+        .apply(lambda x: float((x <= threshold_val).mean() * 100.0))
+        .reset_index(name=pct_col)
+    )
+    grouped = grouped.merge(pct_tbl, on=group_col, how="left")
+
+    for c in ["Mediane_j", "P25_j", "P75_j", "Min_j", "Max_j", pct_col]:
+        grouped[c] = pd.to_numeric(grouped[c], errors="coerce").round(1)
+
+    return grouped.sort_values(["n", group_col], ascending=[False, True])
+
 def build_recommended_fields_matrix(df: pd.DataFrame) -> pd.DataFrame:
     """Matrice simple de disponibilité des champs standards recommandés."""
     field_groups = {
@@ -4556,8 +4627,6 @@ if not IDSR_MODE:
         st.write(
             "Les KPI et visuels de la page d'accueil sont calcules apres application des filtres temporels et geographiques."
         )
-
-
     # =========================
     # FILTERS (UI) - MULTISELECT DÉPENDANTS AVEC "Toutes" PAR DÉFAUT
     # =========================
@@ -5807,7 +5876,100 @@ with tab_surveillance:
         
                 with st.expander("Table timeliness (résumé)"):
                     st.dataframe(df_resume.sort_values("pct_sous_seuil_%", ascending=False), width="stretch")
-        
+
+            delay_summary_std = build_standard_delay_summary(df_del)
+            available_delay_pairs = list_available_standard_delays(df_del)
+
+            if not delay_summary_std.empty:
+                st.divider()
+                st.markdown("**Resume standard des delais disponibles**")
+                st_dataframe_safe(delay_summary_std, height=320)
+
+            if available_delay_pairs:
+                st.markdown("**Analyse detaillee d'un delai standard**")
+                delay_label_to_col = {label: col for col, label in available_delay_pairs}
+                delay_focus_label = st.selectbox(
+                    "Delai standard a profiler",
+                    options=list(delay_label_to_col.keys()),
+                    key="timeliness_delay_focus",
+                )
+
+                group_candidates = []
+                for c in [COL_PROV, COL_ZS, pick_age_col(df_del), COL_SEX, COL_CLASS]:
+                    if c and c in df_del.columns and df_del[c].notna().any() and c not in group_candidates:
+                        group_candidates.append(c)
+
+                if group_candidates:
+                    g1, g2, g3 = st.columns([1.15, 1.15, 0.9])
+                    with g1:
+                        delay_group_focus = st.selectbox(
+                            "Variable de regroupement",
+                            options=group_candidates,
+                            key="timeliness_group_focus",
+                        )
+                    with g2:
+                        delay_metric_focus = st.selectbox(
+                            "Indicateur a classer",
+                            options=["Mediane (jours)", f"% <= {seuil_jours} jours"],
+                            key="timeliness_metric_focus",
+                        )
+                    with g3:
+                        delay_topn = st.slider(
+                            "Top groupes",
+                            min_value=5,
+                            max_value=30,
+                            value=15,
+                            step=1,
+                            key="timeliness_group_topn",
+                        )
+
+                    delay_focus_col = delay_label_to_col[delay_focus_label]
+                    delay_group_tbl = build_delay_group_summary(
+                        df_del,
+                        delay_col=delay_focus_col,
+                        group_col=delay_group_focus,
+                        threshold=seuil_jours,
+                    )
+
+                    if not delay_group_tbl.empty:
+                        seuil_val = float(seuil_jours)
+                        seuil_lab = int(seuil_val) if seuil_val.is_integer() else round(seuil_val, 1)
+                        pct_col = f"% <= {seuil_lab} j"
+                        sort_col = "Mediane_j" if delay_metric_focus.startswith("Mediane") else pct_col
+                        ascending = bool(delay_metric_focus.startswith("Mediane"))
+                        delay_group_view = (
+                            delay_group_tbl.sort_values(sort_col, ascending=ascending, na_position="last")
+                            .head(int(delay_topn))
+                            .copy()
+                        )
+
+                        t1, t2 = st.columns([1.05, 1.35])
+                        with t1:
+                            st.dataframe(delay_group_view, width="stretch", height=420, hide_index=True)
+                        with t2:
+                            plot_df = delay_group_view.sort_values(sort_col, ascending=True, na_position="last")
+                            fig_delay_focus = px.bar(
+                                plot_df,
+                                x=sort_col,
+                                y=delay_group_focus,
+                                orientation="h",
+                                text=sort_col,
+                                title=f"{delay_focus_label} par {delay_group_focus}",
+                                color=sort_col,
+                                color_continuous_scale=["#dbe8f9", "#2b74ca"],
+                            )
+                            fig_delay_focus.update_layout(
+                                coloraxis_showscale=False,
+                                xaxis_title=sort_col,
+                                yaxis_title=delay_group_focus,
+                            )
+                            fig_delay_focus = apply_plotly_value_annotations(fig_delay_focus, annot_vals)
+                            st.plotly_chart(fig_delay_focus, width="stretch", key="timeliness_delay_focus_chart")
+                    else:
+                        st.info("Le delai selectionne ne dispose pas d'assez de donnees exploitables pour ce regroupement.")
+                else:
+                    st.info("Aucune variable standard de regroupement n'est disponible pour profiler les delais.")
+
     # =========================
     # TAB 4: Démographie
     # =========================
@@ -6106,9 +6268,111 @@ with tab_profil:
             st.info("Aucune variable laboratoire simple n’a été détectée (prélèvement, TDR ou résultat).")
 
         st.divider()
-        st.subheader("5. Tableaux descriptifs des variables catégorielles")
+        st.subheader("5. Indicateurs standards stratifiés")
+        st.caption(
+            "Vue transversale standard des cas, décès, CFR et indicateurs de surveillance, "
+            "applicable à toute line list standardisée."
+        )
+
+        strat_age_col = pick_age_col(df_f)
+        strat_candidates = []
+        for c in [COL_SEX, strat_age_col, COL_PROV, COL_ZS, COL_AS, COL_CLASS]:
+            if c and c in df_f.columns and df_f[c].notna().any() and c not in strat_candidates:
+                strat_candidates.append(c)
+
+        if strat_candidates:
+            metric_map = {
+                "Cas": "Cas",
+                "Décès": "Deces",
+                "CFR (%)": "CFR (%)",
+                "Prélèvement (%)": "Prelevement (%)",
+                "Hospitalisation (%)": "Hospitalisation (%)",
+                "TDR réalisé (%)": "TDR realise (%)",
+                "Positivité TDR (%)": "Positivite TDR (%)",
+            }
+
+            s_cfg1, s_cfg2, s_cfg3 = st.columns([1.15, 1.15, 0.9])
+            with s_cfg1:
+                strat_choice = st.selectbox(
+                    "Variable de stratification",
+                    options=strat_candidates,
+                    key="std_strat_choice",
+                )
+            with s_cfg2:
+                strat_metric_label = st.selectbox(
+                    "Indicateur à classer",
+                    options=list(metric_map.keys()),
+                    index=0,
+                    key="std_strat_metric",
+                )
+            with s_cfg3:
+                strat_topn = st.slider(
+                    "Top modalités",
+                    min_value=5,
+                    max_value=30,
+                    value=15,
+                    step=1,
+                    key="std_strat_topn",
+                )
+
+            strat_tbl = compute_group_indicators(df_f, strat_choice).copy()
+            strat_tbl = strat_tbl.rename(
+                columns={
+                    "Décès": "Deces",
+                    "CFR_%": "CFR (%)",
+                    "Prélèvement_%": "Prelevement (%)",
+                    "Hospitalisation_%": "Hospitalisation (%)",
+                    "TDR_réalisé_%": "TDR realise (%)",
+                    "Positivité_TDR_%": "Positivite TDR (%)",
+                }
+            )
+
+            if not strat_tbl.empty:
+                total_cases_strat = pd.to_numeric(strat_tbl["Cas"], errors="coerce").sum()
+                strat_tbl["Part des cas (%)"] = np.where(
+                    total_cases_strat > 0,
+                    (pd.to_numeric(strat_tbl["Cas"], errors="coerce") / total_cases_strat) * 100.0,
+                    np.nan,
+                ).round(1)
+
+                sort_col = metric_map[strat_metric_label]
+                strat_view = (
+                    strat_tbl.sort_values(sort_col, ascending=False, na_position="last")
+                    .head(int(strat_topn))
+                    .copy()
+                )
+
+                s_tbl, s_fig = st.columns([1.05, 1.35])
+                with s_tbl:
+                    st.dataframe(strat_view, width="stretch", height=430, hide_index=True)
+                with s_fig:
+                    plot_df = strat_view.sort_values(sort_col, ascending=True, na_position="last")
+                    fig_strat = px.bar(
+                        plot_df,
+                        x=sort_col,
+                        y=strat_choice,
+                        orientation="h",
+                        text=sort_col,
+                        title=f"{strat_metric_label} par {strat_choice}",
+                        color=sort_col,
+                        color_continuous_scale=["#e7f1df", "#2d7d46"],
+                    )
+                    fig_strat.update_layout(
+                        coloraxis_showscale=False,
+                        xaxis_title=strat_metric_label,
+                        yaxis_title=strat_choice,
+                    )
+                    fig_strat = apply_plotly_value_annotations(fig_strat, annot_vals)
+                    st.plotly_chart(fig_strat, width="stretch", key="std_strat_chart")
+            else:
+                st.info("Les indicateurs standards sont indisponibles pour la variable de stratification sélectionnée.")
+        else:
+            st.info("Aucune variable standard exploitable n'est disponible pour une stratification transversale.")
+
+        st.divider()
+        st.subheader("6. Tableaux descriptifs des variables catégorielles")
         st.caption("Les analyses de délais sont centralisées dans l’onglet Surveillance afin d’éviter leur répétition ici.")
-        default_cat_candidates = [COL_SEX, COL_PROV, COL_ZS, COL_AS, COL_AGEG2, COL_AGEG, COL_ISSUE, COL_PREL, COL_TDR, COL_TDRR, COL_HOSP, COL_CLASS]
+        default_cat_candidates = [COL_SEX, COL_PROV, COL_ZS, COL_AS, COL_AGEG2, COL_AGEG, COL_ISSUE, COL_PREL, COL_TDR, COL_TDRR, COL_HOSP, COL_DEHY, COL_CLASS]
         cat_candidates = [c for c in default_cat_candidates if c in df_f.columns]
         extra_candidates = [c for c in df_f.columns if (not is_numeric_dtype(df_f[c])) and c not in cat_candidates]
         cat_options = cat_candidates + extra_candidates[:20]
