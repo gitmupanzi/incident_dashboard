@@ -582,6 +582,13 @@ try:
 except Exception:
     ctx = None
 
+try:
+    from shapely.geometry import MultiPolygon
+    from shapely.geometry.polygon import orient
+except Exception:
+    MultiPolygon = None
+    orient = None
+
 # -------------------------
 # LOGGER
 # -------------------------
@@ -3891,9 +3898,204 @@ def gdf_to_plotly_geojson(gdf, fid_col="fid"):
         g = g.to_crs(epsg=4326)
     except Exception:
         pass
+    if "geometry" in g.columns:
+        try:
+            g["geometry"] = g.geometry.apply(_orient_geometry_for_plotly)
+        except Exception:
+            pass
     g[fid_col] = g.index.astype(str)
     geojson = json.loads(g.to_json())
     return g, geojson
+
+
+def _orient_geometry_for_plotly(geometry):
+    if orient is None or geometry is None or geometry.is_empty:
+        return geometry
+    try:
+        if geometry.geom_type == "Polygon":
+            return orient(geometry, sign=-1.0)
+        if MultiPolygon is not None and geometry.geom_type == "MultiPolygon":
+            return MultiPolygon([orient(poly, sign=-1.0) for poly in geometry.geoms])
+    except Exception:
+        return geometry
+    return geometry
+
+
+def _resolve_map_filter_value(selected_label, available_values):
+    if selected_label is None or pd.isna(selected_label):
+        return None
+    selected_text = str(selected_label).strip()
+    if not selected_text:
+        return None
+
+    candidates = [
+        value
+        for value in available_values
+        if value is not None and not pd.isna(value) and str(value).strip()
+    ]
+    for value in candidates:
+        if str(value).strip() == selected_text:
+            return value
+
+    selected_key = _norm_key(selected_text)
+    for value in candidates:
+        if _norm_key(value) == selected_key:
+            return value
+    return None
+
+
+def enrich_fuzzy_geo_map_labels(
+    gdf_join,
+    df_map,
+    df_source,
+    source_label_col: str,
+    geo_label_col: str = "name",
+    output_col: str = "_map_label",
+):
+    gdf_enriched = gdf_join.copy()
+    fallback = (
+        gdf_enriched[geo_label_col].astype(str)
+        if geo_label_col in gdf_enriched.columns
+        else pd.Series("", index=gdf_enriched.index, dtype="object")
+    )
+    gdf_enriched[output_col] = fallback
+
+    if (
+        df_map is None
+        or df_map.empty
+        or "matched" not in df_map.columns
+        or "key_data" not in df_map.columns
+        or "key_geo" not in df_map.columns
+        or source_label_col not in df_source.columns
+        or "_key_geo" not in gdf_enriched.columns
+    ):
+        return gdf_enriched
+
+    labels = df_source[[source_label_col]].dropna().copy()
+    if labels.empty:
+        return gdf_enriched
+
+    labels["_key_data"] = labels[source_label_col].astype(str).map(_norm_key)
+    labels = labels.drop_duplicates("_key_data")
+
+    matched = df_map[df_map["matched"]].merge(
+        labels,
+        left_on="key_data",
+        right_on="_key_data",
+        how="left",
+    )
+    matched = matched.dropna(subset=["key_geo", source_label_col])
+    if matched.empty:
+        return gdf_enriched
+
+    matched_labels = (
+        matched.groupby("key_geo", as_index=False)[source_label_col]
+        .agg(lambda s: s.dropna().astype(str).iloc[0] if len(s.dropna()) else None)
+        .rename(columns={source_label_col: "_mapped_label"})
+    )
+    gdf_enriched = gdf_enriched.merge(
+        matched_labels,
+        left_on="_key_geo",
+        right_on="key_geo",
+        how="left",
+    )
+    gdf_enriched[output_col] = gdf_enriched["_mapped_label"].fillna(gdf_enriched[output_col])
+    return gdf_enriched.drop(columns=["key_geo", "_mapped_label"], errors="ignore")
+
+
+def build_interactive_geo_map(
+    gdf,
+    value_col: str,
+    label_col: str = "_map_label",
+    hover_metric_label: str = "Cas",
+    height: int = 520,
+):
+    if gdf is None or gdf.empty or value_col not in gdf.columns:
+        return None, None
+
+    label_col_eff = label_col if label_col in gdf.columns else ("name" if "name" in gdf.columns else None)
+    if label_col_eff is None:
+        return None, None
+
+    columns_to_keep = [label_col_eff, value_col, "geometry"]
+    gdf_plotly, geojson = gdf_to_plotly_geojson(gdf[columns_to_keep].copy(), fid_col="_map_fid")
+    gdf_plotly[value_col] = pd.to_numeric(gdf_plotly[value_col], errors="coerce").fillna(0)
+
+    fig = px.choropleth(
+        gdf_plotly,
+        geojson=geojson,
+        locations="_map_fid",
+        featureidkey="properties._map_fid",
+        color=value_col,
+        custom_data=[label_col_eff],
+        color_continuous_scale=[
+            [0.0, "#fff5f0"],
+            [0.2, "#fee0d2"],
+            [0.45, "#fcbba1"],
+            [0.7, "#fb6a4a"],
+            [1.0, "#99000d"],
+        ],
+        projection="mercator",
+    )
+    fig.update_traces(
+        marker_line_color="#475569",
+        marker_line_width=0.9,
+        hovertemplate=f"<b>%{{customdata[0]}}</b><br>{hover_metric_label}: %{{z}}<extra></extra>",
+    )
+    fig.update_geos(
+        fitbounds="locations",
+        visible=False,
+        domain=dict(x=[0.02, 0.98], y=[0.02, 0.98]),
+        bgcolor="#f8fafc",
+        showland=False,
+        showocean=False,
+        showlakes=False,
+        showcountries=False,
+        showcoastlines=False,
+        showframe=False,
+    )
+    fig.update_layout(
+        height=height,
+        margin=dict(l=8, r=8, t=6, b=6),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        dragmode="pan",
+        uirevision=f"map-{label_col_eff}-{value_col}",
+        coloraxis_colorbar=dict(title=hover_metric_label, len=0.70, thickness=12),
+    )
+    return fig, gdf_plotly
+
+
+def get_selected_map_point(selection_state):
+    if not selection_state:
+        return None
+
+    selection = selection_state.get("selection", {}) if hasattr(selection_state, "get") else {}
+    points = selection.get("points", []) if isinstance(selection, dict) else []
+    return points[0] if points else None
+
+
+def get_clicked_map_label(point, gdf_map, label_col: str = "_map_label", fid_col: str = "_map_fid"):
+    if not point:
+        return None
+
+    customdata = point.get("customdata") or []
+    if len(customdata) > 0 and customdata[0]:
+        return customdata[0]
+
+    location = point.get("location")
+    if location is not None and gdf_map is not None and fid_col in gdf_map.columns:
+        match = gdf_map[gdf_map[fid_col] == str(location)]
+        if not match.empty and label_col in match.columns:
+            return match.iloc[0][label_col]
+
+    point_index = point.get("pointIndex", point.get("point_number"))
+    if point_index is not None and gdf_map is not None and 0 <= point_index < len(gdf_map):
+        row = gdf_map.iloc[point_index]
+        if label_col in row:
+            return row[label_col]
+
+    return None
 
 # =========================
 # CORE STANDARDISATION (LINE LIST) — commun Rougeole/Choléra/…
@@ -4361,6 +4563,9 @@ if not IDSR_MODE:
     # =========================
     st.sidebar.header("Filtres géographiques")
 
+    clicked_province = st.session_state.pop("map_clicked_province", None)
+    clicked_zone = st.session_state.pop("map_clicked_zone", None)
+
     # ---- Init state ----
     if "prov_sel" not in st.session_state:
         st.session_state["prov_sel"] = ["Toutes"]
@@ -4370,6 +4575,35 @@ if not IDSR_MODE:
         st.session_state["as_sel"] = ["Toutes"]
     if "class_sel" not in st.session_state:
         st.session_state["class_sel"] = ["Toutes"]
+
+    if clicked_province and COL_PROV in df.columns:
+        selected_prov = _resolve_map_filter_value(clicked_province, df[COL_PROV].dropna().unique().tolist())
+        if selected_prov:
+            st.session_state["prov_sel"] = [selected_prov]
+            st.session_state["zs_sel"] = ["Toutes"]
+            st.session_state["as_sel"] = ["Toutes"]
+
+    if clicked_zone and COL_ZS in df.columns:
+        selected_zone = _resolve_map_filter_value(clicked_zone, df[COL_ZS].dropna().unique().tolist())
+        if selected_zone:
+            st.session_state["zs_sel"] = [selected_zone]
+            st.session_state["as_sel"] = ["Toutes"]
+            if COL_PROV in df.columns:
+                zone_key = _norm_key(selected_zone)
+                province_candidates = (
+                    df.loc[
+                        df[COL_ZS].astype(str).map(_norm_key) == zone_key,
+                        COL_PROV,
+                    ]
+                    .dropna()
+                    .astype(str)
+                    .tolist()
+                )
+                province_candidates = [p for p in province_candidates if p]
+                if len(set(province_candidates)) == 1:
+                    st.session_state["prov_sel"] = [province_candidates[0]]
+                else:
+                    st.session_state["prov_sel"] = ["Toutes"]
 
     # ---- Bouton reset ----
     if st.sidebar.button("Réinitialiser les filtres"):
@@ -4923,15 +5157,14 @@ def render_dashboard_kpis(payload: Dict[str, Any]) -> None:
     st.markdown(f"<div class='cousp-kpi-grid'>{cards_html}</div>", unsafe_allow_html=True)
 
 
-def build_static_map_overview(
+def prepare_overview_map_data(
     df_: pd.DataFrame,
     level: str,
-    annotation_mode: str = "aucun",
-    annotation_threshold: float = 1,
-) -> tuple[Optional[plt.Figure], str]:
-    """Construit une carte statique par province ou zone de sante avec les GeoJSON du depot."""
+    match_threshold: float = 0.90,
+):
+    """Prepare les donnees geographiques de synthese pour les cartes province / zone."""
     if gpd is None:
-        return None, "geopandas n'est pas disponible."
+        return None, None, "geopandas n'est pas disponible.", None, None, None
 
     if level == "province":
         geo_path = "data/geometry_rdc_provinces.geojson"
@@ -4945,23 +5178,41 @@ def build_static_map_overview(
         title = "RDC - cas notifies par zone de sante"
 
     if not Path(geo_path).exists():
-        return None, "GeoJSON non disponible dans le depot."
+        return None, None, "GeoJSON non disponible dans le depot.", value_col, group_col, title
     if group_col not in df_.columns or df_[group_col].dropna().empty:
-        return None, "Variable geographique indisponible."
+        return None, None, "Variable geographique indisponible.", value_col, group_col, title
 
     try:
         gdf_geo = gpd.read_file(geo_path)
-        df_map = df_[[group_col]].dropna().copy()
-        df_map[value_col] = 1
-        df_map = df_map.groupby(group_col, as_index=False)[value_col].sum()
-        gdf_join, _, match_rate = joindre_donnees_fuzzy_geo(
+        df_counts = df_[[group_col]].dropna().copy()
+        df_counts[value_col] = 1
+        df_counts = df_counts.groupby(group_col, as_index=False)[value_col].sum()
+        gdf_join, df_match, match_rate = joindre_donnees_fuzzy_geo(
             carte_gdf=gdf_geo,
-            df_donnees=df_map,
+            df_donnees=df_counts,
             colonne_cle_geo="name",
             colonne_cle_data=group_col,
             colonne_valeurs=value_col,
-            seuil=0.90,
+            seuil=match_threshold,
         )
+        note = f"Taux de correspondance carte/donnees : {match_rate:.1%}"
+        return gdf_join, df_match, note, value_col, group_col, title
+    except Exception as exc:
+        return None, None, f"Carte indisponible : {exc}", value_col, group_col, title
+
+
+def build_static_map_overview(
+    df_: pd.DataFrame,
+    level: str,
+    annotation_mode: str = "aucun",
+    annotation_threshold: float = 1,
+) -> tuple[Optional[plt.Figure], str]:
+    """Construit une carte statique par province ou zone de sante avec les GeoJSON du depot."""
+    gdf_join, _, note, value_col, _, title = prepare_overview_map_data(df_, level=level, match_threshold=0.90)
+    if gdf_join is None or not value_col or not title:
+        return None, note
+
+    try:
         fig = carte_statique_matplotlib(
             gdf=gdf_join,
             colonne_valeurs=value_col,
@@ -4976,7 +5227,6 @@ def build_static_map_overview(
             longueur_barre_km=50,
             figsize=(8.4, 6.6) if level == "province" else (8.4, 6.9),
         )
-        note = f"Taux de correspondance carte/donnees : {match_rate:.1%}"
         return fig, note
     except Exception as exc:
         return None, f"Carte indisponible : {exc}"
@@ -4991,6 +5241,72 @@ def render_static_map_overview(title: str, fig: Optional[plt.Figure], note: str)
     st.pyplot(fig, width="stretch")
     plt.close(fig)
     st.caption(note)
+
+
+def render_interactive_map_overview(
+    title: str,
+    gdf_join,
+    df_map,
+    note: str,
+    value_col: Optional[str],
+    source_df: pd.DataFrame,
+    source_label_col: Optional[str],
+    chart_key: str,
+    clicked_state_key: str,
+    filter_state_key: str,
+    height: int = 540,
+) -> None:
+    """Affiche une carte interactive de synthese et synchronise les filtres lateraux."""
+    st.markdown(f"<div class='cousp-panel-title'>{title}</div>", unsafe_allow_html=True)
+    if gdf_join is None or df_map is None or not value_col or not source_label_col:
+        st.info(note)
+        return
+
+    gdf_map_ready = enrich_fuzzy_geo_map_labels(
+        gdf_join=gdf_join,
+        df_map=df_map,
+        df_source=source_df[[source_label_col]].dropna().copy(),
+        source_label_col=source_label_col,
+    )
+    fig_map, gdf_map = build_interactive_geo_map(
+        gdf=gdf_map_ready,
+        value_col=value_col,
+        label_col="_map_label",
+        hover_metric_label="Cas",
+        height=height,
+    )
+    if fig_map is None:
+        st.info(note)
+        return
+
+    selection_state = st.plotly_chart(
+        fig_map,
+        width="stretch",
+        height=height,
+        key=chart_key,
+        on_select="rerun",
+        selection_mode="points",
+        config={
+            "displayModeBar": True,
+            "scrollZoom": True,
+            "responsive": True,
+            "displaylogo": False,
+            "modeBarButtonsToAdd": ["zoomInGeo", "zoomOutGeo", "resetGeo"],
+        },
+    )
+    clicked_point = get_selected_map_point(selection_state)
+    selected_label = get_clicked_map_label(clicked_point, gdf_map, label_col="_map_label")
+    selected_value = _resolve_map_filter_value(
+        selected_label,
+        source_df[source_label_col].dropna().unique().tolist(),
+    )
+    current_filter = st.session_state.get(filter_state_key, ["Toutes"])
+    if selected_value and current_filter != [selected_value]:
+        st.session_state[clicked_state_key] = selected_value
+        st.rerun()
+
+    st.caption(note)
+    st.caption("Clique sur une province pour filtrer le tableau de bord.")
 
 
 def render_overview_dashboard(
@@ -5012,7 +5328,14 @@ def render_overview_dashboard(
     render_standards_note()
 
     weekly = payload.get("weekly", pd.DataFrame())
-    with st.expander("Options des cartes statiques", expanded=False):
+    with st.expander("Options des cartes de synthese", expanded=False):
+        overview_province_map_mode = st.radio(
+            "Carte province de synthese",
+            ["Statique", "Interactive"],
+            index=0,
+            horizontal=True,
+            key="overview_province_map_mode",
+        )
         overview_map_mode_label = st.selectbox(
             "Annotations sur les cartes de synthese",
             options=list(MAP_ANNOTATION_MODE_OPTIONS.keys()),
@@ -5029,12 +5352,16 @@ def render_overview_dashboard(
         )
 
     overview_map_mode = MAP_ANNOTATION_MODE_OPTIONS[overview_map_mode_label]
-    fig_map_prov, note_map_prov = build_static_map_overview(
-        df_,
-        level="province",
-        annotation_mode=overview_map_mode,
-        annotation_threshold=float(overview_map_threshold),
-    )
+    fig_map_prov = None
+    province_map_payload = prepare_overview_map_data(df_, level="province", match_threshold=0.90)
+    gdf_map_prov, df_match_prov, note_map_prov, value_col_prov, group_col_prov, _ = province_map_payload
+    if overview_province_map_mode == "Statique":
+        fig_map_prov, note_map_prov = build_static_map_overview(
+            df_,
+            level="province",
+            annotation_mode=overview_map_mode,
+            annotation_threshold=float(overview_map_threshold),
+        )
     fig_map_zs, note_map_zs = build_static_map_overview(
         df_,
         level="zone",
@@ -5082,7 +5409,22 @@ def render_overview_dashboard(
         )
 
     with c2:
-        render_static_map_overview("Carte statique par province", fig_map_prov, note_map_prov)
+        if overview_province_map_mode == "Interactive":
+            render_interactive_map_overview(
+                "Carte interactive par province",
+                gdf_join=gdf_map_prov,
+                df_map=df_match_prov,
+                note=note_map_prov,
+                value_col=value_col_prov,
+                source_df=df_,
+                source_label_col=group_col_prov,
+                chart_key="overview_province_map",
+                clicked_state_key="map_clicked_province",
+                filter_state_key="prov_sel",
+                height=540,
+            )
+        else:
+            render_static_map_overview("Carte statique par province", fig_map_prov, note_map_prov)
 
     with c3:
         render_static_map_overview("Carte statique par zone de sante", fig_map_zs, note_map_zs)
@@ -9717,12 +10059,12 @@ with tab_irep:
 # =========================
 if show_maps:
     st.divider()
-    st.header("Cartographie statique de la distribution géographique des cas")
+    st.header("Cartographie de la distribution géographique des cas")
 
     if gpd is None:
         st.warning("geopandas n'est pas installé. Ajoute 'geopandas' dans requirements.txt si tu veux les cartes.")
     else:
-        st.caption("Cartes statiques (provinces / zones). Jointure fuzzy tolérante sur 'name'.")
+        st.caption("Cartes provinces / zones avec mode statique ou interactif. Jointure fuzzy tolérante sur 'name'.")
 
         # --- GeoJSON (déploiement en ligne)
         # Par défaut: utiliser les fichiers présents dans le repo
@@ -9758,6 +10100,13 @@ if show_maps:
         geo_zs   = _upl_to_tmp_path(geo_zs_upl)   or (geo_zs_default   if Path(geo_zs_default).exists() else None)
 
         seuil_match = st.slider("Seuil de matching (fuzzy)", 0.70, 1.00, 0.90, 0.01)
+        map_display_mode = st.radio(
+            "Mode de carte",
+            ["Statique", "Interactive"],
+            index=0,
+            horizontal=True,
+            key="detail_map_display_mode",
+        )
 
         # Options d'affichage
         annoter_map_label = st.selectbox(
@@ -9769,8 +10118,13 @@ if show_maps:
         annoter_map_mode = MAP_ANNOTATION_MODE_OPTIONS[annoter_map_label]
         annoter_map = annoter_map_mode != "aucun"
         seuil_aff = st.number_input("Seuil affichage annotation (valeur >)", min_value=0, max_value=100000, value=1, step=1)
-        afficher_fond = st.checkbox("Afficher fond de carte (contextily)", value=False)
-        longueur_km = st.number_input("Longueur barre échelle (km)", min_value=5, max_value=300, value=50, step=5)
+        afficher_fond = False
+        longueur_km = 50
+        if map_display_mode == "Statique":
+            afficher_fond = st.checkbox("Afficher fond de carte (contextily)", value=False)
+            longueur_km = st.number_input("Longueur barre échelle (km)", min_value=5, max_value=300, value=50, step=5)
+        else:
+            st.info("Mode interactif activé : clique sur une zone de la carte pour synchroniser les filtres géographiques.")
 
         # ---------- Provinces ----------
         st.subheader("Carte des cas par province")
@@ -9794,25 +10148,69 @@ if show_maps:
             with st.expander("Diagnostic matching provinces (pire en haut)"):
                 st.dataframe(df_map.head(50), width="stretch")
 
-            fig = carte_statique_matplotlib(
-                gdf=gdf_join,
-                colonne_valeurs="nb_cas_prov",
-                titre="RDC - Cas Cholera cumulés par province",
-                annoter=annoter_map,
-                mode_annotation=annoter_map_mode,
-                nom_zone="name",
-                fmt_valeurs="{:.0f}",
-                seuil_affichage=float(seuil_aff),
-                cmap="Reds",
-                afficher_fond_carte=afficher_fond,
-                longueur_barre_km=float(longueur_km),
-            )
-
-            if fig:
-                st.pyplot(fig)
-                plt.close(fig)
+            if map_display_mode == "Interactive":
+                gdf_map_ready = enrich_fuzzy_geo_map_labels(
+                    gdf_join=gdf_join,
+                    df_map=df_map,
+                    df_source=df_f[[COL_PROV]].dropna().copy(),
+                    source_label_col=COL_PROV,
+                )
+                fig_map, gdf_map = build_interactive_geo_map(
+                    gdf=gdf_map_ready,
+                    value_col="nb_cas_prov",
+                    label_col="_map_label",
+                    hover_metric_label="Cas",
+                    height=560,
+                )
+                if fig_map:
+                    selection_state = st.plotly_chart(
+                        fig_map,
+                        width="stretch",
+                        height=560,
+                        key="detail_province_map",
+                        on_select="rerun",
+                        selection_mode="points",
+                        config={
+                            "displayModeBar": True,
+                            "scrollZoom": True,
+                            "responsive": True,
+                            "displaylogo": False,
+                            "modeBarButtonsToAdd": ["zoomInGeo", "zoomOutGeo", "resetGeo"],
+                        },
+                    )
+                    clicked_point = get_selected_map_point(selection_state)
+                    selected_label = get_clicked_map_label(clicked_point, gdf_map, label_col="_map_label")
+                    selected_prov = _resolve_map_filter_value(
+                        selected_label,
+                        df_f[COL_PROV].dropna().unique().tolist(),
+                    )
+                    current_prov_sel = st.session_state.get("prov_sel", ["Toutes"])
+                    if selected_prov and current_prov_sel != [selected_prov]:
+                        st.session_state["map_clicked_province"] = selected_prov
+                        st.rerun()
+                    st.caption("Clique sur une province pour mettre à jour le filtre latéral.")
+                else:
+                    st.error("Impossible de générer la carte provinces.")
             else:
-                st.error("Impossible de générer la carte provinces.")
+                fig = carte_statique_matplotlib(
+                    gdf=gdf_join,
+                    colonne_valeurs="nb_cas_prov",
+                    titre="RDC - Cas Cholera cumulés par province",
+                    annoter=annoter_map,
+                    mode_annotation=annoter_map_mode,
+                    nom_zone="name",
+                    fmt_valeurs="{:.0f}",
+                    seuil_affichage=float(seuil_aff),
+                    cmap="Reds",
+                    afficher_fond_carte=afficher_fond,
+                    longueur_barre_km=float(longueur_km),
+                )
+
+                if fig:
+                    st.pyplot(fig)
+                    plt.close(fig)
+                else:
+                    st.error("Impossible de générer la carte provinces.")
         else:
             st.info("Carte provinces: charge un GeoJSON provinces et assure-toi que la colonne Province est présente.")
 
@@ -9840,25 +10238,69 @@ if show_maps:
             with st.expander("Diagnostic matching ZS (pire en haut)"):
                 st.dataframe(df_map.head(50), width="stretch")
 
-            fig = carte_statique_matplotlib(
-                gdf=gdf_join,
-                colonne_valeurs="nb_cas_zs",
-                titre="RDC - Cas Cholera cumulés par zone",
-                annoter=annoter_map,
-                mode_annotation=annoter_map_mode,
-                nom_zone="name",
-                fmt_valeurs="{:.0f}",
-                seuil_affichage=float(seuil_aff),
-                cmap="Reds",
-                afficher_fond_carte=afficher_fond,
-                longueur_barre_km=float(longueur_km),
-            )
-
-            if fig:
-                st.pyplot(fig)
-                plt.close(fig)
+            if map_display_mode == "Interactive":
+                gdf_map_ready = enrich_fuzzy_geo_map_labels(
+                    gdf_join=gdf_join,
+                    df_map=df_map,
+                    df_source=df_f[[COL_ZS]].dropna().copy(),
+                    source_label_col=COL_ZS,
+                )
+                fig_map, gdf_map = build_interactive_geo_map(
+                    gdf=gdf_map_ready,
+                    value_col="nb_cas_zs",
+                    label_col="_map_label",
+                    hover_metric_label="Cas",
+                    height=620,
+                )
+                if fig_map:
+                    selection_state = st.plotly_chart(
+                        fig_map,
+                        width="stretch",
+                        height=620,
+                        key="detail_zone_map",
+                        on_select="rerun",
+                        selection_mode="points",
+                        config={
+                            "displayModeBar": True,
+                            "scrollZoom": True,
+                            "responsive": True,
+                            "displaylogo": False,
+                            "modeBarButtonsToAdd": ["zoomInGeo", "zoomOutGeo", "resetGeo"],
+                        },
+                    )
+                    clicked_point = get_selected_map_point(selection_state)
+                    selected_label = get_clicked_map_label(clicked_point, gdf_map, label_col="_map_label")
+                    selected_zone = _resolve_map_filter_value(
+                        selected_label,
+                        df_f[COL_ZS].dropna().unique().tolist(),
+                    )
+                    current_zs_sel = st.session_state.get("zs_sel", ["Toutes"])
+                    if selected_zone and current_zs_sel != [selected_zone]:
+                        st.session_state["map_clicked_zone"] = selected_zone
+                        st.rerun()
+                    st.caption("Clique sur une zone de santé pour mettre à jour le filtre latéral.")
+                else:
+                    st.error("Impossible de générer la carte ZS.")
             else:
-                st.error("Impossible de générer la carte ZS.")
+                fig = carte_statique_matplotlib(
+                    gdf=gdf_join,
+                    colonne_valeurs="nb_cas_zs",
+                    titre="RDC - Cas Cholera cumulés par zone",
+                    annoter=annoter_map,
+                    mode_annotation=annoter_map_mode,
+                    nom_zone="name",
+                    fmt_valeurs="{:.0f}",
+                    seuil_affichage=float(seuil_aff),
+                    cmap="Reds",
+                    afficher_fond_carte=afficher_fond,
+                    longueur_barre_km=float(longueur_km),
+                )
+
+                if fig:
+                    st.pyplot(fig)
+                    plt.close(fig)
+                else:
+                    st.error("Impossible de générer la carte ZS.")
         else:
             st.info("Carte ZS: charge un GeoJSON ZS et assure-toi que la colonne Zone de santé est présente.")
 
