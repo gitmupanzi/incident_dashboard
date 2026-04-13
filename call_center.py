@@ -145,6 +145,9 @@ COLUMN_NAME_ALIASES = {
     "resolution": COL_RESOLUTION,
     "statutappel": COL_STATUT,
     "statut_appel": COL_STATUT,
+    "statut_de_l_appel": COL_STATUT,
+    "statut_de_lappel": COL_STATUT,
+    "statut_appel_du_dossier": COL_STATUT,
 }
 
 
@@ -558,18 +561,39 @@ def render_header():
 
 
 def filter_data(df_loaded):
-    date_range = st.sidebar.date_input(
-        "Date",
-        [df_loaded[COL_DATE].min().date(), df_loaded[COL_DATE].max().date()],
+    min_available_date = df_loaded[COL_DATE].min().date()
+    max_available_date = df_loaded[COL_DATE].max().date()
+
+    st.sidebar.caption(f"Periode disponible : {min_available_date:%d/%m/%Y} au {max_available_date:%d/%m/%Y}")
+
+    start_date_value = st.sidebar.date_input(
+        "Date min",
+        value=None,
+        min_value=min_available_date,
+        max_value=max_available_date,
+        format="DD/MM/YYYY",
+        key="date_min",
+    )
+    end_date_value = st.sidebar.date_input(
+        "Date max",
+        value=None,
+        min_value=min_available_date,
+        max_value=max_available_date,
+        format="DD/MM/YYYY",
+        key="date_max",
     )
 
-    if len(date_range) != 2:
-        st.info("Selectionne une date de debut et une date de fin.")
+    if start_date_value and end_date_value and start_date_value > end_date_value:
+        st.sidebar.error("Date min doit etre inferieure ou egale a Date max.")
         st.stop()
 
-    start_date = pd.to_datetime(date_range[0])
-    end_date = pd.to_datetime(date_range[1])
-    df_by_date = df_loaded[(df_loaded[COL_DATE] >= start_date) & (df_loaded[COL_DATE] <= end_date)]
+    df_by_date = df_loaded.copy()
+    if start_date_value:
+        start_date = pd.to_datetime(start_date_value)
+        df_by_date = df_by_date[df_by_date[COL_DATE] >= start_date]
+    if end_date_value:
+        end_date = pd.to_datetime(end_date_value) + pd.Timedelta(days=1)
+        df_by_date = df_by_date[df_by_date[COL_DATE] < end_date]
 
     province_options = sorted_options(df_by_date[COL_PROVINCE_NORM])
     clicked_province = st.session_state.pop("map_clicked_province", None)
