@@ -82,6 +82,51 @@ def as_list(value: Union[str, List[str], Tuple[str, ...]]) -> List[str]:
     return []
 
 
+def _is_week_axis_identifier(value: Optional[str]) -> bool:
+    """Détecte si un libellé/nom de colonne correspond à une dimension hebdomadaire."""
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    if not text:
+        return False
+    text = "".join(c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn")
+    return any(
+        token in text
+        for token in ["semaine", "week", "yw", "time_key", "time_lab", "num_semaine_epid", "semaine_epid"]
+    )
+
+
+def _resolve_weekly_bar_spacing(
+    x_identifier: Optional[str] = None,
+    x_title: Optional[str] = None,
+    bargap: float = 0.2,
+    bargroupgap: float = 0.1,
+) -> tuple[float, float]:
+    """Resserre automatiquement les barres si l'axe X est hebdomadaire."""
+    if _is_week_axis_identifier(x_identifier) or _is_week_axis_identifier(x_title):
+        return min(float(bargap), 0.0), min(float(bargroupgap), 0.0)
+    return float(bargap), float(bargroupgap)
+
+
+def _scale_marker_sizes(
+    values: Union[pd.Series, np.ndarray, list],
+    min_size: float = 18,
+    max_size: float = 220,
+) -> pd.Series:
+    """Calcule des tailles de marqueurs proportionnelles aux valeurs positives."""
+    s = pd.to_numeric(pd.Series(values), errors="coerce").fillna(0).clip(lower=0)
+    sizes = pd.Series(0.0, index=s.index, dtype="float64")
+    positive = s[s > 0]
+    if positive.empty:
+        return sizes
+    if float(positive.max()) == float(positive.min()):
+        sizes.loc[positive.index] = (min_size + max_size) / 2
+        return sizes
+    scaled = np.sqrt(positive / positive.max())
+    sizes.loc[positive.index] = min_size + (max_size - min_size) * scaled
+    return sizes
+
+
 def safe_pct(num: Union[int, float], den: Union[int, float]) -> float:
     """Retourne un pourcentage en gérant les dénominateurs nuls."""
     try:
@@ -126,6 +171,7 @@ def carte_statique_matplotlib(
     afficher_barre_echelle: bool = True,
     longueur_barre_km: float = 50,
     afficher_boussole: bool = True,
+    afficher_legende_taille: bool = True,
     figsize=(12, 10),
 ):
     """
@@ -139,7 +185,7 @@ def carte_statique_matplotlib(
         return None
 
     # ---- helpers ----
-    def _ajouter_barre_echelle(ax, longueur_km=50, loc=(0.10, 0.06), largeur_ligne=0.8, taille_police=7):
+    def _ajouter_barre_echelle(ax, longueur_km=50, loc=(0.90, 0.04), largeur_ligne=0.8, taille_police=7):
         x_min, x_max = ax.get_xlim()
         y_min, y_max = ax.get_ylim()
 
@@ -176,6 +222,73 @@ def carte_statique_matplotlib(
             arrowprops=dict(arrowstyle="-|>", linewidth=1.2),
         )
 
+    def _ajouter_legende_taille(ax, valeurs, tailles_points):
+        valeurs_num = pd.to_numeric(pd.Series(valeurs), errors="coerce").fillna(0)
+        tailles_num = pd.to_numeric(pd.Series(tailles_points), errors="coerce").fillna(0)
+        masque = (valeurs_num > 0) & (tailles_num > 0)
+        if not masque.any():
+            return
+
+        valeurs_pos = valeurs_num[masque]
+        if valeurs_pos.empty:
+            return
+
+        quantiles = [0.25, 0.6, 1.0] if len(valeurs_pos) >= 3 else [0.5, 1.0]
+        valeurs_legende = []
+        for q in quantiles:
+            val = float(valeurs_pos.quantile(q))
+            if val <= 0:
+                continue
+            val_arrondi = int(round(val))
+            if val_arrondi <= 0:
+                val_arrondi = max(1, int(np.ceil(val)))
+            valeurs_legende.append(val_arrondi)
+
+        valeurs_legende = sorted(set(valeurs_legende))
+        if not valeurs_legende:
+            return
+
+        tailles_legende = _scale_marker_sizes(valeurs_legende, min_size=24, max_size=360)
+        handles = []
+        for val, taille in zip(valeurs_legende, tailles_legende):
+            try:
+                label = fmt_valeurs.format(val)
+            except Exception:
+                label = str(val)
+            handles.append(
+                plt.scatter(
+                    [],
+                    [],
+                    s=float(taille),
+                    color="#c2410c",
+                    edgecolors="white",
+                    linewidths=0.8,
+                    alpha=0.82,
+                    label=label,
+                )
+            )
+
+        if not handles:
+            return
+
+        leg = ax.legend(
+            handles=handles,
+            title=f"{legend_titre}\n(taille du point)",
+            loc="lower left",
+            bbox_to_anchor=(0.12, 0.02),
+            frameon=True,
+            fontsize=legend_taille_ticks,
+            title_fontsize=legend_taille_titre,
+            borderpad=0.6,
+            labelspacing=1.0,
+            scatterpoints=1,
+            borderaxespad=0.0,
+        )
+        if leg is not None:
+            leg.get_frame().set_facecolor("white")
+            leg.get_frame().set_alpha(0.92)
+            leg.get_frame().set_edgecolor("#d4d4d8")
+
     # ---- reprojection (pour échelle en mètres) ----
     try:
         if gdf.crs is None or (hasattr(gdf.crs, "to_epsg") and gdf.crs.to_epsg() != 3857):
@@ -185,27 +298,43 @@ def carte_statique_matplotlib(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # ---- plot ----
-    geom_types = gdf.geometry[~gdf.geometry.is_empty].geom_type.unique()
-    if set(geom_types) == {"Point"}:
-        gdf.plot(
-            column=colonne_valeurs,
-            cmap=cmap,
-            ax=ax,
-            legend=True,
-            markersize=40,
-            edgecolor="k",
-            linewidth=0.5,
-        )
+    # ---- plot : contours legers + centroïdes proportionnels ----
+    gdf_plot = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty].copy()
+    if gdf_plot.empty:
+        plt.close(fig)
+        return None
+
+    geom_types = gdf_plot.geometry.geom_type.unique()
+    valeurs_num = pd.to_numeric(gdf_plot[colonne_valeurs], errors="coerce").fillna(0)
+
+    if set(geom_types) != {"Point"}:
+        try:
+            gdf_plot.boundary.plot(ax=ax, color="#94a3b8", linewidth=0.8, alpha=0.9, zorder=1)
+        except Exception:
+            gdf_plot.plot(ax=ax, facecolor="#f8fafc", edgecolor="#94a3b8", linewidth=0.8, alpha=0.9, zorder=1)
+        centroides = gdf_plot.copy()
+        centroides["geometry"] = gdf_plot.geometry.centroid
     else:
-        gdf.plot(
-            column=colonne_valeurs,
-            cmap=cmap,
-            ax=ax,
-            legend=True,
-            edgecolor="0.75",
-            linewidth=0.8,
-        )
+        centroides = gdf_plot.copy()
+
+    centroides[colonne_valeurs] = valeurs_num.values
+    centroides = centroides[centroides.geometry.notna() & ~centroides.geometry.is_empty].copy()
+    tailles = _scale_marker_sizes(centroides[colonne_valeurs], min_size=24, max_size=360)
+    centroides["_marker_size"] = tailles.values
+    centroides_visibles = centroides[centroides["_marker_size"] > 0].copy()
+    if centroides_visibles.empty:
+        centroides_visibles = centroides.copy()
+        centroides_visibles["_marker_size"] = 28
+
+    centroides_visibles.plot(
+        ax=ax,
+        color="#c2410c",
+        markersize=centroides_visibles["_marker_size"],
+        edgecolor="white",
+        linewidth=0.8,
+        alpha=0.82,
+        zorder=3,
+    )
 
     ax.set_title(titre, fontsize=titre_fontsize)
     ax.axis("off")
@@ -222,7 +351,7 @@ def carte_statique_matplotlib(
         mode_annotation_normalise = str(mode_annotation or "nom_valeur").strip().lower()
         inclure_nom = mode_annotation_normalise in {"nom", "noms", "nom_valeur", "noms_valeurs", "both", "label"}
         inclure_valeur = mode_annotation_normalise in {"valeur", "valeurs", "nom_valeur", "noms_valeurs", "both", "label"}
-        for _, row in gdf.iterrows():
+        for _, row in centroides.iterrows():
             if row.geometry is None or row.geometry.is_empty:
                 continue
 
@@ -230,11 +359,7 @@ def carte_statique_matplotlib(
             if pd.isna(val) or val <= seuil_affichage:
                 continue
 
-            if row.geometry.geom_type in ["Polygon", "MultiPolygon"]:
-                c = row.geometry.centroid
-                x, y = c.x, c.y
-            else:
-                x, y = row.geometry.x, row.geometry.y
+            x, y = row.geometry.x, row.geometry.y
 
             parts = []
             if inclure_nom and nom_zone in gdf.columns and pd.notna(row[nom_zone]):
@@ -261,22 +386,10 @@ def carte_statique_matplotlib(
         _ajouter_barre_echelle(ax, longueur_km=longueur_barre_km)
     if afficher_boussole:
         _ajouter_boussole(ax)
+    if afficher_legende_taille:
+        _ajouter_legende_taille(ax, centroides_visibles[colonne_valeurs], centroides_visibles["_marker_size"])
 
     plt.tight_layout()
-
-    # ---- colorbar compacte ----
-    if len(fig.axes) > 1:
-        cb_ax = fig.axes[-1]
-        pos = cb_ax.get_position()
-        cb_ax.set_position([
-            pos.x0 + 0.01,
-            pos.y0 + cb_shift_up,
-            pos.width * cb_width,
-            pos.height * cb_height,
-        ])
-        cb_ax.tick_params(labelsize=legend_taille_ticks)
-        if legend_titre:
-            cb_ax.set_title(legend_titre, fontsize=legend_taille_titre, pad=4)
 
     return fig
 
@@ -671,6 +784,7 @@ def plot_histogramme_groupe_interactif_empile(
     y_col: Optional[str] = None,
     aggfunc: str = "sum"
 ) -> Optional[go.Figure]:
+    bargap, bargroupgap = _resolve_weekly_bar_spacing(x_col, x_titre, bargap, bargroupgap)
 
     if not all(col in df.columns for col in [x_col, hue_col]):
         logger.error("❌ Colonnes manquantes dans le DataFrame")
@@ -819,6 +933,7 @@ def graphique_barres_facette(
 ) -> Optional[go.Figure]:
 
     df = df.copy()
+    bargap, bargroupgap = _resolve_weekly_bar_spacing(x_col, x_titre, bargap, bargroupgap)
 
     if not verifier_presence_colonnes(df, [x_col, facette_col]):
         return None
@@ -1534,6 +1649,7 @@ def plot_evolution_multi_auto(
 ) -> Optional[go.Figure]:
 
     valeurs_courbe_col = valeurs_courbe_col or {}
+    bargap, bargroupgap = _resolve_weekly_bar_spacing(col_x, col_x, bargap, bargroupgap)
 
     colonnes_absentes = [col for col in [col_x] + courbe_col if col not in df.columns]
     if colonnes_absentes:
@@ -1638,6 +1754,186 @@ def plot_evolution_multi_auto(
     return fig
 
 
+def build_weekly_cases_deaths_combo(
+    weekly_df: pd.DataFrame,
+    x_col: str,
+    cases_col: str = "Cas",
+    deaths_col: str = "Deces",
+    titre: str = "Evolution hebdomadaire des cas et deces",
+    x_titre: str = "Semaine epidemiologique",
+    y_titre_cas: str = "Nombre de cas",
+    y_titre_deces: str = "Nombre de deces",
+    rotation: int = 45,
+    annot_bars: bool = False,
+    annot_line: bool = False,
+    pas_x: Optional[int] = None,
+    taille_fig: Tuple[int, int] = (1400, 550),
+) -> Optional[go.Figure]:
+    """Graphique combiné : Cas en histogramme et Décès en courbe."""
+    if weekly_df is None or weekly_df.empty:
+        return None
+    required_cols = [x_col, cases_col, deaths_col]
+    if any(col not in weekly_df.columns for col in required_cols):
+        return None
+
+    data = weekly_df[required_cols].copy().dropna(subset=[x_col])
+    if data.empty:
+        return None
+
+    data[cases_col] = pd.to_numeric(data[cases_col], errors="coerce").fillna(0)
+    data[deaths_col] = pd.to_numeric(data[deaths_col], errors="coerce").fillna(0)
+    data[x_col] = data[x_col].astype(str)
+    bargap, bargroupgap = _resolve_weekly_bar_spacing(x_col, x_titre, 0.04, 0.02)
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=data[x_col],
+            y=data[cases_col],
+            name="Cas",
+            marker_color=COLOR_CASES,
+            yaxis="y1",
+            text=data[cases_col] if annot_bars else None,
+            textposition="outside" if annot_bars else None,
+            cliponaxis=False,
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=data[x_col],
+            y=data[deaths_col],
+            name="Décès",
+            mode="lines+markers+text" if annot_line else "lines+markers",
+            line=dict(color=COLOR_DEATHS, width=3),
+            marker=dict(color=COLOR_DEATHS, size=8),
+            yaxis="y2",
+            text=data[deaths_col] if annot_line else None,
+            textposition="top center" if annot_line else None,
+        )
+    )
+    fig.update_layout(
+        title=titre,
+        template="plotly_white",
+        width=taille_fig[0],
+        height=taille_fig[1],
+        bargap=bargap,
+        bargroupgap=bargroupgap,
+        xaxis=dict(title=x_titre, tickangle=-rotation),
+        yaxis=dict(title=y_titre_cas, rangemode="tozero"),
+        yaxis2=dict(title=y_titre_deces, overlaying="y", side="right", rangemode="tozero"),
+        legend=dict(orientation="h", y=1.08, x=0),
+        margin=dict(t=80, b=60, l=70, r=70),
+    )
+    if pas_x is not None:
+        try:
+            tickvals = data[x_col].iloc[:: max(int(pas_x), 1)]
+            fig.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=tickvals)
+        except Exception:
+            pass
+    return fig
+
+
+def build_weekly_multiline_by_group(
+    df: pd.DataFrame,
+    week_col: str,
+    group_col: str,
+    selected_groups: Optional[List[str]] = None,
+    titre: str = "Courbe épidémiologique par province",
+    x_titre: str = "Semaine épidémiologique",
+    y_titre: str = "Nombre de cas",
+    rotation: int = 45,
+    pas_x: Optional[int] = None,
+    annot: bool = False,
+    taille_fig: Tuple[int, int] = (1500, 650),
+) -> Optional[go.Figure]:
+    """Construit une courbe multi-séries par groupe avec légende interactive Plotly."""
+    if not verifier_presence_colonnes(df, [week_col, group_col]):
+        return None
+
+    tmp = df[[week_col, group_col]].copy().dropna(subset=[week_col, group_col])
+    if tmp.empty:
+        return None
+
+    tmp[group_col] = tmp[group_col].astype(str).str.strip()
+    tmp = tmp[tmp[group_col] != ""]
+    if tmp.empty:
+        return None
+
+    weekly = (
+        tmp.groupby([week_col, group_col], observed=True)
+        .size()
+        .reset_index(name="Cas")
+    )
+    if weekly.empty:
+        return None
+
+    if selected_groups:
+        selected_set = {str(x) for x in selected_groups}
+        weekly = weekly[weekly[group_col].astype(str).isin(selected_set)]
+        if weekly.empty:
+            return None
+        group_order = [str(x) for x in selected_groups if str(x) in weekly[group_col].astype(str).unique().tolist()]
+    else:
+        group_order = (
+            weekly.groupby(group_col, observed=True)["Cas"]
+            .sum()
+            .sort_values(ascending=False)
+            .index.astype(str)
+            .tolist()
+        )
+
+    categories_x = sorted(weekly[week_col].dropna().unique(), key=extraire_numero)
+    weekly[week_col] = pd.Categorical(weekly[week_col], categories=categories_x, ordered=True)
+    weekly[group_col] = pd.Categorical(weekly[group_col].astype(str), categories=group_order, ordered=True)
+    weekly = weekly.sort_values([group_col, week_col])
+
+    fig = px.line(
+        weekly,
+        x=week_col,
+        y="Cas",
+        color=group_col,
+        markers=True,
+        labels={week_col: x_titre, "Cas": y_titre, group_col: group_col},
+        title=titre,
+        height=taille_fig[1],
+        width=taille_fig[0],
+    )
+    if annot:
+        fig.update_traces(
+            mode="lines+markers+text",
+            text=weekly["Cas"],
+            textposition="top center",
+            line=dict(width=2),
+            marker=dict(size=7),
+        )
+    else:
+        fig.update_traces(mode="lines+markers", line=dict(width=2), marker=dict(size=7))
+    fig.update_layout(
+        template="plotly_white",
+        hovermode="x unified",
+        xaxis=dict(title=x_titre, tickangle=-rotation),
+        yaxis=dict(title=y_titre, rangemode="tozero"),
+        legend=dict(
+            title=group_col,
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02,
+            itemclick="toggle",
+            itemdoubleclick="toggleothers",
+        ),
+        margin=dict(t=80, b=60, l=70, r=180),
+    )
+    if pas_x is not None:
+        try:
+            tickvals = [categories_x[i] for i in range(0, len(categories_x), max(int(pas_x), 1))]
+            fig.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=tickvals)
+        except Exception:
+            pass
+    return fig
+
+
 def build_weekly_cases_cfr_combo(
     df: pd.DataFrame,
     week_col: str,
@@ -1652,6 +1948,7 @@ def build_weekly_cases_cfr_combo(
     """Graphique combiné: barres = cas hebdomadaires, courbe = létalité (%)."""
     if not verifier_presence_colonnes(df, week_col):
         return None
+    bargap, bargroupgap = _resolve_weekly_bar_spacing(week_col, "Semaine epidemiologique", 0.15, 0.1)
 
     tmp = df.copy()
     tmp = tmp[tmp[week_col].notna()].copy()
@@ -1707,7 +2004,8 @@ def build_weekly_cases_cfr_combo(
         template="plotly_white",
         width=taille_fig[0],
         height=taille_fig[1],
-        bargap=0.15,
+        bargap=bargap,
+        bargroupgap=bargroupgap,
         xaxis=dict(title="Semaine épidémiologique", tickangle=-rotation),
         yaxis=dict(title="Nombre de cas", rangemode="tozero"),
         yaxis2=dict(title="Létalité (%)", overlaying="y", side="right", rangemode="tozero"),
@@ -2147,6 +2445,26 @@ def pct_change_safe(cur, prv):
     return (cur - prv) / prv * 100.0
 
 
+def _apply_compact_bar_spacing(fig: Optional[go.Figure], bargap: float = 0.0, bargroupgap: float = 0.0) -> Optional[go.Figure]:
+    """Resserre les espacements pour tous les graphiques à barres / histogrammes."""
+    if fig is None:
+        return fig
+    try:
+        has_bar_like = any(isinstance(tr, (go.Bar, go.Histogram)) for tr in fig.data)
+        if not has_bar_like:
+            return fig
+
+        current_bargap = fig.layout.bargap
+        current_bargroupgap = fig.layout.bargroupgap
+        fig.update_layout(
+            bargap=bargap if current_bargap is None else min(float(current_bargap), float(bargap)),
+            bargroupgap=bargroupgap if current_bargroupgap is None else min(float(current_bargroupgap), float(bargroupgap)),
+        )
+    except Exception:
+        return fig
+    return fig
+
+
 # =========================
 # SECTION: VISUALISATIONS STREAMLIT/PLOTLY
 # =========================
@@ -2181,6 +2499,7 @@ def st_plot(fig, key=None, height=None, stretch=True, annotate_values: Optional[
     except Exception:
         pass
 
+    fig = _apply_compact_bar_spacing(fig, bargap=0.0, bargroupgap=0.0)
     fig = apply_plotly_value_annotations(fig, bool(annotate_values))
 
     kwargs = {}
@@ -2779,6 +3098,7 @@ def apply_plotly_value_annotations(fig: Optional[go.Figure], enabled: bool) -> O
     except Exception:
         return fig
 
+    fig = _apply_compact_bar_spacing(fig, bargap=0.0, bargroupgap=0.0)
     return fig
 
 def pick_age_col(df):
@@ -4089,29 +4409,65 @@ def build_interactive_geo_map(
         return None, None
 
     columns_to_keep = [label_col_eff, value_col, "geometry"]
-    gdf_plotly, geojson = gdf_to_plotly_geojson(gdf[columns_to_keep].copy(), fid_col="_map_fid")
-    gdf_plotly[value_col] = pd.to_numeric(gdf_plotly[value_col], errors="coerce").fillna(0)
+    gdf_polygons, geojson = gdf_to_plotly_geojson(gdf[columns_to_keep].copy(), fid_col="_map_fid")
+    gdf_polygons[value_col] = pd.to_numeric(gdf_polygons[value_col], errors="coerce").fillna(0)
 
-    fig = px.choropleth(
-        gdf_plotly,
-        geojson=geojson,
-        locations="_map_fid",
-        featureidkey="properties._map_fid",
-        color=value_col,
-        custom_data=[label_col_eff],
-        color_continuous_scale=[
-            [0.0, "#fff5f0"],
-            [0.2, "#fee0d2"],
-            [0.45, "#fcbba1"],
-            [0.7, "#fb6a4a"],
-            [1.0, "#99000d"],
-        ],
-        projection="mercator",
+    gdf_points = gdf[columns_to_keep].copy()
+    gdf_points[value_col] = pd.to_numeric(gdf_points[value_col], errors="coerce").fillna(0)
+    gdf_points = gdf_points[gdf_points.geometry.notna() & ~gdf_points.geometry.is_empty].copy()
+    if gdf_points.empty:
+        return None, None
+
+    try:
+        gdf_points = gdf_points.to_crs(epsg=3857)
+        gdf_points["geometry"] = gdf_points.geometry.centroid
+        gdf_points = gdf_points.to_crs(epsg=4326)
+    except Exception:
+        try:
+            gdf_points["geometry"] = gdf_points.geometry.centroid
+        except Exception:
+            return None, None
+
+    gdf_points = gdf_points[gdf_points.geometry.notna() & ~gdf_points.geometry.is_empty].copy()
+    gdf_points["_lon"] = gdf_points.geometry.x
+    gdf_points["_lat"] = gdf_points.geometry.y
+    gdf_points["_marker_size"] = _scale_marker_sizes(gdf_points[value_col], min_size=10, max_size=34)
+    if (gdf_points["_marker_size"] > 0).any():
+        gdf_points = gdf_points[gdf_points["_marker_size"] > 0].copy()
+    else:
+        gdf_points["_marker_size"] = 12
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Choropleth(
+            geojson=geojson,
+            locations=gdf_polygons["_map_fid"],
+            z=np.ones(len(gdf_polygons)),
+            featureidkey="properties._map_fid",
+            colorscale=[[0.0, "rgba(255,255,255,0.03)"], [1.0, "rgba(255,255,255,0.03)"]],
+            showscale=False,
+            marker_line_color="#94a3b8",
+            marker_line_width=0.8,
+            hoverinfo="skip",
+            showlegend=False,
+        )
     )
-    fig.update_traces(
-        marker_line_color="#475569",
-        marker_line_width=0.9,
-        hovertemplate=f"<b>%{{customdata[0]}}</b><br>{hover_metric_label}: %{{z}}<extra></extra>",
+    fig.add_trace(
+        go.Scattergeo(
+            lon=gdf_points["_lon"],
+            lat=gdf_points["_lat"],
+            mode="markers",
+            customdata=np.column_stack([gdf_points[label_col_eff], gdf_points[value_col]]),
+            marker=dict(
+                size=gdf_points["_marker_size"],
+                color="#c2410c",
+                opacity=0.85,
+                line=dict(color="white", width=1),
+            ),
+            hovertemplate=f"<b>%{{customdata[0]}}</b><br>{hover_metric_label}: %{{customdata[1]}}<extra></extra>",
+            showlegend=False,
+            name=hover_metric_label,
+        )
     )
     fig.update_geos(
         fitbounds="locations",
@@ -4132,9 +4488,8 @@ def build_interactive_geo_map(
         plot_bgcolor="#ffffff",
         dragmode="pan",
         uirevision=f"map-{label_col_eff}-{value_col}",
-        coloraxis_colorbar=dict(title=hover_metric_label, len=0.70, thickness=12),
     )
-    return fig, gdf_plotly
+    return fig, gdf_points
 
 
 def get_selected_map_point(selection_state):
@@ -4810,7 +5165,7 @@ def infer_age_years_generic(df_: pd.DataFrame) -> pd.Series:
     age_txt = age_raw.astype("string").str.lower()
     extracted_num = age_txt.str.extract(r"(?P<num>\d+(?:[\.,]\d+)?)")["num"].str.replace(",", ".", regex=False)
     extracted_num = pd.to_numeric(extracted_num, errors="coerce")
-    age_val = age_num.combine_first(extracted_num)
+    age_val = age_num.where(age_num.notna(), extracted_num)
 
     unit_from_age = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
     unit_from_age = unit_from_age.mask(age_txt.str.contains(r"(?:mois|month)s?", na=False), "mois")
@@ -4818,7 +5173,7 @@ def infer_age_years_generic(df_: pd.DataFrame) -> pd.Series:
     unit_from_age = unit_from_age.mask(age_txt.str.contains(r"(?:jour|day)s?", na=False), "jour")
     unit_from_age = unit_from_age.mask(age_txt.str.contains(r"(?:an|ans|annee|ann[eé]es|year|yr|yrs)", na=False), "an")
 
-    unit = unit_raw.combine_first(unit_from_age)
+    unit = unit_raw.where(unit_raw.notna(), unit_from_age)
 
     years = pd.Series(np.nan, index=df_.index, dtype="float")
     years = years.mask(unit.str.contains(r"(?:mois|month)s?", na=False), age_val / 12.0)
@@ -5375,7 +5730,7 @@ def render_interactive_map_overview(
         st.rerun()
 
     st.caption(note)
-    st.caption("Clique sur une province pour filtrer le tableau de bord.")
+    st.caption("Clique sur un point de la carte pour filtrer le tableau de bord.")
 
 
 def render_overview_dashboard(
@@ -5504,31 +5859,18 @@ def render_overview_dashboard(
         if weekly.empty:
             st.info("Serie hebdomadaire indisponible.")
         else:
-            fig_surveillance = go.Figure()
-            fig_surveillance.add_trace(
-                go.Scatter(
-                    x=weekly["label"],
-                    y=weekly["Cas"],
-                    name="Cas",
-                    mode="lines+markers",
-                    line=dict(color=COLOR_CASES, width=3),
-                    marker=dict(size=8),
-                )
-            )
-            fig_surveillance.add_trace(
-                go.Bar(
-                    x=weekly["label"],
-                    y=weekly["Deces"],
-                    name="Deces",
-                    marker_color=COLOR_DEATHS,
-                    opacity=0.72,
-                )
-            )
-            fig_surveillance.update_layout(
-                title="Evolution hebdomadaire des cas et deces",
-                xaxis_title="Semaine epidemiologique",
-                yaxis_title="Nombre de cas",
-                bargap=0.22,
+            fig_surveillance = build_weekly_cases_deaths_combo(
+                weekly_df=weekly,
+                x_col="label",
+                cases_col="Cas",
+                deaths_col="Deces",
+                titre="Evolution hebdomadaire des cas et deces",
+                x_titre="Semaine epidemiologique",
+                y_titre_cas="Nombre de cas",
+                y_titre_deces="Nombre de deces",
+                rotation=0,
+                annot_bars=annotate_values_flag,
+                annot_line=annotate_values_flag,
             )
             if x_tick_step > 1 and len(weekly) > x_tick_step:
                 fig_surveillance.update_xaxes(
@@ -5765,6 +6107,40 @@ with tab_surveillance:
                 taille_fig=(1500, 600),
             )
             st_plot(fig_combo, key="week_cases_cfr_combo_main")
+
+            if COL_PROV in df_f.columns and df_f[COL_PROV].notna().any():
+                st.markdown("### Courbe épidémiologique multi-provinces")
+                prov_totals = df_f[[COL_PROV]].dropna().copy()
+                prov_totals["_prov"] = prov_totals[COL_PROV].astype(str).str.strip()
+                prov_totals = prov_totals[prov_totals["_prov"] != ""]
+                prov_options = prov_totals["_prov"].value_counts().index.tolist()
+                default_provs = prov_options if len(prov_options) <= 10 else prov_options[:10]
+                selected_curve_provs = st.multiselect(
+                    "Provinces à afficher",
+                    options=prov_options,
+                    default=default_provs,
+                    key="surveillance_multi_curve_provinces",
+                    help="Tu peux aussi cliquer sur la légende du graphique pour masquer ou afficher une province.",
+                )
+                if selected_curve_provs:
+                    fig_multi_prov = build_weekly_multiline_by_group(
+                        df=df_f,
+                        week_col=week_col_epi,
+                        group_col=COL_PROV,
+                        selected_groups=selected_curve_provs,
+                        titre="Courbe épidémiologique des cas par province",
+                        x_titre="Semaine épidémiologique",
+                        y_titre="Nombre de cas",
+                        rotation=45,
+                        pas_x=int(pas_x) if week_col_epi in [COL_WNUM, "YW"] else None,
+                        annot=annot_vals,
+                        taille_fig=(1500, 700),
+                    )
+                    if fig_multi_prov is not None:
+                        st.plotly_chart(fig_multi_prov, width="stretch", key="surveillance_multi_curve_province")
+                        st.caption("Astuce : clique sur une province dans la légende pour masquer ou afficher sa courbe. Double-clique pour isoler une province.")
+                else:
+                    st.info("Sélectionne au moins une province pour afficher la courbe épidémiologique multi-provinces.")
 
             s1, s2, s3 = st.columns(3)
             s1.metric("Cas dernière semaine", format_metric_value(weekly_tbl["Cas"].iloc[-1]))
@@ -6039,7 +6415,7 @@ with tab_profil:
             age_txt = age_raw.astype("string").str.lower()
             extracted_num = age_txt.str.extract(r"(?P<num>\d+(?:[\.,]\d+)?)")["num"].str.replace(",", ".", regex=False)
             extracted_num = pd.to_numeric(extracted_num, errors="coerce")
-            age_val = age_num.combine_first(extracted_num)
+            age_val = age_num.where(age_num.notna(), extracted_num)
 
             unit_from_age = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
             unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:mois|month)s?\b", na=False), "mois")
@@ -6047,7 +6423,7 @@ with tab_profil:
             unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:jour|day)s?\b", na=False), "jour")
             unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:an|ans|annee|ann[eé]es|year|yr|yrs)\b", na=False), "an")
 
-            unit = unit_raw.combine_first(unit_from_age)
+            unit = unit_raw.where(unit_raw.notna(), unit_from_age)
 
             years = pd.Series(np.nan, index=df_.index, dtype="float")
             years = years.mask(unit.str.contains(r"\b(?:mois|month)s?\b", na=False), age_val / 12.0)
@@ -7560,14 +7936,17 @@ with tab_sitrep:
                 try:
                     wk = payload.get("weekly")
                     if isinstance(wk, pd.DataFrame) and not wk.empty and "YW" in wk.columns:
-                        fig1 = px.line(
-                            wk,
-                            x="YW",
-                            y=["Cas", "Décès"],
-                            markers=True,
-                            title="Évolution hebdomadaire – Cas et décès",
+                        fig1 = build_weekly_cases_deaths_combo(
+                            weekly_df=wk,
+                            x_col="YW",
+                            cases_col="Cas",
+                            deaths_col="Décès",
+                            titre="Évolution hebdomadaire – Cas et décès",
+                            x_titre="Semaine (YW)",
+                            y_titre_cas="Nombre de cas",
+                            y_titre_deces="Nombre de décès",
+                            rotation=0,
                         )
-                        fig1.update_layout(xaxis_title="Semaine (YW)", yaxis_title="Nombre")
                         png1 = _plotly_to_png_bytes(fig1, scale=1)
                         if png1:
                             payload["images"].append(("Évolution hebdomadaire", png1))
@@ -7663,8 +8042,19 @@ with tab_sitrep:
             wk = sitrep_payload.get("weekly")
             if isinstance(wk, pd.DataFrame) and not wk.empty and "YW" in wk.columns:
                 st.markdown("### Évolution hebdomadaire sur le périmètre filtré")
-                fig = px.line(wk, x="YW", y=["Cas", "Décès"], markers=True, title="Cas et décès par semaine")
-                fig.update_layout(xaxis_title="Semaine (YW)", yaxis_title="Nombre")
+                fig = build_weekly_cases_deaths_combo(
+                    weekly_df=wk,
+                    x_col="YW",
+                    cases_col="Cas",
+                    deaths_col="Décès",
+                    titre="Cas et décès par semaine",
+                    x_titre="Semaine (YW)",
+                    y_titre_cas="Nombre de cas",
+                    y_titre_deces="Nombre de décès",
+                    rotation=0,
+                    annot_bars=annot_vals,
+                    annot_line=annot_vals,
+                )
                 fig = apply_plotly_value_annotations(fig, annot_vals)
                 st.plotly_chart(fig, width="stretch")
 
@@ -9218,6 +9608,8 @@ with tab_idsr:
                             yaxis=dict(title="Nombre de cas"),
                             yaxis2=dict(title="Létalité (%)", overlaying="y", side="right", rangemode="tozero"),
                             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                            bargap=0.04,
+                            bargroupgap=0.02,
                             margin=dict(t=70, b=60, l=60, r=60),
                             height=420,
                         )
@@ -10452,7 +10844,7 @@ if show_maps:
                     if selected_prov and current_prov_sel != [selected_prov]:
                         st.session_state["map_clicked_province"] = selected_prov
                         st.rerun()
-                    st.caption("Clique sur une province pour mettre à jour le filtre latéral.")
+                    st.caption("Clique sur un point de la carte pour mettre à jour le filtre latéral.")
                 else:
                     st.error("Impossible de générer la carte provinces.")
             else:
@@ -10542,7 +10934,7 @@ if show_maps:
                     if selected_zone and current_zs_sel != [selected_zone]:
                         st.session_state["map_clicked_zone"] = selected_zone
                         st.rerun()
-                    st.caption("Clique sur une zone de santé pour mettre à jour le filtre latéral.")
+                    st.caption("Clique sur un point de la carte pour mettre à jour le filtre latéral.")
                 else:
                     st.error("Impossible de générer la carte ZS.")
             else:
