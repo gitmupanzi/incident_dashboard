@@ -69,6 +69,21 @@ import tempfile
 MISSING_LABEL = "Inconnu"
 MISSING_LABEL_VERBOSE = "Inconnu/Non renseigné"
 APP_BUILD_TAG = "single-file-refined-v2"
+AGE_UNIT_MONTH_PATTERN = r"\b(?:mois|month)s?\b"
+AGE_UNIT_WEEK_PATTERN = r"\b(?:semaine|semaines|week|weeks)\b|\bsem\b"
+AGE_UNIT_DAY_PATTERN = r"\b(?:jour|jours|day|days)\b"
+AGE_UNIT_YEAR_PATTERN = r"\b(?:an|ans|annee|annees|ann[eé]e?s|year|yr|yrs)\b"
+METRIC_COLUMN_ALIASES: Dict[str, List[str]] = {
+    "Décès": ["Décès", "Deces"],
+    "Létalité (%)": ["Létalité (%)", "Letalite (%)"],
+    "Positivité (%)": ["Positivité (%)", "Positivite (%)"],
+    "Prélèvement (%)": ["Prélèvement (%)", "Prelevement (%)"],
+    "Prélèvement_%": ["Prélèvement_%", "Prelevement_%"],
+    "TDR réalisé (%)": ["TDR réalisé (%)", "TDR realise (%)"],
+    "TDR_réalisé_%": ["TDR_réalisé_%", "TDR_realise_%", "TDR realise_%"],
+    "Positivité TDR (%)": ["Positivité TDR (%)", "Positivite TDR (%)"],
+    "Positivité_TDR_%": ["Positivité_TDR_%", "Positivite_TDR_%"],
+}
 
 
 def as_list(value: Union[str, List[str], Tuple[str, ...]]) -> List[str]:
@@ -80,6 +95,29 @@ def as_list(value: Union[str, List[str], Tuple[str, ...]]) -> List[str]:
     if isinstance(value, str):
         return [value]
     return []
+
+
+def _normalize_metric_alias_columns(
+    df: Optional[pd.DataFrame],
+    alias_map: Optional[Dict[str, List[str]]] = None,
+) -> Optional[pd.DataFrame]:
+    """Renomme les variantes de colonnes métiers vers une forme canonique."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+
+    alias_map = alias_map or METRIC_COLUMN_ALIASES
+    cols = set(df.columns)
+    rename_map: Dict[str, str] = {}
+
+    for preferred, aliases in alias_map.items():
+        if preferred in cols:
+            continue
+        for alias in aliases:
+            if alias in cols:
+                rename_map[alias] = preferred
+                break
+
+    return df.rename(columns=rename_map) if rename_map else df
 
 
 def _is_week_axis_identifier(value: Optional[str]) -> bool:
@@ -477,6 +515,7 @@ def build_cases_deaths_cfr_pivot(df: pd.DataFrame,
         values=["Cas", "Décès", cfr_label],
         aggfunc="sum",
         fill_value=0,
+        observed=False,
     )
 
     # Sécurité : normaliser aussi les labels semaine du pivot
@@ -1760,7 +1799,7 @@ def build_weekly_cases_deaths_combo(
     cases_col: str = "Cas",
     deaths_col: str = "Deces",
     titre: str = "Evolution hebdomadaire des cas et deces",
-    x_titre: str = "Semaine epidemiologique",
+    x_titre: str = "Semaine épidémiologique",
     y_titre_cas: str = "Nombre de cas",
     y_titre_deces: str = "Nombre de deces",
     rotation: int = 45,
@@ -1772,6 +1811,8 @@ def build_weekly_cases_deaths_combo(
     """Graphique combiné : Cas en histogramme et Décès en courbe."""
     if weekly_df is None or weekly_df.empty:
         return None
+    weekly_df = _normalize_metric_alias_columns(weekly_df)
+
     required_cols = [x_col, cases_col, deaths_col]
     if any(col not in weekly_df.columns for col in required_cols):
         return None
@@ -1948,7 +1989,7 @@ def build_weekly_cases_cfr_combo(
     """Graphique combiné: barres = cas hebdomadaires, courbe = létalité (%)."""
     if not verifier_presence_colonnes(df, week_col):
         return None
-    bargap, bargroupgap = _resolve_weekly_bar_spacing(week_col, "Semaine epidemiologique", 0.15, 0.1)
+    bargap, bargroupgap = _resolve_weekly_bar_spacing(week_col, "Semaine épidémiologique", 0.15, 0.1)
 
     tmp = df.copy()
     tmp = tmp[tmp[week_col].notna()].copy()
@@ -2443,6 +2484,14 @@ def pct_change_safe(cur, prv):
     if pd.isna(prv) or prv == 0:
         return np.nan
     return (cur - prv) / prv * 100.0
+
+
+def pct_change_metric_safe(cur, prv):
+    """Variation relative sûre pour st.metric, retourne None si la base est non interprétable."""
+    if pd.isna(cur):
+        return None
+    delta = pct_change_safe(cur, prv)
+    return None if pd.isna(delta) else float(delta)
 
 
 def _apply_compact_bar_spacing(fig: Optional[go.Figure], bargap: float = 0.0, bargroupgap: float = 0.0) -> Optional[go.Figure]:
@@ -2992,8 +3041,8 @@ def render_professional_header() -> None:
         """
 <div class="cousp-hero">
   <div class="cousp-hero-badge">COUSP RDC</div>
-  <h1>TABLEAU DE BORD DES INCIDENTS EPIDEMIOLOGIQUES</h1>
-  <p>Situation epidemiologique hebdomadaire - COUSP RDC</p>
+  <h1>TABLEAU DE BORD DES INCIDENTS ÉPIDÉMIOLOGIQUES</h1>
+  <p>Situation épidémiologique hebdomadaire - COUSP RDC</p>
 </div>
 """,
         unsafe_allow_html=True,
@@ -3007,11 +3056,11 @@ def render_footer() -> None:
 <div class="cousp-footer">
   <div>
     <strong>COUSP RDC</strong>
-    <span>Surveillance epidemiologique nationale</span>
+    <span>Surveillance épidémiologique nationale</span>
   </div>
   <div>
-    <strong>Donnees fiables pour decisions rapides</strong>
-    <span>Protection des communautes et pilotage operationnel</span>
+    <strong>Données fiables pour décisions rapides</strong>
+    <span>Protection des communautés et pilotage opérationnel</span>
   </div>
   <div>
     <strong>Ministere de la Sante</strong>
@@ -3784,17 +3833,17 @@ def build_standard_delay_summary(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 STANDARD_DELAY_LABELS = {
-    "delai_onset_to_consult": "Debut -> consultation",
-    "delai_onset_to_notif": "Debut -> notification",
-    "delai_onset_to_adm": "Debut -> admission",
-    "delai_onset_to_prel": "Debut -> prelevement",
-    "delai_prel_to_result": "Prelevement -> resultat",
+    "delai_onset_to_consult": "Début -> consultation",
+    "delai_onset_to_notif": "Début -> notification",
+    "delai_onset_to_adm": "Début -> admission",
+    "delai_onset_to_prel": "Début -> prélèvement",
+    "delai_prel_to_result": "Prélèvement -> résultat",
     "delai_notif_to_invest": "Notification -> investigation",
     "delai_adm_to_issue": "Admission -> issue",
 }
 
 def list_available_standard_delays(df: pd.DataFrame) -> List[Tuple[str, str]]:
-    """Retourne les delais standards exploitables dans le perimetre filtre."""
+    """Retourne les délais standards exploitables dans le périmètre filtré."""
     available = []
     if df is None or df.empty:
         return available
@@ -4975,12 +5024,12 @@ if not IDSR_MODE:
     df = df.copy()
     age_col_auto = pick_age_col(df)
 
-    with st.expander("Source analytique et fichiers utilises", expanded=False):
+    with st.expander("Source analytique et fichiers utilisés", expanded=False):
         st.write(files_used[:200])
         disease_label = DISEASE_SPECS.get(disease_key, {}).get("label", disease_key)
-        st.write(f"Perimetre courant : **{disease_label}**")
+        st.write(f"Périmètre courant : **{disease_label}**")
         st.write(
-            "Les KPI et visuels de la page d'accueil sont calcules apres application des filtres temporels et geographiques."
+            "Les KPI et visuels de la page d'accueil sont calculés après application des filtres temporels et géographiques."
         )
     # =========================
     # FILTERS (UI) - MULTISELECT DÉPENDANTS AVEC "Toutes" PAR DÉFAUT
@@ -5168,18 +5217,18 @@ def infer_age_years_generic(df_: pd.DataFrame) -> pd.Series:
     age_val = age_num.where(age_num.notna(), extracted_num)
 
     unit_from_age = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
-    unit_from_age = unit_from_age.mask(age_txt.str.contains(r"(?:mois|month)s?", na=False), "mois")
-    unit_from_age = unit_from_age.mask(age_txt.str.contains(r"(?:semaine|week)s?|sem", na=False), "semaine")
-    unit_from_age = unit_from_age.mask(age_txt.str.contains(r"(?:jour|day)s?", na=False), "jour")
-    unit_from_age = unit_from_age.mask(age_txt.str.contains(r"(?:an|ans|annee|ann[eé]es|year|yr|yrs)", na=False), "an")
+    unit_from_age = unit_from_age.mask(age_txt.str.contains(AGE_UNIT_MONTH_PATTERN, na=False), "mois")
+    unit_from_age = unit_from_age.mask(age_txt.str.contains(AGE_UNIT_WEEK_PATTERN, na=False), "semaine")
+    unit_from_age = unit_from_age.mask(age_txt.str.contains(AGE_UNIT_DAY_PATTERN, na=False), "jour")
+    unit_from_age = unit_from_age.mask(age_txt.str.contains(AGE_UNIT_YEAR_PATTERN, na=False), "an")
 
     unit = unit_raw.where(unit_raw.notna(), unit_from_age)
 
     years = pd.Series(np.nan, index=df_.index, dtype="float")
-    years = years.mask(unit.str.contains(r"(?:mois|month)s?", na=False), age_val / 12.0)
-    years = years.mask(unit.str.contains(r"(?:semaine|week)s?|sem", na=False), age_val / 52.0)
-    years = years.mask(unit.str.contains(r"(?:jour|day)s?", na=False), age_val / 365.25)
-    years = years.mask(unit.str.contains(r"(?:an|ans|annee|ann[eé]es|year|yr|yrs)", na=False), age_val)
+    years = years.mask(unit.str.contains(AGE_UNIT_MONTH_PATTERN, na=False), age_val / 12.0)
+    years = years.mask(unit.str.contains(AGE_UNIT_WEEK_PATTERN, na=False), age_val / 52.0)
+    years = years.mask(unit.str.contains(AGE_UNIT_DAY_PATTERN, na=False), age_val / 365.25)
+    years = years.mask(unit.str.contains(AGE_UNIT_YEAR_PATTERN, na=False), age_val)
     years = years.mask(years.isna() & age_val.notna(), age_val)
     return pd.to_numeric(years, errors="coerce")
 
@@ -5258,7 +5307,7 @@ def build_weekly_lab_summary(df_: pd.DataFrame) -> pd.DataFrame:
     """Construit un suivi hebdomadaire des tests valides et de la positivite."""
     week_col = resolve_week_column(df_)
     if week_col is None or COL_TDRR not in df_.columns:
-        return pd.DataFrame(columns=["Semaine", "Tests valides", "Tests positifs", "Positivite (%)"])
+        return pd.DataFrame(columns=["Semaine", "Tests valides", "Tests positifs", "Positivité (%)"])
 
     tmp = df_.copy()
     if week_col == "YW":
@@ -5276,7 +5325,7 @@ def build_weekly_lab_summary(df_: pd.DataFrame) -> pd.DataFrame:
         tmp["_order"] = tmp["Semaine"]
 
     if tmp.empty:
-        return pd.DataFrame(columns=["Semaine", "Tests valides", "Tests positifs", "Positivite (%)"])
+        return pd.DataFrame(columns=["Semaine", "Tests valides", "Tests positifs", "Positivité (%)"])
 
     res_n = _tdr_result_norm(tmp[COL_TDRR])
     tmp["test_valide"] = res_n.isin(TDR_POS_SET.union(TDR_NEG_SET)).astype(int)
@@ -5292,7 +5341,7 @@ def build_weekly_lab_summary(df_: pd.DataFrame) -> pd.DataFrame:
         )
         .sort_values("_order")
     )
-    summary["Positivite (%)"] = np.where(
+    summary["Positivité (%)"] = np.where(
         summary["Tests valides"] > 0,
         summary["Tests positifs"] / summary["Tests valides"] * 100.0,
         np.nan,
@@ -5408,12 +5457,12 @@ def format_pct_delta(current_value: Any, previous_value: Any) -> str:
     """Construit un delta lisible pour les cartes KPI."""
     delta = pct_change_safe(current_value, previous_value)
     if pd.isna(delta):
-        return "Reference indisponible"
-    return f"{delta:+.1f}% vs semaine precedente"
+        return "Référence indisponible"
+    return f"{delta:+.1f}% vs semaine précédente"
 
 
 def resolve_week_column(df_: pd.DataFrame) -> Optional[str]:
-    """Identifie la meilleure colonne semaine disponible pour les vues synthese."""
+    """Identifie la meilleure colonne semaine disponible pour les vues synthèse."""
     if "YW" in df_.columns and df_["YW"].notna().any():
         return "YW"
     if COL_WNUM in df_.columns and pd.to_numeric(df_[COL_WNUM], errors="coerce").notna().any():
@@ -5424,10 +5473,10 @@ def resolve_week_column(df_: pd.DataFrame) -> Optional[str]:
 
 
 def build_weekly_overview_table(df_: pd.DataFrame) -> pd.DataFrame:
-    """Construit la serie hebdomadaire standard utilisee dans la page d'accueil."""
+    """Construit la série hebdomadaire standard utilisée dans la page d'accueil."""
     week_col = resolve_week_column(df_)
     if week_col is None or df_.empty:
-        return pd.DataFrame(columns=["order_key", "label", "Cas", "Deces", "Letalite (%)"])
+        return pd.DataFrame(columns=["order_key", "label", "Cas", "Décès", "Létalité (%)"])
 
     weekly = df_.copy()
     if week_col == "YW":
@@ -5445,14 +5494,14 @@ def build_weekly_overview_table(df_: pd.DataFrame) -> pd.DataFrame:
         weekly["label"] = weekly[COL_WEEK].astype(str)
 
     if weekly.empty:
-        return pd.DataFrame(columns=["order_key", "label", "Cas", "Deces", "Letalite (%)"])
+        return pd.DataFrame(columns=["order_key", "label", "Cas", "Décès", "Létalité (%)"])
 
     grouped = (
         weekly.groupby(["order_key", "label"], as_index=False)
-        .agg(Cas=("label", "size"), Deces=("is_death", "sum"))
+        .agg(Cas=("label", "size"), Décès=("is_death", "sum"))
         .sort_values("order_key")
     )
-    grouped["Letalite (%)"] = np.where(grouped["Cas"] > 0, grouped["Deces"] / grouped["Cas"] * 100.0, np.nan)
+    grouped["Létalité (%)"] = np.where(grouped["Cas"] > 0, grouped["Décès"] / grouped["Cas"] * 100.0, np.nan)
     return grouped
 
 
@@ -5460,6 +5509,7 @@ def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
     """Calcule les KPI principaux de la page d'accueil."""
     kpi = compute_indicators(df_)
     weekly = build_weekly_overview_table(df_)
+    weekly = _normalize_metric_alias_columns(weekly)
 
     provinces_epid = get_provinces_epid()
     total_provinces = len(EPIDEMIE)
@@ -5525,8 +5575,8 @@ def render_context_row(files_used: list[str], disease_key: str, df_: pd.DataFram
 
     chips = [
         ("Source", source_value),
-        ("Perimetre", disease_label),
-        ("Periode", period_value),
+        ("Périmètre", disease_label),
+        ("Période", period_value),
         ("Couverture", f"{payload.get('reported_provinces', 0)} provinces | {payload.get('reported_zs', 0)} ZS"),
     ]
     html_blocks = []
@@ -5543,7 +5593,7 @@ def render_context_row(files_used: list[str], disease_key: str, df_: pd.DataFram
 
 
 def build_dashboard_kpi_card_html(title: str, value: str, subtitle: str, theme: str, span: int = 1) -> str:
-    """Construit une carte KPI HTML pour la bande de synthese principale."""
+    """Construit une carte KPI HTML pour la bande de synthèse principale."""
     span_class = " span-2" if int(span) >= 2 else ""
     return f"""
 <div class="cousp-kpi-card {theme}{span_class}">
@@ -5557,12 +5607,12 @@ def build_dashboard_kpi_card_html(title: str, value: str, subtitle: str, theme: 
 def render_dashboard_kpis(payload: Dict[str, Any]) -> None:
     """Affiche la ligne horizontale des KPI principaux."""
     cards = [
-        ("Total cas", format_metric_value(payload.get("cases", 0)), "Perimetre filtre", "blue", 1),
-        ("Total deces", format_metric_value(payload.get("deaths", 0)), "Perimetre filtre", "navy", 1),
-        ("CFR (%)", format_metric_value(payload.get("cfr"), decimals=2), "Letalite observee", "orange", 1),
-        ("Semaine min -> max", payload.get("week_span", "-"), "Fenetre analytique", "blue", 2),
+        ("Total cas", format_metric_value(payload.get("cases", 0)), "Périmètre filtré", "blue", 1),
+        ("Total décès", format_metric_value(payload.get("deaths", 0)), "Périmètre filtré", "navy", 1),
+        ("CFR (%)", format_metric_value(payload.get("cfr"), decimals=2), "Létalité observée", "orange", 1),
+        ("Semaine min -> max", payload.get("week_span", "-"), "Fenêtre analytique", "blue", 2),
         (
-            "Provinces epidemiques",
+            "Provinces épidémiques",
             f"{payload.get('reported_epid_provinces', 0)} / {payload.get('total_provinces_epid', 0)}",
             "-" if pd.isna(payload.get("coverage_epid_pct")) else f"{payload.get('coverage_epid_pct', 0):.1f}% de couverture",
             "green",
@@ -5575,7 +5625,7 @@ def render_dashboard_kpis(payload: Dict[str, Any]) -> None:
             "green",
             1,
         ),
-        ("Zones de sante touchees", format_metric_value(payload.get("reported_zs", 0)), "Notifications consolidees", "green", 1),
+        ("Zones de santé touchées", format_metric_value(payload.get("reported_zs", 0)), "Notifications consolidées", "green", 1),
     ]
     cards_html = "".join(build_dashboard_kpi_card_html(*card) for card in cards)
     st.markdown(f"<div class='cousp-kpi-grid'>{cards_html}</div>", unsafe_allow_html=True)
@@ -5586,7 +5636,7 @@ def prepare_overview_map_data(
     level: str,
     match_threshold: float = 0.90,
 ):
-    """Prepare les donnees geographiques de synthese pour les cartes province / zone."""
+    """Prépare les données géographiques de synthèse pour les cartes province / zone."""
     if gpd is None:
         return None, None, "geopandas n'est pas disponible.", None, None, None
 
@@ -5594,17 +5644,17 @@ def prepare_overview_map_data(
         geo_path = "data/geometry_rdc_provinces.geojson"
         group_col = COL_PROV
         value_col = "nb_cas_prov"
-        title = "RDC - cas notifies par province"
+        title = "RDC - cas notifiés par province"
     else:
         geo_path = "data/geometry_rdc_zones_sante.geojson"
         group_col = COL_ZS
         value_col = "nb_cas_zs"
-        title = "RDC - cas notifies par zone de sante"
+        title = "RDC - cas notifiés par zone de santé"
 
     if not Path(geo_path).exists():
-        return None, None, "GeoJSON non disponible dans le depot.", value_col, group_col, title
+        return None, None, "GeoJSON non disponible dans le dépôt.", value_col, group_col, title
     if group_col not in df_.columns or df_[group_col].dropna().empty:
-        return None, None, "Variable geographique indisponible.", value_col, group_col, title
+        return None, None, "Variable géographique indisponible.", value_col, group_col, title
 
     try:
         gdf_geo = gpd.read_file(geo_path)
@@ -5619,7 +5669,7 @@ def prepare_overview_map_data(
             colonne_valeurs=value_col,
             seuil=match_threshold,
         )
-        note = f"Taux de correspondance carte/donnees : {match_rate:.1%}"
+        note = f"Taux de correspondance carte/données : {match_rate:.1%}"
         return gdf_join, df_match, note, value_col, group_col, title
     except Exception as exc:
         return None, None, f"Carte indisponible : {exc}", value_col, group_col, title
@@ -5657,7 +5707,7 @@ def build_static_map_overview(
 
 
 def render_static_map_overview(title: str, fig: Optional[plt.Figure], note: str) -> None:
-    """Affiche une carte dans la synthese ou un message de fallback propre."""
+    """Affiche une carte dans la synthèse ou un message de fallback propre."""
     st.markdown(f"<div class='cousp-panel-title'>{title}</div>", unsafe_allow_html=True)
     if fig is None:
         st.info(note)
@@ -5680,7 +5730,7 @@ def render_interactive_map_overview(
     filter_state_key: str,
     height: int = 540,
 ) -> None:
-    """Affiche une carte interactive de synthese et synchronise les filtres lateraux."""
+    """Affiche une carte interactive de synthèse et synchronise les filtres latéraux."""
     st.markdown(f"<div class='cousp-panel-title'>{title}</div>", unsafe_allow_html=True)
     if gdf_join is None or df_map is None or not value_col or not source_label_col:
         st.info(note)
@@ -5741,9 +5791,9 @@ def render_overview_dashboard(
     annotate_values_flag: bool,
     x_tick_step: int,
 ) -> None:
-    """Assemble la page d'accueil institutionnelle avant les onglets detailles."""
+    """Assemble la page d'accueil institutionnelle avant les onglets détaillés."""
     if df_.empty:
-        st.info("Aucune donnee filtree n'est disponible pour la synthese d'accueil.")
+        st.info("Aucune donnée filtrée n'est disponible pour la synthèse d'accueil.")
         return
 
     payload = build_dashboard_kpi_payload(df_)
@@ -5752,16 +5802,16 @@ def render_overview_dashboard(
     render_standards_note()
 
     weekly = payload.get("weekly", pd.DataFrame())
-    with st.expander("Options des cartes de synthese", expanded=False):
+    with st.expander("Options des cartes de synthèse", expanded=False):
         overview_province_map_mode = st.radio(
-            "Carte province de synthese",
+            "Carte province de synthèse",
             ["Statique", "Interactive"],
             index=0,
             horizontal=True,
             key="overview_province_map_mode",
         )
         overview_map_mode_label = st.selectbox(
-            "Annotations sur les cartes de synthese",
+            "Annotations sur les cartes de synthèse",
             options=list(MAP_ANNOTATION_MODE_OPTIONS.keys()),
             index=0,
             key="overview_map_annotation_mode",
@@ -5795,9 +5845,9 @@ def render_overview_dashboard(
 
     c1, c2, c3 = st.columns([1.05, 1.35, 1.35])
     with c1:
-        st.markdown("<div class='cousp-panel-title'>Indicateurs cles de la semaine</div>", unsafe_allow_html=True)
+        st.markdown("<div class='cousp-panel-title'>Indicateurs clés de la semaine</div>", unsafe_allow_html=True)
         st.markdown(
-            "<div class='cousp-summary-box'><div class='summary-lead'>Bloc de synthese operationnelle</div></div>",
+            "<div class='cousp-summary-box'><div class='summary-lead'>Bloc de synthèse opérationnelle</div></div>",
             unsafe_allow_html=True,
         )
         w1, w2 = st.columns(2)
@@ -5811,14 +5861,14 @@ def render_overview_dashboard(
             )
             st.metric(
                 "CFR semaine",
-                format_metric_value(latest.get("Letalite (%)", np.nan), decimals=2, suffix="%"),
-                format_pct_delta(latest.get("Letalite (%)", np.nan), previous.get("Letalite (%)", np.nan)),
+                format_metric_value(latest.get("Létalité (%)", np.nan), decimals=2, suffix="%"),
+                format_pct_delta(latest.get("Létalité (%)", np.nan), previous.get("Létalité (%)", np.nan)),
             )
         with w2:
             st.metric(
-                "Deces semaine",
-                format_metric_value(latest.get("Deces", np.nan)),
-                format_pct_delta(latest.get("Deces", np.nan), previous.get("Deces", np.nan)),
+                "Décès semaine",
+                format_metric_value(latest.get("Décès", np.nan)),
+                format_pct_delta(latest.get("Décès", np.nan), previous.get("Décès", np.nan)),
             )
             st.metric(
                 f"Admission <= {get_session_int('seuil_jours', 2)} jours",
@@ -5826,10 +5876,10 @@ def render_overview_dashboard(
                 f"n={payload.get('promptitude_n', 0)}",
             )
 
-        st.write(f"Province la plus notifiee : **{payload.get('top_province', 'non disponible')}**")
-        st.write(f"Zone de sante la plus notifiee : **{payload.get('top_zs', 'non disponible')}**")
+        st.write(f"Province la plus notifiée : **{payload.get('top_province', 'non disponible')}**")
+        st.write(f"Zone de santé la plus notifiée : **{payload.get('top_zs', 'non disponible')}**")
         st.write(
-            f"Fenetre couverte : **{payload.get('week_span', '-')}** avec **{format_metric_value(payload.get('cases', 0))}** cas analyses."
+            f"Fenêtre couverte : **{payload.get('week_span', '-')}** avec **{format_metric_value(payload.get('cases', 0))}** cas analysés."
         )
 
     with c2:
@@ -5851,28 +5901,28 @@ def render_overview_dashboard(
             render_static_map_overview("Carte statique par province", fig_map_prov, note_map_prov)
 
     with c3:
-        render_static_map_overview("Carte statique par zone de sante", fig_map_zs, note_map_zs)
+        render_static_map_overview("Carte statique par zone de santé", fig_map_zs, note_map_zs)
 
     d1, d2 = st.columns(2)
     with d1:
         st.markdown("<div class='cousp-panel-title'>Surveillance temporelle hebdomadaire</div>", unsafe_allow_html=True)
         if weekly.empty:
-            st.info("Serie hebdomadaire indisponible.")
+            st.info("Série hebdomadaire indisponible.")
         else:
             fig_surveillance = build_weekly_cases_deaths_combo(
                 weekly_df=weekly,
                 x_col="label",
                 cases_col="Cas",
-                deaths_col="Deces",
-                titre="Evolution hebdomadaire des cas et deces",
-                x_titre="Semaine epidemiologique",
+                deaths_col="Décès",
+                titre="Évolution hebdomadaire des cas et décès",
+                x_titre="Semaine épidémiologique",
                 y_titre_cas="Nombre de cas",
-                y_titre_deces="Nombre de deces",
+                y_titre_deces="Nombre de décès",
                 rotation=0,
                 annot_bars=annotate_values_flag,
                 annot_line=annotate_values_flag,
             )
-            if x_tick_step > 1 and len(weekly) > x_tick_step:
+            if fig_surveillance is not None and x_tick_step > 1 and len(weekly) > x_tick_step:
                 fig_surveillance.update_xaxes(
                     tickmode="array",
                     tickvals=weekly["label"].iloc[:: max(int(x_tick_step), 1)],
@@ -5881,7 +5931,7 @@ def render_overview_dashboard(
             st_plot(fig_surveillance, key="overview_weekly_surveillance", annotate_values=annotate_values_flag)
 
     with d2:
-        st.markdown("<div class='cousp-panel-title'>Tendance hebdomadaire des cas et de la letalite observee</div>", unsafe_allow_html=True)
+        st.markdown("<div class='cousp-panel-title'>Tendance hebdomadaire des cas et de la létalité observée</div>", unsafe_allow_html=True)
         if weekly.empty:
             st.info("Tendance hebdomadaire indisponible.")
         else:
@@ -5890,7 +5940,7 @@ def render_overview_dashboard(
                 df=df_,
                 week_col=week_col,
                 death_col="is_death",
-                titre="Tendance hebdomadaire des cas et de la letalite observee",
+                titre="Tendance hebdomadaire des cas et de la létalité observée",
                 rotation=45,
                 annot_bars=annotate_values_flag,
                 annot_line=annotate_values_flag,
@@ -5901,7 +5951,7 @@ def render_overview_dashboard(
 
     p1, p2, p3 = st.columns([1.3, 0.95, 1.15])
     with p1:
-        st.markdown("<div class='cousp-panel-title'>Distribution geographique des notifications</div>", unsafe_allow_html=True)
+        st.markdown("<div class='cousp-panel-title'>Distribution géographique des notifications</div>", unsafe_allow_html=True)
         geo_col = COL_PROV if COL_PROV in df_.columns and df_[COL_PROV].notna().any() else COL_ZS
         if geo_col in df_.columns and df_[geo_col].notna().any():
             geo_tbl = build_frequency_table(df_, geo_col, top_n=10).sort_values("n", ascending=True)
@@ -5915,13 +5965,13 @@ def render_overview_dashboard(
                 color_continuous_scale=["#dbe8f9", "#2b74ca"],
                 labels={geo_col: "Lieu", "n": "Nombre de cas"},
             )
-            fig_geo.update_layout(coloraxis_showscale=False, title="Top localites notifiantes")
+            fig_geo.update_layout(coloraxis_showscale=False, title="Top localités notifiantes")
             st_plot(fig_geo, key="overview_geo_distribution", annotate_values=annotate_values_flag)
         else:
-            st.info("Aucune variable geographique exploitable n'a ete detectee.")
+            st.info("Aucune variable géographique exploitable n'a été détectée.")
 
     with p2:
-        st.markdown("<div class='cousp-panel-title'>Repartition par sexe</div>", unsafe_allow_html=True)
+        st.markdown("<div class='cousp-panel-title'>Répartition par sexe</div>", unsafe_allow_html=True)
         if COL_SEX in df_.columns and df_[COL_SEX].notna().any():
             sex_tbl = build_frequency_table(df_, COL_SEX)
             fig_sex = px.pie(
@@ -5937,7 +5987,7 @@ def render_overview_dashboard(
             st.info("La variable Sexe est absente ou vide.")
 
     with p3:
-        st.markdown("<div class='cousp-panel-title'>Repartition par age</div>", unsafe_allow_html=True)
+        st.markdown("<div class='cousp-panel-title'>Répartition par âge</div>", unsafe_allow_html=True)
         years = infer_age_years_generic(df_)
         if years.notna().any():
             age_hist = pd.DataFrame({"Age_en_ans": years.dropna()})
@@ -5946,13 +5996,13 @@ def render_overview_dashboard(
                 x="Age_en_ans",
                 nbins=18,
                 color_discrete_sequence=["#2d7d46"],
-                title="Distribution de l'age en annees",
+                title="Distribution de l'âge en années",
             )
             st_plot(fig_age, key="overview_age_hist", annotate_values=annotate_values_flag)
         else:
             age_col = pick_age_col(df_)
             if age_col is None:
-                st.info("Aucune information d'age exploitable n'est disponible.")
+                st.info("Aucune information d'âge exploitable n'est disponible.")
             else:
                 age_tbl = build_frequency_table(df_, age_col)
                 fig_age = px.bar(age_tbl, x=age_col, y="n", color_discrete_sequence=["#2d7d46"])
@@ -5980,7 +6030,7 @@ def render_overview_dashboard(
             st.info("Pyramide indisponible : variables Age/Sexe insuffisantes.")
 
     with p5:
-        st.markdown("<div class='cousp-panel-title'>Distribution par tranche d'age</div>", unsafe_allow_html=True)
+        st.markdown("<div class='cousp-panel-title'>Distribution par tranche d'âge</div>", unsafe_allow_html=True)
         df_age_group = df_.copy()
         age_group_col = pick_age_col(df_age_group)
         if age_group_col is None:
@@ -5995,12 +6045,12 @@ def render_overview_dashboard(
                 y="n",
                 text="n" if annotate_values_flag else None,
                 color_discrete_sequence=["#d97b16"],
-                title="Cas par tranche d'age",
+                title="Cas par tranche d'âge",
             )
             fig_age_group.update_layout(xaxis_tickangle=-35)
             st_plot(fig_age_group, key="overview_age_group", annotate_values=annotate_values_flag)
         else:
-            st.info("Les classes d'age ne sont pas disponibles.")
+            st.info("Les classes d'âge ne sont pas disponibles.")
 
 if not IDSR_MODE:
     render_overview_dashboard(
@@ -6011,18 +6061,18 @@ if not IDSR_MODE:
         annotate_values_flag=annot_vals,
         x_tick_step=int(pas_x),
     )
-    st.markdown("<div class='cousp-panel-title'>Analyses detaillees par onglet</div>", unsafe_allow_html=True)
+    st.markdown("<div class='cousp-panel-title'>Analyses détaillées par onglet</div>", unsafe_allow_html=True)
 else:
-    st.markdown("<div class='cousp-panel-title'>Espaces analytiques detailles</div>", unsafe_allow_html=True)
+    st.markdown("<div class='cousp-panel-title'>Espaces analytiques détaillés</div>", unsafe_allow_html=True)
 
-st.caption("Selectionnez un onglet detaille ci-dessous. Le contenu s'affiche en pleine largeur sans navigation compacte par boutons.")
+st.caption("Sélectionnez un onglet détaillé ci-dessous. Le contenu s'affiche en pleine largeur sans navigation compacte par boutons.")
 
 tab_overview_detail, tab_surveillance, tab_profil, tab_qualite, tab_sitrep, tab_idsr, tab_irep = st.tabs(
     [
         "Choisir un onglet",
         "\U0001F4C8 Surveillance",
         "\U0001F465 Profil",
-        "\U0001F5C2\ufe0f Qualite & export",
+        "\U0001F5C2\ufe0f Qualité & export",
         "\U0001F4DD SITREP",
         "\U0001F4DA IDSR",
         "\U0001F4CC IREP",
@@ -6033,8 +6083,8 @@ with tab_overview_detail:
     st.markdown(
         """
         <div class="cousp-detail-empty">
-            <strong>Analyses detaillees pretes a consulter</strong>
-            Choisissez un onglet horizontal pour afficher directement son contenu en pleine largeur, sans ouverture dans une colonne laterale.
+            <strong>Analyses détaillées prêtes à consulter</strong>
+            Choisissez un onglet horizontal pour afficher directement son contenu en pleine largeur, sans ouverture dans une colonne latérale.
         </div>
         """,
         unsafe_allow_html=True,
@@ -6050,7 +6100,7 @@ with tab_overview_detail:
 # =========================
 
 # =========================
-# TAB 1: DYNAMIQUE EPIDEMIOLOGIQUE ET PROMPTITUDE
+# TAB 1: DYNAMIQUE ÉPIDÉMIOLOGIQUE ET PROMPTITUDE
 # =========================
 with tab_surveillance:
     if IDSR_MODE:
@@ -6258,14 +6308,14 @@ with tab_surveillance:
 
             if not delay_summary_std.empty:
                 st.divider()
-                st.markdown("**Resume standard des delais disponibles**")
+                st.markdown("**Résumé standard des délais disponibles**")
                 st_dataframe_safe(delay_summary_std, height=320)
 
             if available_delay_pairs:
-                st.markdown("**Analyse detaillee d'un delai standard**")
+                st.markdown("**Analyse détaillée d'un délai standard**")
                 delay_label_to_col = {label: col for col, label in available_delay_pairs}
                 delay_focus_label = st.selectbox(
-                    "Delai standard a profiler",
+                    "Délai standard à profiler",
                     options=list(delay_label_to_col.keys()),
                     key="timeliness_delay_focus",
                 )
@@ -6342,9 +6392,9 @@ with tab_surveillance:
                             fig_delay_focus = apply_plotly_value_annotations(fig_delay_focus, annot_vals)
                             st.plotly_chart(fig_delay_focus, width="stretch", key="timeliness_delay_focus_chart")
                     else:
-                        st.info("Le delai selectionne ne dispose pas d'assez de donnees exploitables pour ce regroupement.")
+                        st.info("Le délai sélectionné ne dispose pas d'assez de données exploitables pour ce regroupement.")
                 else:
-                    st.info("Aucune variable standard de regroupement n'est disponible pour profiler les delais.")
+                    st.info("Aucune variable standard de regroupement n'est disponible pour profiler les délais.")
 
     # =========================
     # TAB 4: Démographie
@@ -6394,47 +6444,16 @@ with tab_profil:
         if COL_UNIT in df_f.columns and df_f[COL_UNIT].notna().any():
             u = df_f[COL_UNIT].astype("string").str.lower().str.strip()
             ok = (
-                u.str.contains(r"\b(?:an|ans|annee|ann[eé]es|year|yr|yrs)\b", na=False)
-                | u.str.contains(r"\b(?:mois|month)s?\b", na=False)
-                | u.str.contains(r"\b(?:semaine|week)s?\b|\bsem\b", na=False)
-                | u.str.contains(r"\b(?:jour|day)s?\b", na=False)
+                u.str.contains(AGE_UNIT_YEAR_PATTERN, na=False)
+                | u.str.contains(AGE_UNIT_MONTH_PATTERN, na=False)
+                | u.str.contains(AGE_UNIT_WEEK_PATTERN, na=False)
+                | u.str.contains(AGE_UNIT_DAY_PATTERN, na=False)
             )
             incoh_mask = u.notna() & (~ok)
         pct_unit_incoh = float(incoh_mask.mean() * 100.0) if n_total else 0.0
 
         # Âges extrêmes (convertis en années quand possible)
-        def _age_to_years_for_quality(df_):
-            age_raw = df_[COL_AGE] if (COL_AGE in df_.columns) else pd.Series([pd.NA] * len(df_), index=df_.index)
-            age_num = pd.to_numeric(age_raw, errors="coerce")
-
-            if COL_UNIT in df_.columns:
-                unit_raw = df_[COL_UNIT].astype("string").str.lower().str.strip()
-            else:
-                unit_raw = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
-
-            age_txt = age_raw.astype("string").str.lower()
-            extracted_num = age_txt.str.extract(r"(?P<num>\d+(?:[\.,]\d+)?)")["num"].str.replace(",", ".", regex=False)
-            extracted_num = pd.to_numeric(extracted_num, errors="coerce")
-            age_val = age_num.where(age_num.notna(), extracted_num)
-
-            unit_from_age = pd.Series([pd.NA] * len(df_), index=df_.index, dtype="string")
-            unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:mois|month)s?\b", na=False), "mois")
-            unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:semaine|week)s?\b|\bsem\b", na=False), "semaine")
-            unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:jour|day)s?\b", na=False), "jour")
-            unit_from_age = unit_from_age.mask(age_txt.str.contains(r"\b(?:an|ans|annee|ann[eé]es|year|yr|yrs)\b", na=False), "an")
-
-            unit = unit_raw.where(unit_raw.notna(), unit_from_age)
-
-            years = pd.Series(np.nan, index=df_.index, dtype="float")
-            years = years.mask(unit.str.contains(r"\b(?:mois|month)s?\b", na=False), age_val / 12.0)
-            years = years.mask(unit.str.contains(r"\b(?:semaine|week)s?\b|\bsem\b", na=False), age_val / 52.0)
-            years = years.mask(unit.str.contains(r"\b(?:jour|day)s?\b", na=False), age_val / 365.25)
-            years = years.mask(unit.str.contains(r"\b(?:an|ans|annee|ann[eé]es|year|yr|yrs)\b", na=False), age_val)
-            years = years.mask(years.isna() & age_val.notna(), age_val)
-
-            return pd.to_numeric(years, errors="coerce")
-
-        years = _age_to_years_for_quality(df_f) if has_age_num else pd.Series([np.nan]*n_total, index=df_f.index)
+        years = infer_age_years_generic(df_f) if has_age_num else pd.Series([np.nan]*n_total, index=df_f.index)
         extreme_mask = years.notna() & ((years < 0) | (years > 110))
         pct_extreme = float(extreme_mask.mean() * 100.0) if n_total else 0.0
 
@@ -6602,8 +6621,8 @@ with tab_profil:
                 fig_lab_combo.add_trace(
                     go.Scatter(
                         x=weekly_lab["Semaine"],
-                        y=weekly_lab["Positivite (%)"],
-                        name="Positivite (%)",
+                        y=weekly_lab["Positivité (%)"],
+                        name="Positivité (%)",
                         mode="lines+markers",
                         line=dict(color="#b9353f", width=3),
                         marker=dict(size=8),
@@ -6611,12 +6630,12 @@ with tab_profil:
                     )
                 )
                 fig_lab_combo.update_layout(
-                    title="Tests valides et positivite hebdomadaire",
+                    title="Tests valides et positivité hebdomadaire",
                     barmode="group",
-                    xaxis_title="Semaine epidemiologique",
+                    xaxis_title="Semaine épidémiologique",
                     yaxis_title="Nombre de tests",
                     yaxis2=dict(
-                        title="Positivite (%)",
+                        title="Positivité (%)",
                         overlaying="y",
                         side="right",
                         rangemode="tozero",
@@ -6629,14 +6648,15 @@ with tab_profil:
             if COL_PROV in df_f.columns:
                 st.markdown("**Tableau provincial consolidé des indicateurs clés de surveillance**")
                 prov_kpi = compute_group_indicators(df_f, COL_PROV).sort_values("Cas", ascending=False).head(15).copy()
+                prov_kpi = _normalize_metric_alias_columns(prov_kpi)
                 prov_kpi = prov_kpi.rename(
                     columns={
-                        "Décès": "Deces",
+                        "Décès": "Décès",
                         "CFR_%": "CFR (%)",
-                        "Prélèvement_%": "Prelevement (%)",
+                        "Prélèvement_%": "Prélèvement (%)",
                         "Hospitalisation_%": "Hospitalisation (%)",
-                        "TDR_réalisé_%": "TDR realise (%)",
-                        "Positivité_TDR_%": "Positivite TDR (%)",
+                        "TDR_réalisé_%": "TDR réalisé (%)",
+                        "Positivité_TDR_%": "Positivité TDR (%)",
                     }
                 )
                 st_dataframe_safe(prov_kpi, height=420)
@@ -6659,12 +6679,12 @@ with tab_profil:
         if strat_candidates:
             metric_map = {
                 "Cas": "Cas",
-                "Décès": "Deces",
+                "Décès": "Décès",
                 "CFR (%)": "CFR (%)",
-                "Prélèvement (%)": "Prelevement (%)",
+                "Prélèvement (%)": "Prélèvement (%)",
                 "Hospitalisation (%)": "Hospitalisation (%)",
-                "TDR réalisé (%)": "TDR realise (%)",
-                "Positivité TDR (%)": "Positivite TDR (%)",
+                "TDR réalisé (%)": "TDR réalisé (%)",
+                "Positivité TDR (%)": "Positivité TDR (%)",
             }
 
             s_cfg1, s_cfg2, s_cfg3 = st.columns([1.15, 1.15, 0.9])
@@ -6692,14 +6712,15 @@ with tab_profil:
                 )
 
             strat_tbl = compute_group_indicators(df_f, strat_choice).copy()
+            strat_tbl = _normalize_metric_alias_columns(strat_tbl)
             strat_tbl = strat_tbl.rename(
                 columns={
-                    "Décès": "Deces",
+                    "Décès": "Décès",
                     "CFR_%": "CFR (%)",
-                    "Prélèvement_%": "Prelevement (%)",
+                    "Prélèvement_%": "Prélèvement (%)",
                     "Hospitalisation_%": "Hospitalisation (%)",
-                    "TDR_réalisé_%": "TDR realise (%)",
-                    "Positivité_TDR_%": "Positivite TDR (%)",
+                    "TDR_réalisé_%": "TDR réalisé (%)",
+                    "Positivité_TDR_%": "Positivité TDR (%)",
                 }
             )
 
@@ -9089,11 +9110,7 @@ with tab_idsr:
                         weekly_age["Cas"] > 0, (weekly_age["Deces"] / weekly_age["Cas"]) * 100, np.nan
                     )
                     weekly_age_sorted = weekly_age.sort_values("TIME_KEY").reset_index(drop=True)
-                # KPI dernière semaine + variati# KPI dernière semaine (focus sur semaine max) + variation vs semaine-1
-                def pct_change_safe(cur, prv):
-                    if prv is None or pd.isna(prv) or prv == 0 or pd.isna(cur):
-                        return None
-                    return (cur - prv) / prv * 100
+                # KPI dernière semaine + variation vs semaine-1
 
                 last = None
                 prev = None
@@ -9159,9 +9176,9 @@ with tab_idsr:
                     last = weekly_sorted.iloc[-1]
                     prev = weekly_sorted.iloc[-2] if len(weekly_sorted) >= 2 else None
 
-                d_cas = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change_safe(last["Cas"], prev["Cas"]) if (last is not None and prev is not None) else None)
-                d_dec = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change_safe(last["Deces"], prev["Deces"]) if (last is not None and prev is not None) else None)
-                d_cfr = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change_safe(last["CFR_calc_%"], prev["CFR_calc_%"]) if (last is not None and prev is not None) else None)
+                d_cas = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change_metric_safe(last["Cas"], prev["Cas"]) if (last is not None and prev is not None) else None)
+                d_dec = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change_metric_safe(last["Deces"], prev["Deces"]) if (last is not None and prev is not None) else None)
+                d_cfr = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change_metric_safe(last["CFR_calc_%"], prev["CFR_calc_%"]) if (last is not None and prev is not None) else None)
 
                 st.markdown("### Situation épidémiologique — dernière semaine disponible")
 
@@ -9185,11 +9202,6 @@ with tab_idsr:
                         np.nan
                     )
                     weekly_age_sorted = weekly_age.sort_values("TIME_KEY").reset_index(drop=True)
-
-                def pct_change_safe(cur, prv):
-                    if prv is None or pd.isna(prv) or prv == 0 or pd.isna(cur):
-                        return None
-                    return (cur - prv) / prv * 100
 
                 # Ligne 1 — Somme tranches d’âge (Cas_* / Deces_*) — focus sur la semaine max
                 df_last_week = pd.DataFrame()
@@ -9267,9 +9279,9 @@ with tab_idsr:
                     dec_age_prev = df_prev_week[age_death_cols].apply(pd.to_numeric, errors="coerce").sum(axis=0, skipna=True).sum() if (not df_prev_week.empty) else np.nan
                     cfr_age_prev = (float(dec_age_prev) / float(cas_age_prev) * 100.0) if (pd.notna(cas_age_prev) and cas_age_prev > 0 and pd.notna(dec_age_prev)) else np.nan
 
-                    d_cas_a = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_safe(cas_age_last, cas_age_prev)
-                    d_dec_a = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_safe(dec_age_last, dec_age_prev)
-                    d_cfr_a = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_safe(cfr_age_last, cfr_age_prev)
+                    d_cas_a = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_metric_safe(cas_age_last, cas_age_prev)
+                    d_dec_a = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_metric_safe(dec_age_last, dec_age_prev)
+                    d_cfr_a = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_metric_safe(cfr_age_last, cfr_age_prev)
 
                     st.caption("Ligne 1 : somme des tranches d’âge (Cas_* / Deces_*)")
                     a1, a2, a3, a4 = st.columns(4)
@@ -9293,9 +9305,9 @@ with tab_idsr:
                 tot_dec_prevwk = pd.to_numeric(df_prev_week.get("Total_deces"), errors="coerce").sum(skipna=True) if (("Total_deces" in df9.columns) and (not df_prev_week.empty)) else np.nan
                 cfr_tot_prevwk = (float(tot_dec_prevwk) / float(tot_cas_prevwk) * 100.0) if (pd.notna(tot_cas_prevwk) and tot_cas_prevwk > 0 and pd.notna(tot_dec_prevwk)) else np.nan
 
-                d_cas_t = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_safe(tot_cas_lastwk, tot_cas_prevwk)
-                d_dec_t = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_safe(tot_dec_lastwk, tot_dec_prevwk)
-                d_cfr_t = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_safe(cfr_tot_lastwk, cfr_tot_prevwk)
+                d_cas_t = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_metric_safe(tot_cas_lastwk, tot_cas_prevwk)
+                d_dec_t = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_metric_safe(tot_dec_lastwk, tot_dec_prevwk)
+                d_cfr_t = None if ("disable_deltas" in locals() and disable_deltas) else pct_change_metric_safe(cfr_tot_lastwk, cfr_tot_prevwk)
 
                 st.caption("Ligne 2 : totaux notifiés (TOTALCAS / TOTALDECES)")
                 k1, k2, k3, k4 = st.columns(4)
@@ -9788,6 +9800,7 @@ with tab_idsr:
                                     values="Cas",
                                     aggfunc="sum",
                                     fill_value=0,
+                                    observed=False,
                                 )
                                 .reset_index()
                             )
@@ -10040,6 +10053,7 @@ with tab_idsr:
                                 values="Cas",
                                 aggfunc="sum",
                                 fill_value=0,
+                                observed=False,
                             ).reset_index()
                             st.dataframe(wk_mal_wide, width="stretch", height=420, hide_index=True)
                     else:
@@ -10233,7 +10247,8 @@ with tab_idsr:
                                         columns="_month",
                                         values="Valeur",
                                         aggfunc="sum",
-                                        fill_value=0
+                                        fill_value=0,
+                                        observed=False,
                                     )
                                     .reset_index()
                                 )
