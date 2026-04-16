@@ -100,20 +100,51 @@ IDSR_MODE = (disease_key == "idsr")
 if not IDSR_MODE:
     # Déploiement en ligne : source unique = upload (xlsx/csv)
     if upl is None:
-        st.info("Veuillez téléverser un fichier de données (.xlsx ou .csv) pour initier l’analyse de surveillance.")
-
         st.info(
-            """
-            📊 **Visualisations disponibles :**
-            - Situation globale des cas et décès
-            - Évolution hebdomadaire des cas 📈
-            - Taux de létalité par semaine ⚠️
-            - Répartition des cas par province 🗺️
-            - Analyse par zone de santé 🏥
-            - Tableaux croisés province × semaine 📋
-            - Cartographie des cas (si fichiers géographiques disponibles) 🌍
-            """
+            "Veuillez téléverser un fichier de données (`.xlsx` ou `.csv`) pour démarrer l’analyse de surveillance."
         )
+
+        st.markdown(
+            "<div class='cousp-panel-title'>Visualisations disponibles</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            """
+            <div class="cousp-detail-empty">
+                <strong>Visualisations disponibles</strong>
+                Une fois le fichier chargé, le tableau de bord permet d’explorer la situation
+                épidémiologique sous plusieurs angles complémentaires : synthèse, évolution
+                temporelle, distribution géographique et tableaux analytiques.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        welcome_cards = [
+            ("Situation globale", "Vue synthétique des cas, des décès et des indicateurs clés de surveillance."),
+            ("Évolution hebdomadaire", "Suivi de la dynamique des cas et lecture rapide des tendances."),
+            ("Létalité par semaine", "Analyse de la gravité au fil du temps à partir des décès rapportés."),
+            ("Répartition provinciale", "Comparaison rapide des provinces les plus touchées."),
+            ("Analyse par zone de santé", "Lecture plus fine de la distribution spatiale des notifications."),
+            ("Province × semaine", "Tableaux croisés pour relier dimensions géographique et temporelle."),
+            ("Cartographie des cas", "Affichage disponible si les fichiers géographiques nécessaires sont présents."),
+        ]
+
+        for start in range(0, len(welcome_cards), 3):
+            cols = st.columns(3)
+            for col, (title, description) in zip(cols, welcome_cards[start:start + 3]):
+                with col:
+                    st.markdown(
+                        f"""
+                        <div class="cousp-context-chip" style="min-height: 132px; margin-bottom: 0.85rem;">
+                            <div class="label">{title}</div>
+                            <div class="value" style="font-size:0.95rem; font-weight:700; margin-top:0.45rem; line-height:1.35;">
+                                {description}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
         st.stop()
 
