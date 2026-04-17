@@ -613,7 +613,7 @@ def render_overview_dashboard(
                 x_col="label",
                 cases_col="Cas",
                 deaths_col="Décès",
-                titre="Évolution hebdomadaire des cas et décès",
+                titre=" ",
                 x_titre="Semaine épidémiologique",
                 y_titre_cas="Nombre de cas",
                 y_titre_deces="Nombre de décès",
@@ -639,7 +639,7 @@ def render_overview_dashboard(
                 df=df_,
                 week_col=week_col,
                 death_col="is_death",
-                titre="Tendance hebdomadaire des cas et de la létalité observée",
+                titre="",
                 rotation=45,
                 annot_bars=annotate_values_flag,
                 annot_line=annotate_values_flag,
@@ -664,7 +664,7 @@ def render_overview_dashboard(
                 color_continuous_scale=["#dbe8f9", "#2b74ca"],
                 labels={geo_col: "Lieu", "n": "Nombre de cas"},
             )
-            fig_geo.update_layout(coloraxis_showscale=False, title="Top localités notifiantes")
+            fig_geo.update_layout(coloraxis_showscale=False, title=" ")
             st_plot(fig_geo, key="overview_geo_distribution", annotate_values=annotate_values_flag)
         else:
             st.info("Aucune variable géographique exploitable n'a été détectée.")
@@ -695,7 +695,7 @@ def render_overview_dashboard(
                 x="Age_en_ans",
                 nbins=18,
                 color_discrete_sequence=["#2d7d46"],
-                title="Distribution de l'âge en années",
+                title=" ",
             )
             st_plot(fig_age, key="overview_age_hist", annotate_values=annotate_values_flag)
         else:
@@ -755,7 +755,7 @@ def render_overview_dashboard(
                 y="n",
                 text="n" if annotate_values_flag else None,
                 color_discrete_sequence=["#d97b16"],
-                title="Cas par tranche d'âge",
+                title=" ",
             )
             fig_age_group.update_layout(xaxis_tickangle=-35)
             st_plot(fig_age_group, key="overview_age_group", annotate_values=annotate_values_flag)
@@ -864,7 +864,7 @@ with tab_surveillance:
                 df=df_f,
                 week_col=week_col_epi,
                 death_col="is_death",
-                titre="Tendance hebdomadaire des cas et de la létalité observée",
+                titre="",
                 rotation=45,
                 annot_bars=annot_vals,
                 annot_line=annot_vals,
@@ -893,7 +893,7 @@ with tab_surveillance:
                         week_col=week_col_epi,
                         group_col=COL_PROV,
                         selected_groups=selected_curve_provs,
-                        titre="Courbe épidémiologique des cas par province",
+                        titre=" ",
                         x_titre="Semaine épidémiologique",
                         y_titre="Nombre de cas",
                         rotation=45,
@@ -959,13 +959,13 @@ with tab_surveillance:
             for c in delais_cols:
                 df_del.loc[df_del[c] < 0, c] = np.nan
         
-            st.markdown("**Distribution des délais observés**")
+            st.markdown("**Distribution des délais observés (jours)**")
             if use_custom_viz and HAS_CUSTOM_VIZ:
                 fig = plot_boxplot_delais_plotly(
                     df=df_del,
                     colonnes_delais=delais_cols,
                     col_groupe=COL_PROV if COL_PROV in df_del.columns else None,
-                    titre="Distribution des délais observés (jours)",
+                    titre=" ",
                     taille_fig=(1500, 600),
                     rotation=45
                 )
@@ -1345,7 +1345,7 @@ with tab_profil:
                     )
                 )
                 fig_lab_combo.update_layout(
-                    title="Tests valides et positivité hebdomadaire",
+                    title=" ",
                     barmode="group",
                     xaxis_title="Semaine épidémiologique",
                     yaxis_title="Nombre de tests",
@@ -1646,7 +1646,7 @@ with tab_qualite:
             with st.expander("Cas par province (complétude / volume)", expanded=True):
                 prov_counts = df_f[COL_PROV].fillna("Inconnu").value_counts().reset_index()
                 prov_counts.columns = [COL_PROV, "Cas"]
-                figp = px.bar(prov_counts, x=COL_PROV, y="Cas", title="Volume des cas par province (filtrés)")
+                figp = px.bar(prov_counts, x=COL_PROV, y="Cas", title=" ")
                 figp.update_layout(xaxis_tickangle=-45)
                 figp = apply_plotly_value_annotations(figp, annot_vals)
                 st.plotly_chart(figp, width="stretch")
@@ -2677,7 +2677,7 @@ with tab_sitrep:
                             x_col="YW",
                             cases_col="Cas",
                             deaths_col="Décès",
-                            titre="Évolution hebdomadaire – Cas et décès",
+                            titre=" ",
                             x_titre="Semaine (YW)",
                             y_titre_cas="Nombre de cas",
                             y_titre_deces="Nombre de décès",
@@ -2783,7 +2783,7 @@ with tab_sitrep:
                     x_col="YW",
                     cases_col="Cas",
                     deaths_col="Décès",
-                    titre="Cas et décès par semaine",
+                    titre=" ",
                     x_titre="Semaine (YW)",
                     y_titre_cas="Nombre de cas",
                     y_titre_deces="Nombre de décès",
