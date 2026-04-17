@@ -119,7 +119,7 @@ with st.sidebar.expander("Paramètres avancés des visualisations", expanded=Fal
 
 show_sidebar_summary = st.sidebar.checkbox(
     "Afficher le résumé des filtres actifs",
-    value=True,
+    value=False,
     key="show_sidebar_summary",
     help="Affiche dans la barre latérale un résumé du périmètre courant et des filtres appliqués.",
 )
