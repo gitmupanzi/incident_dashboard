@@ -49,17 +49,10 @@ if disease_key != "idsr":
         key="ll_upload"
     )
     sheet_upl = st.sidebar.text_input("Nom feuille (si Excel upload)", value=default_sheet)
-
-    # En mode line list, on ne propose pas l'upload IDSR ici (il reste disponible dans l'onglet 9)
-    idsr_upl_side = None
 else:
-    st.sidebar.info("Mode **IDSR agrégé (hebdo)** : l'analyse IDSR se fait dans l'onglet **9) IDSR**.")
-
-    # Upload IDSR en sidebar (optionnel) = 1ère façon
-    idsr_upl_side = st.sidebar.file_uploader(
-        "📤 Téléverser un IDSR agrégé (xlsx)",
-        type=["xlsx", "xls"],
-        key="idsr_upload_side"
+    st.sidebar.info(
+        "Mode **IDSR agrégé (hebdo)** : le chargement du fichier et les analyses se font "
+        "uniquement dans l’onglet **IDSR**."
     )
 
     # En mode IDSR, on ne force pas une line list
@@ -69,27 +62,67 @@ else:
 
 
 supp_doublons = st.sidebar.checkbox("Supprimer les doublons (simple)", value=False)
-show_maps = st.sidebar.checkbox("Activer cartes (GeoJSON)", value=False)
+show_maps = st.sidebar.checkbox(
+    "Activer l’onglet cartographie détaillée",
+    value=False,
+    key="show_maps",
+    help="Affiche les cartes détaillées dans l’onglet Cartographie.",
+)
 
 st.sidebar.header("Période")
 year_filter_slot = st.sidebar.container()
-use_week_filter = st.sidebar.checkbox("Filtrer sur Num_semaine_epid", value=True)
-week_min = st.sidebar.number_input("Semaine min", min_value=1, max_value=53, value=1, step=1)
-week_max = st.sidebar.number_input("Semaine max", min_value=1, max_value=53, value=1, step=1)
+use_week_filter = st.sidebar.checkbox(
+    "Filtrer sur la semaine épidémiologique",
+    value=False,
+    help="Désactivé par défaut pour éviter de restreindre l'analyse à la semaine 1 au premier chargement.",
+)
+week_min = st.sidebar.number_input(
+    "Semaine min",
+    min_value=1,
+    max_value=53,
+    value=1,
+    step=1,
+    disabled=not use_week_filter,
+)
+week_max = st.sidebar.number_input(
+    "Semaine max",
+    min_value=1,
+    max_value=53,
+    value=53,
+    step=1,
+    disabled=not use_week_filter,
+)
 
 st.sidebar.header("Seuil timeliness")
 seuil_jours = st.sidebar.number_input("Seuil (jours) pour % sous seuil", min_value=0, max_value=30, value=2, step=1)
 
-# ✅ Options visualisations
-st.sidebar.header("Options visualisations")
-use_custom_viz = st.sidebar.checkbox(
-    "Utiliser visualisations custom (dataminsante)",
+def _reset_display_options() -> None:
+    st.session_state["show_maps"] = False
+    st.session_state["use_custom_viz"] = True
+    st.session_state["annot_vals"] = False
+    st.session_state["pas_x"] = 1
+    st.session_state["seuil_min_count"] = 0
+    st.session_state["show_sidebar_summary"] = True
+
+st.sidebar.header("Visualisations")
+with st.sidebar.expander("Paramètres avancés des visualisations", expanded=False):
+    use_custom_viz = st.checkbox(
+        "Utiliser visualisations custom (dataminsante)",
+        value=True,
+        key="use_custom_viz",
+        help="Ici, les fonctions custom sont intégrées dans ce fichier (autonome)."
+    )
+    annot_vals = st.checkbox("Afficher annotations (valeurs)", value=False, key="annot_vals")
+    pas_x = st.number_input("Pas X (ticks)", min_value=1, max_value=10, value=1, step=1, key="pas_x")
+    seuil_min_count = st.number_input("Seuil minimal (filtrer petits groupes)", min_value=0, max_value=100, value=0, step=1, key="seuil_min_count")
+    st.button("Réinitialiser les options d’affichage", key="reset_display_options", on_click=_reset_display_options)
+
+show_sidebar_summary = st.sidebar.checkbox(
+    "Afficher le résumé des filtres actifs",
     value=True,
-    help="Ici, les fonctions custom sont intégrées dans ce fichier (autonome)."
+    key="show_sidebar_summary",
+    help="Affiche dans la barre latérale un résumé du périmètre courant et des filtres appliqués.",
 )
-annot_vals = st.sidebar.checkbox("Afficher annotations (valeurs)", value=False, key="annot_vals")
-pas_x = st.sidebar.number_input("Pas X (ticks)", min_value=1, max_value=10, value=1, step=1)
-seuil_min_count = st.sidebar.number_input("Seuil minimal (filtrer petits groupes)", min_value=0, max_value=100, value=0, step=1)
 
 
 # =========================
@@ -221,7 +254,21 @@ if not IDSR_MODE:
 
     # Filtre semaine
     if use_week_filter and COL_WNUM in df.columns:
-        df = df[df[COL_WNUM].between(week_min, week_max)]
+        week_values = pd.to_numeric(df[COL_WNUM], errors="coerce").dropna()
+        if not week_values.empty:
+            available_week_min = int(week_values.min())
+            available_week_max = int(week_values.max())
+            selected_week_min = max(int(week_min), available_week_min)
+            selected_week_max = min(int(week_max), available_week_max)
+
+            if selected_week_min > selected_week_max:
+                st.warning(
+                    f"Filtre semaine invalide pour les données courantes. Plage disponible : "
+                    f"{available_week_min} à {available_week_max}."
+                )
+                df = df.iloc[0:0]
+            else:
+                df = df[df[COL_WNUM].between(selected_week_min, selected_week_max)]
 
     # Doublons (simple)
     if supp_doublons:
@@ -287,7 +334,7 @@ if not IDSR_MODE:
                     st.session_state["prov_sel"] = ["Toutes"]
 
     # ---- Bouton reset ----
-    if st.sidebar.button("Réinitialiser les filtres"):
+    if st.sidebar.button("Réinitialiser les filtres géographiques"):
         st.session_state["prov_sel"] = ["Toutes"]
         st.session_state["zs_sel"] = ["Toutes"]
         st.session_state["as_sel"] = ["Toutes"]
@@ -390,13 +437,47 @@ if not IDSR_MODE:
             df_f = df_f[df_f[COL_CLASS].isin(class_sel)]
 
     age_col = pick_age_col(df_f)
+
+    if show_sidebar_summary:
+        with st.sidebar.expander("Résumé des filtres actifs", expanded=True):
+            st.caption(f"Lignes analysées après filtres : {len(df_f):,}")
+            disease_label = DISEASE_SPECS.get(disease_key, {}).get("label", disease_key)
+            st.write(f"Maladie / source : **{disease_label}**")
+
+            years_summary = "Toutes"
+            if years_selected_main:
+                years_summary = ", ".join(str(y) for y in years_selected_main[:6])
+                if len(years_selected_main) > 6:
+                    years_summary += " ..."
+            st.write(f"Année : **{years_summary}**")
+
+            if use_week_filter and COL_WNUM in df.columns:
+                st.write(f"Semaines : **{int(week_min)} → {int(week_max)}**")
+            else:
+                st.write("Semaines : **toutes**")
+
+            prov_summary = ", ".join(st.session_state.get("prov_sel", ["Toutes"])[:4])
+            zs_summary = ", ".join(st.session_state.get("zs_sel", ["Toutes"])[:4])
+            class_summary = ", ".join(st.session_state.get("class_sel", ["Toutes"])[:4])
+            st.write(f"Province : **{prov_summary}**")
+            st.write(f"Zone de santé : **{zs_summary}**")
+            st.write(f"Classification : **{class_summary}**")
+            st.write(f"Cartographie détaillée : **{'activée' if show_maps else 'désactivée'}**")
 else:
     # Mode IDSR: on ne charge pas de line list ici. Les analyses IDSR sont dans l'onglet 9.
     raw = pd.DataFrame()
     df = pd.DataFrame()
     df_f = pd.DataFrame()
     files_used = []
-    st.info("Mode **IDSR agrégé hebdomadaire** : utilisez l’onglet **IDSR** pour téléverser, filtrer et analyser le fichier agrégé.")
+    st.info(
+        "Mode **IDSR agrégé hebdomadaire** : utilisez l’onglet **IDSR** pour téléverser, "
+        "filtrer et analyser le fichier agrégé."
+    )
+    if show_sidebar_summary:
+        with st.sidebar.expander("Résumé des filtres actifs", expanded=True):
+            st.write("Mode : **IDSR agrégé**")
+            st.write("Chargement fichier : **onglet IDSR**")
+            st.write(f"Cartographie détaillée : **{'activée' if show_maps else 'désactivée'}**")
 
 # =========================
 # TABS
@@ -642,8 +723,9 @@ def render_overview_dashboard(
                 seuil_min=0,
                 croissant=True,
                 afficher_signe_negatif_dans_label=False,
+                hauteur=430,
             )
-            st_plot(fig_pyr, key="overview_pyramid", annotate_values=annotate_values_flag)
+            st_plot(fig_pyr, key="overview_pyramid", height=430, annotate_values=False)
         else:
             st.info("Pyramide indisponible : variables Age/Sexe insuffisantes.")
 
@@ -685,12 +767,13 @@ else:
 
 st.caption("Sélectionnez un onglet détaillé ci-dessous. Le contenu s'affiche en pleine largeur sans navigation compacte par boutons.")
 
-tab_overview_detail, tab_surveillance, tab_profil, tab_qualite, tab_sitrep, tab_idsr, tab_irep = st.tabs(
+tab_overview_detail, tab_surveillance, tab_profil, tab_qualite, tab_maps, tab_sitrep, tab_idsr, tab_irep = st.tabs(
     [
-        "Choisir un onglet",
+        "Vue d’ensemble",
         "\U0001F4C8 Surveillance",
         "\U0001F465 Profil",
         "\U0001F5C2\ufe0f Qualité & export",
+        "\U0001F5FA\ufe0f Cartographie",
         "\U0001F4DD SITREP",
         "\U0001F4DA IDSR",
         "\U0001F4CC IREP",
@@ -701,11 +784,15 @@ with tab_overview_detail:
     st.markdown(
         """
         <div class="cousp-detail-empty">
-            <strong>Analyses détaillées prêtes à consulter</strong>
-            Choisissez un onglet horizontal pour afficher directement son contenu en pleine largeur, sans ouverture dans une colonne latérale.
+            <strong>Vue d’ensemble active</strong>
+            La synthèse principale est affichée plus haut dans la page. Utilisez les filtres latéraux pour mettre à jour les KPI, cartes et graphiques, puis ouvrez un onglet détaillé pour approfondir l’analyse.
         </div>
         """,
         unsafe_allow_html=True,
+    )
+    st.caption(
+        "Les options avancées de visualisation sont regroupées dans la barre latérale. "
+        "La cartographie détaillée est disponible dans son onglet dédié dès qu’elle est activée dans la sidebar."
     )
 
 
@@ -714,7 +801,7 @@ with tab_overview_detail:
 # - Surveillance & promptitude = anciens onglets 1 + 2 + 3
 # - Profil descriptif = anciens onglets 4 + 4b
 # - Données, complétude & qualité = anciens onglets 5 + 6 + 7
-# - SITREP épidémiologique, IDSR et IREP restent dédiés
+# - Cartographie, SITREP, IDSR et IREP restent dédiés
 # =========================
 
 # =========================
@@ -2827,14 +2914,8 @@ with tab_idsr:
     # -------------------------------------------------------------------------
     # 1) Chargement fichier IDSR
     # -------------------------------------------------------------------------
-    st.caption("Téléverser un fichier IDSR agrégé (.xlsx).")
-    # 2 façons de téléverser :
-    #  - Sidebar (si la source sélectionnée est IDSR)
-    #  - Ici dans l’onglet 9 (toujours disponible)
-    up_from_sidebar = st.session_state.get('idsr_upl_side')
-    if up_from_sidebar is not None:
-        st.caption("Fichier IDSR détecté depuis la barre latérale (mode IDSR).")
-    up = up_from_sidebar or st.file_uploader("Fichier IDSR agrégé", type=["xlsx"], key="idsr_upl")
+    st.caption("Téléverser un fichier IDSR agrégé (.xlsx) depuis cet onglet.")
+    up = st.file_uploader("Fichier IDSR agrégé", type=["xlsx"], key="idsr_upl")
 
     default_path = "rdc_compilation_IDS_RDC_SE01_SE03_25_01_2026_00_07_33.xlsx"
 
@@ -3464,21 +3545,121 @@ with tab_idsr:
             _tot_dec = pd.to_numeric(df9.get("Total_deces"), errors="coerce").sum(skipna=True) if "Total_deces" in df9.columns else np.nan
             _cfr = (float(_tot_dec) / float(_tot_cas) * 100.0) if (pd.notna(_tot_cas) and _tot_cas > 0 and pd.notna(_tot_dec)) else np.nan
 
+            _n_mal = df9[COL_MAL].nunique(dropna=True) if COL_MAL in df9.columns else 0
             _n_prov = df9[COL_PROV_ID].nunique(dropna=True) if COL_PROV_ID in df9.columns else 0
             _n_zs = df9[COL_ZS_ID].nunique(dropna=True) if COL_ZS_ID in df9.columns else 0
 
+            _period_start = pd.to_datetime(df9.get("Date_debut_semaine_iso"), errors="coerce") if "Date_debut_semaine_iso" in df9.columns else pd.Series(dtype="datetime64[ns]")
+            if not _period_start.empty and _period_start.notna().any():
+                _period_min = _period_start.min()
+                _period_max = _period_start.max() + pd.Timedelta(days=6)
+                _period_label = f"{_period_min:%d/%m/%Y} -> {_period_max:%d/%m/%Y}"
+            else:
+                _period_label = "Période indisponible"
+
+            _time_values = df9["TIME_LAB"].dropna().astype(str).tolist() if "TIME_LAB" in df9.columns else []
+            _time_span = f"{min(_time_values)} -> {max(_time_values)}" if _time_values else "Fenêtre hebdo indisponible"
+
             st.markdown("### Résumé de la période filtrée")
-            r1, r2, r3, r4, r5 = st.columns(5)
+            r1, r2, r3, r4, r5, r6 = st.columns(6)
             r1.metric("Cas (total)", f"{int(_tot_cas):,}" if pd.notna(_tot_cas) else "NA")
             r2.metric("Décès (total)", f"{int(_tot_dec):,}" if pd.notna(_tot_dec) else "NA")
             r3.metric("CFR (recalculé)", f"{_cfr:.2f}%" if pd.notna(_cfr) else "NA")
-            r4.metric("Provinces", f"{_n_prov:,}")
-            r5.metric("Zones de santé", f"{_n_zs:,}")
+            r4.metric("Maladies", f"{_n_mal:,}")
+            r5.metric("Provinces", f"{_n_prov:,}")
+            r6.metric("Zones de santé", f"{_n_zs:,}")
+            st.caption(f"Période couverte : **{_period_label}** | Fenêtre hebdo : **{_time_span}**")
 
 
         if df9.empty:
             st.info("Aucune donnée n’est disponible après application des filtres analytiques.")
         else:
+            st.divider()
+
+            with st.expander("🧭 Intensité géographique par maladie", expanded=False):
+                if (COL_MAL in df9.columns) and (COL_PROV_ID in df9.columns) and ("Total_cas" in df9.columns):
+                    heat_src = (
+                        df9.groupby([COL_MAL, COL_PROV_ID], as_index=False)
+                        .agg(Cas=("Total_cas", "sum"))
+                    )
+                    heat_src["Cas"] = pd.to_numeric(heat_src["Cas"], errors="coerce").fillna(0)
+                    heat_src = heat_src[heat_src["Cas"] > 0]
+
+                    if not heat_src.empty:
+                        h1, h2 = st.columns(2)
+                        with h1:
+                            top_prov_n = st.slider(
+                                "Top provinces à afficher",
+                                min_value=5,
+                                max_value=25,
+                                value=12,
+                                step=1,
+                                key="tab9_heatmap_top_prov",
+                            )
+                        with h2:
+                            top_mal_n = st.slider(
+                                "Top maladies à afficher",
+                                min_value=1,
+                                max_value=20,
+                                value=min(10, int(heat_src[COL_MAL].nunique())),
+                                step=1,
+                                key="tab9_heatmap_top_mal",
+                            )
+
+                        top_provs = (
+                            heat_src.groupby(COL_PROV_ID)["Cas"]
+                            .sum()
+                            .sort_values(ascending=False)
+                            .head(int(top_prov_n))
+                            .index.tolist()
+                        )
+                        top_mals = (
+                            heat_src.groupby(COL_MAL)["Cas"]
+                            .sum()
+                            .sort_values(ascending=False)
+                            .head(int(top_mal_n))
+                            .index.tolist()
+                        )
+                        heat_view = heat_src[
+                            heat_src[COL_PROV_ID].isin(top_provs) & heat_src[COL_MAL].isin(top_mals)
+                        ].copy()
+
+                        heat_tbl = heat_view.pivot_table(
+                            index=COL_MAL,
+                            columns=COL_PROV_ID,
+                            values="Cas",
+                            aggfunc="sum",
+                            fill_value=0,
+                            observed=False,
+                        )
+
+                        if not heat_tbl.empty:
+                            fig_heat = px.imshow(
+                                heat_tbl,
+                                aspect="auto",
+                                color_continuous_scale=["#eef4fb", "#2369be", "#103d82"],
+                                title="Cas agrégés par maladie et province",
+                                labels={"x": "Province", "y": "Maladie", "color": "Cas"},
+                            )
+                            fig_heat.update_layout(height=460)
+                            st.plotly_chart(fig_heat, width="stretch", key="idsr_heatmap_mal_prov")
+                            with st.expander("Tableau maladie × province", expanded=False):
+                                st.dataframe(heat_tbl.reset_index(), width="stretch", height=320, hide_index=True)
+                        else:
+                            st.info("La heatmap maladie × province est vide après application des filtres de volume.")
+                    else:
+                        st.info("Aucun volume exploitable n'est disponible pour construire la heatmap maladie × province.")
+                else:
+                    st.info("La heatmap maladie × province est indisponible : colonnes Maladie / Province / Total_cas absentes.")
+
+            st.divider()
+            render_idsr_maps_section(
+                df_f=df9,
+                province_col=COL_PROV_ID,
+                zs_col=COL_ZS_ID if COL_ZS_ID in df9.columns else None,
+                cases_col="Total_cas",
+            )
+
             st.divider()
 
             # -----------------------------------------------------------------
@@ -4030,8 +4211,8 @@ with tab_idsr:
                         _wk["_X_LAB"] = _wk["TIME_KEY"].astype(str)
                     else:
                         _wk["_X_LAB"] = _wk.get("TIME_LAB", pd.Series(dtype="object")).astype(str)
-                    # (_fmt_yw_label est centralisée en haut du script)
-                    _wk["_X_LAB"] = _wk["_X_LAB"].map(_fmt_yw_label)
+                    # fmt_yw_label est centralisée dans dashboard_app.core
+                    _wk["_X_LAB"] = _wk["_X_LAB"].map(fmt_yw_label)
 
                     # Sécurité sur colonnes
                     if ("_X_LAB" in _wk.columns) and ("Cas" in _wk.columns):
@@ -4964,254 +5145,11 @@ with tab_irep:
                 mime="text/csv"
             )
 
-# =========================
-# MAPS
-# =========================
-if show_maps:
-    st.divider()
-    st.header("Cartographie de la distribution géographique des cas")
-
-    if gpd is None:
-        st.warning("geopandas n'est pas installé. Ajoute 'geopandas' dans requirements.txt si tu veux les cartes.")
-    else:
-        st.caption("Cartes provinces / zones avec mode statique ou interactif. Jointure fuzzy tolérante sur 'name'.")
-
-        # --- GeoJSON (déploiement en ligne)
-        # Par défaut: utiliser les fichiers présents dans le repo
-        # Si l'utilisateur téléverse: le fichier uploadé remplace le défaut
-        geo_prov_upl = st.file_uploader("📍 GeoJSON provinces (optionnel)", type=["geojson", "json"], key="geojson_prov")
-        geo_zs_upl   = st.file_uploader("📍 GeoJSON zones de santé (optionnel)", type=["geojson", "json"], key="geojson_zs")
-
-        col_reset1, col_reset2 = st.columns([1, 3])
-        with col_reset1:
-            if st.button("↩️ Réinitialiser"):
-                st.session_state["geojson_prov"] = None
-                st.session_state["geojson_zs"] = None
-                st.rerun()
-        with col_reset2:
-            st.caption("Réinitialise les uploads et revient aux GeoJSON par défaut du dépôt (si présents).")
-
-        # Fichiers par défaut (dans le repo)
-        geo_prov_default = "data/geometry_rdc_provinces.geojson"
-        geo_zs_default   = "data/geometry_rdc_zones_sante.geojson"
-
-        def _upl_to_tmp_path(upl_obj, suffix=".geojson"):
-            if upl_obj is None:
-                return None
-            data = upl_obj.getvalue()
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-            tmp.write(data)
-            tmp.flush()
-            tmp.close()
-            return tmp.name
-
-        # Priorité : upload → sinon défaut local (repo) → sinon None
-        geo_prov = _upl_to_tmp_path(geo_prov_upl) or (geo_prov_default if Path(geo_prov_default).exists() else None)
-        geo_zs   = _upl_to_tmp_path(geo_zs_upl)   or (geo_zs_default   if Path(geo_zs_default).exists() else None)
-
-        seuil_match = st.slider("Seuil de matching (fuzzy)", 0.70, 1.00, 0.90, 0.01)
-        map_display_mode = st.radio(
-            "Mode de carte",
-            ["Statique", "Interactive"],
-            index=0,
-            horizontal=True,
-            key="detail_map_display_mode",
-        )
-
-        # Options d'affichage
-        annoter_map_label = st.selectbox(
-            "Contenu des annotations",
-            options=list(MAP_ANNOTATION_MODE_OPTIONS.keys()),
-            index=3,
-            key="detail_map_annotation_mode",
-        )
-        annoter_map_mode = MAP_ANNOTATION_MODE_OPTIONS[annoter_map_label]
-        annoter_map = annoter_map_mode != "aucun"
-        seuil_aff = st.number_input("Seuil affichage annotation (valeur >)", min_value=0, max_value=100000, value=1, step=1)
-        afficher_fond = False
-        longueur_km = 50
-        if map_display_mode == "Statique":
-            afficher_fond = st.checkbox("Afficher fond de carte (contextily)", value=False)
-            longueur_km = st.number_input("Longueur barre échelle (km)", min_value=5, max_value=300, value=50, step=5)
-        else:
-            st.info("Mode interactif activé : clique sur une zone de la carte pour synchroniser les filtres géographiques.")
-
-        # ---------- Provinces ----------
-        st.subheader("Carte des cas par province")
-        if geo_prov and Path(geo_prov).exists() and COL_PROV in df_f.columns:
-            gdfp = gpd.read_file(geo_prov)
-
-            df_carte = df_f[[COL_PROV]].dropna().copy()
-            df_carte["nb_cas_prov"] = 1
-            df_carte = df_carte.groupby(COL_PROV, as_index=False)["nb_cas_prov"].sum()
-
-            gdf_join, df_map, match_rate = joindre_donnees_fuzzy_geo(
-                carte_gdf=gdfp,
-                df_donnees=df_carte,
-                colonne_cle_geo="name",
-                colonne_cle_data=COL_PROV,
-                colonne_valeurs="nb_cas_prov",
-                seuil=seuil_match
-            )
-
-            st.caption(f"Taux de correspondance (données→carte) : {match_rate:.1%}")
-            with st.expander("Diagnostic matching provinces (pire en haut)"):
-                st.dataframe(df_map.head(50), width="stretch")
-
-            if map_display_mode == "Interactive":
-                gdf_map_ready = enrich_fuzzy_geo_map_labels(
-                    gdf_join=gdf_join,
-                    df_map=df_map,
-                    df_source=df_f[[COL_PROV]].dropna().copy(),
-                    source_label_col=COL_PROV,
-                )
-                fig_map, gdf_map = build_interactive_geo_map(
-                    gdf=gdf_map_ready,
-                    value_col="nb_cas_prov",
-                    label_col="_map_label",
-                    hover_metric_label="Cas",
-                    height=560,
-                )
-                if fig_map:
-                    selection_state = st.plotly_chart(
-                        fig_map,
-                        width="stretch",
-                        height=560,
-                        key="detail_province_map",
-                        on_select="rerun",
-                        selection_mode="points",
-                        config={
-                            "displayModeBar": True,
-                            "scrollZoom": True,
-                            "responsive": True,
-                            "displaylogo": False,
-                            "modeBarButtonsToAdd": ["zoomInGeo", "zoomOutGeo", "resetGeo"],
-                        },
-                    )
-                    clicked_point = get_selected_map_point(selection_state)
-                    selected_label = get_clicked_map_label(clicked_point, gdf_map, label_col="_map_label")
-                    selected_prov = _resolve_map_filter_value(
-                        selected_label,
-                        df_f[COL_PROV].dropna().unique().tolist(),
-                    )
-                    current_prov_sel = st.session_state.get("prov_sel", ["Toutes"])
-                    if selected_prov and current_prov_sel != [selected_prov]:
-                        st.session_state["map_clicked_province"] = selected_prov
-                        st.rerun()
-                    st.caption("Clique sur un point de la carte pour mettre à jour le filtre latéral.")
-                else:
-                    st.error("Impossible de générer la carte provinces.")
-            else:
-                fig = carte_statique_matplotlib(
-                    gdf=gdf_join,
-                    colonne_valeurs="nb_cas_prov",
-                    titre="RDC - Cas Cholera cumulés par province",
-                    annoter=annoter_map,
-                    mode_annotation=annoter_map_mode,
-                    nom_zone="name",
-                    fmt_valeurs="{:.0f}",
-                    seuil_affichage=float(seuil_aff),
-                    cmap="Reds",
-                    afficher_fond_carte=afficher_fond,
-                    longueur_barre_km=float(longueur_km),
-                )
-
-                if fig:
-                    st.pyplot(fig)
-                    plt.close(fig)
-                else:
-                    st.error("Impossible de générer la carte provinces.")
-        else:
-            st.info("Carte provinces: charge un GeoJSON provinces et assure-toi que la colonne Province est présente.")
-
-        st.divider()
-
-        # ---------- Zones de santé ----------
-        st.subheader("Carte des cas par zone de santé")
-        if geo_zs and Path(geo_zs).exists() and COL_ZS in df_f.columns:
-            gdfz = gpd.read_file(geo_zs)
-
-            df_carte = df_f[[COL_ZS]].dropna().copy()
-            df_carte["nb_cas_zs"] = 1
-            df_carte = df_carte.groupby(COL_ZS, as_index=False)["nb_cas_zs"].sum()
-
-            gdf_join, df_map, match_rate = joindre_donnees_fuzzy_geo(
-                carte_gdf=gdfz,
-                df_donnees=df_carte,
-                colonne_cle_geo="name",
-                colonne_cle_data=COL_ZS,
-                colonne_valeurs="nb_cas_zs",
-                seuil=seuil_match
-            )
-
-            st.caption(f"Taux de correspondance (données→carte) : {match_rate:.1%}")
-            with st.expander("Diagnostic matching ZS (pire en haut)"):
-                st.dataframe(df_map.head(50), width="stretch")
-
-            if map_display_mode == "Interactive":
-                gdf_map_ready = enrich_fuzzy_geo_map_labels(
-                    gdf_join=gdf_join,
-                    df_map=df_map,
-                    df_source=df_f[[COL_ZS]].dropna().copy(),
-                    source_label_col=COL_ZS,
-                )
-                fig_map, gdf_map = build_interactive_geo_map(
-                    gdf=gdf_map_ready,
-                    value_col="nb_cas_zs",
-                    label_col="_map_label",
-                    hover_metric_label="Cas",
-                    height=620,
-                )
-                if fig_map:
-                    selection_state = st.plotly_chart(
-                        fig_map,
-                        width="stretch",
-                        height=620,
-                        key="detail_zone_map",
-                        on_select="rerun",
-                        selection_mode="points",
-                        config={
-                            "displayModeBar": True,
-                            "scrollZoom": True,
-                            "responsive": True,
-                            "displaylogo": False,
-                            "modeBarButtonsToAdd": ["zoomInGeo", "zoomOutGeo", "resetGeo"],
-                        },
-                    )
-                    clicked_point = get_selected_map_point(selection_state)
-                    selected_label = get_clicked_map_label(clicked_point, gdf_map, label_col="_map_label")
-                    selected_zone = _resolve_map_filter_value(
-                        selected_label,
-                        df_f[COL_ZS].dropna().unique().tolist(),
-                    )
-                    current_zs_sel = st.session_state.get("zs_sel", ["Toutes"])
-                    if selected_zone and current_zs_sel != [selected_zone]:
-                        st.session_state["map_clicked_zone"] = selected_zone
-                        st.rerun()
-                    st.caption("Clique sur un point de la carte pour mettre à jour le filtre latéral.")
-                else:
-                    st.error("Impossible de générer la carte ZS.")
-            else:
-                fig = carte_statique_matplotlib(
-                    gdf=gdf_join,
-                    colonne_valeurs="nb_cas_zs",
-                    titre="RDC - Cas Cholera cumulés par zone",
-                    annoter=annoter_map,
-                    mode_annotation=annoter_map_mode,
-                    nom_zone="name",
-                    fmt_valeurs="{:.0f}",
-                    seuil_affichage=float(seuil_aff),
-                    cmap="Reds",
-                    afficher_fond_carte=afficher_fond,
-                    longueur_barre_km=float(longueur_km),
-                )
-
-                if fig:
-                    st.pyplot(fig)
-                    plt.close(fig)
-                else:
-                    st.error("Impossible de générer la carte ZS.")
-        else:
-            st.info("Carte ZS: charge un GeoJSON ZS et assure-toi que la colonne Zone de santé est présente.")
+with tab_maps:
+    render_detailed_maps_tab(
+        df_f=df_f,
+        show_maps=show_maps,
+        idsr_mode=IDSR_MODE,
+    )
 
 render_footer()

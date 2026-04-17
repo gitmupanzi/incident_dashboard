@@ -1317,6 +1317,7 @@ def plot_pyramide_symetrique(
     afficher_signe_negatif: bool = True,
     afficher_signe_negatif_dans_label: bool = True,
     croissant: bool = True,
+    hauteur: int = 430,
 ) -> Optional[go.Figure]:
 
     if not verifier_presence_colonnes(df, [col_categorie, col_groupe]):
@@ -1370,14 +1371,22 @@ def plot_pyramide_symetrique(
 
     max_val = max(abs(counts["Nombre de cas"]))
     fig.update_layout(
+        barmode="relative",
         xaxis=dict(
             tickvals=[-max_val, 0, max_val],
             ticktext=[str(max_val), "0", str(max_val)],
+            automargin=True,
         ),
         bargap=0.1,
         template="plotly_white",
         yaxis=dict(categoryorder="array", categoryarray=ordre_categories),
+        height=int(hauteur),
+        margin=dict(t=52, b=44, l=72, r=56),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+        uniformtext_minsize=8,
+        uniformtext_mode="hide",
     )
+    fig.update_yaxes(automargin=True)
     return fig
 
 def graphique_pyramide_age(

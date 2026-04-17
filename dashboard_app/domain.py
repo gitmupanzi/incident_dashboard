@@ -37,6 +37,36 @@ DATE_RES   = "Date_resultat"
 DATE_RECEP = "Date_reception_labo"
 DATE_ISSUE = "Date_issue"
 
+PROVINCE_PATTERNS = [
+    (r"^\s*bas[\s_-]*uele\s*$", "Bas Uele"),
+    (r"^\s*equateur\s*$", "Equateur"),
+    (r"^\s*haut[\s_-]*katanga\s*$", "Haut Katanga"),
+    (r"^\s*haut[\s_-]*lomami\s*$", "Haut Lomami"),
+    (r"^\s*haut[\s_-]*uele\s*$", "Haut Uele"),
+    (r"^\s*ituri\s*$", "Ituri"),
+    (r"^\s*kasai[\s_-]*central\s*$", "Kasai Central"),
+    (r"^\s*kasai\s*$", "Kasai"),
+    (r"^\s*kinshasa\s*$", "Kinshasa"),
+    (r"^\s*kongo[\s_-]*central\s*$", "Kongo Central"),
+    (r"^\s*kasai[\s_-]*oriental\s*$", "Kasai Oriental"),
+    (r"^\s*kwango\s*$", "Kwango"),
+    (r"^\s*kwilu\s*$", "Kwilu"),
+    (r"^\s*lomami\s*$", "Lomami"),
+    (r"^\s*lualaba\s*$", "Lualaba"),
+    (r"^\s*mai[\s_-]*ndombe\s*$", "Maindombe"),
+    (r"^\s*maindombe\s*$", "Maindombe"),
+    (r"^\s*maniema\s*$", "Maniema"),
+    (r"^\s*mongala\s*$", "Mongala"),
+    (r"^\s*nord[\s_-]*kivu\s*$", "Nord Kivu"),
+    (r"^\s*nord[\s_-]*ubangi\s*$", "Nord Ubangi"),
+    (r"^\s*sankuru\s*$", "Sankuru"),
+    (r"^\s*sud[\s_-]*kivu\s*$", "Sud Kivu"),
+    (r"^\s*sud[\s_-]*ubangi\s*$", "Sud Ubangi"),
+    (r"^\s*tanganyika\s*$", "Tanganyika"),
+    (r"^\s*tshuapa\s*$", "Tshuapa"),
+    (r"^\s*tshopo\s*$", "Tshopo"),
+]
+
 
 # =========================
 # SECTION: STANDARDISATION MULTI-MALADIES
@@ -2199,6 +2229,18 @@ def _norm_key(x: str) -> str:
     x = re.sub(r"\s+", " ", x).strip()
     return x
 
+
+def _normalize_province_name_for_matching(x: str) -> str:
+    if x is None:
+        return ""
+    cleaned = str(x).strip()
+    cleaned = "".join(c for c in unicodedata.normalize("NFD", cleaned) if unicodedata.category(c) != "Mn")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    for pattern, province_name in PROVINCE_PATTERNS:
+        if re.match(pattern, cleaned, flags=re.IGNORECASE):
+            return province_name
+    return cleaned
+
 def _fuzzy_best_match(query, choices):
     """Retourne (best_choice, score_0_1)."""
     if not choices:
@@ -2224,10 +2266,17 @@ def joindre_donnees_fuzzy_geo(
     seuil=0.90,
 ):
     gdf = carte_gdf.copy()
+    use_province_cleaning = str(colonne_cle_data).strip() == COL_PROV
 
-    gdf["_key_geo"] = gdf[colonne_cle_geo].astype(str).map(_norm_key)
+    if use_province_cleaning:
+        gdf["_key_geo"] = gdf[colonne_cle_geo].astype(str).map(_normalize_province_name_for_matching).map(_norm_key)
+    else:
+        gdf["_key_geo"] = gdf[colonne_cle_geo].astype(str).map(_norm_key)
     d = df_donnees.copy()
-    d["_key_data"] = d[colonne_cle_data].astype(str).map(_norm_key)
+    if use_province_cleaning:
+        d["_key_data"] = d[colonne_cle_data].astype(str).map(_normalize_province_name_for_matching).map(_norm_key)
+    else:
+        d["_key_data"] = d[colonne_cle_data].astype(str).map(_norm_key)
 
     if colonne_valeurs in d.columns:
         df_grouped = d.groupby("_key_data", as_index=False)[colonne_valeurs].sum()

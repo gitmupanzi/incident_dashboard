@@ -285,6 +285,72 @@ def resolve_week_column(df_: pd.DataFrame) -> Optional[str]:
     return None
 
 
+def _extract_iso_week_bounds(df_: pd.DataFrame) -> tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]:
+    """DÃ©duit la borne min/max Ã  partir des semaines ISO disponibles dans les donnÃ©es filtrÃ©es."""
+    week_pairs = pd.DataFrame(columns=["year", "week"])
+
+    if "YW" in df_.columns and df_["YW"].notna().any():
+        extracted = (
+            df_["YW"]
+            .astype("string")
+            .dropna()
+            .str.extract(r"(?P<year>\d{4}).*?W(?P<week>\d{1,2})")
+        )
+        extracted["year"] = pd.to_numeric(extracted["year"], errors="coerce")
+        extracted["week"] = pd.to_numeric(extracted["week"], errors="coerce")
+        week_pairs = extracted.dropna(subset=["year", "week"]).copy()
+    elif COL_YEAR in df_.columns and COL_WNUM in df_.columns:
+        week_pairs = pd.DataFrame(
+            {
+                "year": pd.to_numeric(df_[COL_YEAR], errors="coerce"),
+                "week": pd.to_numeric(df_[COL_WNUM], errors="coerce"),
+            }
+        ).dropna(subset=["year", "week"]).copy()
+
+    if week_pairs.empty:
+        return None, None
+
+    week_pairs["year"] = week_pairs["year"].astype(int)
+    week_pairs["week"] = week_pairs["week"].astype(int)
+    week_pairs = week_pairs[(week_pairs["week"] >= 1) & (week_pairs["week"] <= 53)].drop_duplicates()
+    if week_pairs.empty:
+        return None, None
+
+    bounds: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for row in week_pairs.itertuples(index=False):
+        try:
+            start = pd.Timestamp.fromisocalendar(int(row.year), int(row.week), 1)
+            end = pd.Timestamp.fromisocalendar(int(row.year), int(row.week), 7)
+            bounds.append((start, end))
+        except ValueError:
+            continue
+
+    if not bounds:
+        return None, None
+
+    return min(v[0] for v in bounds), max(v[1] for v in bounds)
+
+
+def compute_analysis_period_value(df_: pd.DataFrame) -> str:
+    """Construit une pÃ©riode cohÃ©rente avec la fenÃªtre analytique affichÃ©e."""
+    week_start, week_end = _extract_iso_week_bounds(df_)
+    if week_start is not None and week_end is not None:
+        return f"{week_start:%d/%m/%Y} -> {week_end:%d/%m/%Y}"
+
+    date_candidates = []
+    for col in [DATE_ONSET, DATE_NOTIF]:
+        if col in df_.columns:
+            s = pd.to_datetime(df_[col], errors="coerce")
+            if s.notna().any():
+                date_candidates.append((col, s.min(), s.max(), int(s.notna().sum())))
+
+    if date_candidates:
+        _, dmin, dmax, _ = max(date_candidates, key=lambda item: item[3])
+        return f"{dmin:%d/%m/%Y} -> {dmax:%d/%m/%Y}"
+
+    return "-"
+
+
 def build_weekly_overview_table(df_: pd.DataFrame) -> pd.DataFrame:
     """Construit la série hebdomadaire standard utilisée dans la page d'accueil."""
     week_col = resolve_week_column(df_)
@@ -348,6 +414,7 @@ def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
     latest = weekly.iloc[-1].to_dict() if not weekly.empty else {}
     previous = weekly.iloc[-2].to_dict() if len(weekly) > 1 else {}
     promptitude_pct, promptitude_n = pct_under_threshold(df_.get("delai_onset_to_adm"), get_session_int("seuil_jours", 2))
+    analysis_period = compute_analysis_period_value(df_)
 
     return {
         "cases": int(kpi["n_cases"]),
@@ -368,6 +435,7 @@ def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
         "previous": previous,
         "promptitude_pct": promptitude_pct,
         "promptitude_n": promptitude_n,
+        "analysis_period": analysis_period,
         "top_province": _safe_top_label(df_, COL_PROV),
         "top_zs": _safe_top_label(df_, COL_ZS),
     }
@@ -380,10 +448,10 @@ def render_context_row(files_used: list[str], disease_key: str, df_: pd.DataFram
     if len(source_value) > 42:
         source_value = source_value[:39] + "..."
 
-    if DATE_NOTIF in df_.columns and pd.to_datetime(df_[DATE_NOTIF], errors="coerce").notna().any():
-        notif_dates = pd.to_datetime(df_[DATE_NOTIF], errors="coerce")
-        period_value = f"{notif_dates.min():%d/%m/%Y} -> {notif_dates.max():%d/%m/%Y}"
-    else:
+    period_value = payload.get("analysis_period", "-")
+    if period_value == "-":
+        period_value = compute_analysis_period_value(df_)
+    if period_value == "-":
         period_value = payload.get("week_span", "-")
 
     chips = [
@@ -594,5 +662,588 @@ def render_interactive_map_overview(
 
     st.caption(note)
     st.caption("Clique sur un point de la carte pour filtrer le tableau de bord.")
+
+
+def _upload_geojson_to_temp(upl_obj, suffix: str = ".geojson"):
+    """Persist a Streamlit upload to a temporary file so geopandas can read it."""
+    if upl_obj is None:
+        return None
+    data = upl_obj.getvalue()
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp.write(data)
+    tmp.flush()
+    tmp.close()
+    return tmp.name
+
+
+def _render_detailed_geo_level_map(
+    df_f: pd.DataFrame,
+    geo_path: Optional[str],
+    level_label: str,
+    group_col: str,
+    value_col: str,
+    chart_key: str,
+    clicked_state_key: str,
+    filter_state_key: str,
+    match_threshold: float,
+    map_display_mode: str,
+    annoter_map: bool,
+    annoter_map_mode: str,
+    seuil_aff: float,
+    afficher_fond: bool,
+    longueur_km: float,
+    height: int,
+    static_title: str,
+) -> None:
+    """Render one detailed map level with shared controls and filter synchronization."""
+    st.subheader(f"Carte des cas par {level_label}")
+    if not (geo_path and Path(geo_path).exists() and group_col in df_f.columns):
+        st.info(f"Carte {level_label}: charge un GeoJSON {level_label} et assure-toi que la colonne requise est présente.")
+        return
+
+    gdf_geo = gpd.read_file(geo_path)
+    df_carte = df_f[[group_col]].dropna().copy()
+    df_carte[value_col] = 1
+    df_carte = df_carte.groupby(group_col, as_index=False)[value_col].sum()
+
+    gdf_join, df_map, match_rate = joindre_donnees_fuzzy_geo(
+        carte_gdf=gdf_geo,
+        df_donnees=df_carte,
+        colonne_cle_geo="name",
+        colonne_cle_data=group_col,
+        colonne_valeurs=value_col,
+        seuil=match_threshold,
+    )
+
+    st.caption(f"Taux de correspondance (données→carte) : {match_rate:.1%}")
+    with st.expander(f"Diagnostic matching {level_label} (pire en haut)"):
+        st.dataframe(df_map.head(50), width="stretch")
+
+    if map_display_mode == "Interactive":
+        gdf_map_ready = enrich_fuzzy_geo_map_labels(
+            gdf_join=gdf_join,
+            df_map=df_map,
+            df_source=df_f[[group_col]].dropna().copy(),
+            source_label_col=group_col,
+        )
+        fig_map, gdf_map = build_interactive_geo_map(
+            gdf=gdf_map_ready,
+            value_col=value_col,
+            label_col="_map_label",
+            hover_metric_label="Cas",
+            height=height,
+        )
+        if fig_map:
+            selection_state = st.plotly_chart(
+                fig_map,
+                width="stretch",
+                height=height,
+                key=chart_key,
+                on_select="rerun",
+                selection_mode="points",
+                config={
+                    "displayModeBar": True,
+                    "scrollZoom": True,
+                    "responsive": True,
+                    "displaylogo": False,
+                    "modeBarButtonsToAdd": ["zoomInGeo", "zoomOutGeo", "resetGeo"],
+                },
+            )
+            clicked_point = get_selected_map_point(selection_state)
+            selected_label = get_clicked_map_label(clicked_point, gdf_map, label_col="_map_label")
+            selected_value = _resolve_map_filter_value(
+                selected_label,
+                df_f[group_col].dropna().unique().tolist(),
+            )
+            current_filter = st.session_state.get(filter_state_key, ["Toutes"])
+            if selected_value and current_filter != [selected_value]:
+                st.session_state[clicked_state_key] = selected_value
+                st.rerun()
+            st.caption("Clique sur un point de la carte pour mettre à jour le filtre latéral.")
+        else:
+            st.error(f"Impossible de générer la carte {level_label}.")
+    else:
+        fig = carte_statique_matplotlib(
+            gdf=gdf_join,
+            colonne_valeurs=value_col,
+            titre=static_title,
+            annoter=annoter_map,
+            mode_annotation=annoter_map_mode,
+            nom_zone="name",
+            fmt_valeurs="{:.0f}",
+            seuil_affichage=float(seuil_aff),
+            cmap="Reds",
+            afficher_fond_carte=afficher_fond,
+            longueur_barre_km=float(longueur_km),
+        )
+
+        if fig:
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.error(f"Impossible de générer la carte {level_label}.")
+
+
+def render_detailed_maps_tab(
+    df_f: pd.DataFrame,
+    show_maps: bool,
+    idsr_mode: bool,
+) -> None:
+    """Render the detailed cartography tab for line-list analysis."""
+    render_section_title(7, "Cartographie détaillée de la distribution géographique")
+    tab_help(
+        "Comment lire cet onglet",
+        """
+        **🎯 Objectif** : explorer la distribution géographique des notifications à un niveau plus détaillé.
+
+        **✅ Inclus**
+        - Cartes province et zone de santé
+        - Mode statique ou interactif
+        - Synchronisation carte → filtres géographiques
+        - Diagnostic de matching entre les données et les GeoJSON
+        """,
+        expanded=False,
+    )
+
+    if idsr_mode:
+        st.info("La cartographie détaillée de cet onglet est disponible pour les analyses de listes linéaires. En mode IDSR agrégé, utilisez l’onglet IDSR pour les analyses géographiques disponibles.")
+        return
+
+    if not show_maps:
+        st.markdown(
+            """
+            <div class="cousp-detail-empty">
+                <strong>Cartographie prête à être activée</strong>
+                Activez l’option correspondante dans la barre latérale pour afficher les cartes détaillées, charger des GeoJSON personnalisés et utiliser la synchronisation avec les filtres géographiques.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    if gpd is None:
+        st.warning("geopandas n'est pas installé. Ajoute 'geopandas' dans requirements.txt si tu veux les cartes.")
+        return
+
+    st.caption("Cartes provinces / zones avec mode statique ou interactif. Jointure fuzzy tolérante sur 'name'.")
+
+    geo_prov_default = "data/geometry_rdc_provinces.geojson"
+    geo_zs_default = "data/geometry_rdc_zones_sante.geojson"
+    with st.expander("GeoJSON personnalisés (optionnel)", expanded=False):
+        st.caption("Utilise les fichiers du dépôt par défaut, ou remplace-les ici si tu veux des fonds de carte spécifiques.")
+
+        up_col1, up_col2 = st.columns(2)
+        with up_col1:
+            geo_prov_upl = st.file_uploader(
+                "📍 Provinces",
+                type=["geojson", "json"],
+                key="geojson_prov",
+            )
+            if Path(geo_prov_default).exists():
+                st.caption("Par défaut : GeoJSON provinces du dépôt.")
+            else:
+                st.caption("Aucun GeoJSON provinces par défaut détecté.")
+        with up_col2:
+            geo_zs_upl = st.file_uploader(
+                "📍 Zones de santé",
+                type=["geojson", "json"],
+                key="geojson_zs",
+            )
+            if Path(geo_zs_default).exists():
+                st.caption("Par défaut : GeoJSON zones de santé du dépôt.")
+            else:
+                st.caption("Aucun GeoJSON zones de santé par défaut détecté.")
+
+        col_reset1, col_reset2 = st.columns([1, 3])
+        with col_reset1:
+            if st.button("↩️ Réinitialiser", key="reset_geojson_uploads"):
+                st.session_state["geojson_prov"] = None
+                st.session_state["geojson_zs"] = None
+                st.rerun()
+        with col_reset2:
+            st.caption("Réinitialise les uploads et revient aux GeoJSON par défaut du dépôt (si présents).")
+
+    geo_prov = _upload_geojson_to_temp(geo_prov_upl) or (geo_prov_default if Path(geo_prov_default).exists() else None)
+    geo_zs = _upload_geojson_to_temp(geo_zs_upl) or (geo_zs_default if Path(geo_zs_default).exists() else None)
+
+    with st.expander("Paramètres avancés des cartes", expanded=False):
+        seuil_match = st.slider("Seuil de matching (fuzzy)", 0.70, 1.00, 0.90, 0.01)
+        map_display_mode = st.radio(
+            "Mode de carte",
+            ["Statique", "Interactive"],
+            index=0,
+            horizontal=True,
+            key="detail_map_display_mode",
+        )
+        annoter_map_label = st.selectbox(
+            "Contenu des annotations",
+            options=list(MAP_ANNOTATION_MODE_OPTIONS.keys()),
+            index=3,
+            key="detail_map_annotation_mode",
+        )
+        annoter_map_mode = MAP_ANNOTATION_MODE_OPTIONS[annoter_map_label]
+        annoter_map = annoter_map_mode != "aucun"
+        seuil_aff = st.number_input("Seuil affichage annotation (valeur >)", min_value=0, max_value=100000, value=1, step=1)
+        afficher_fond = False
+        longueur_km = 50
+        if map_display_mode == "Statique":
+            afficher_fond = st.checkbox("Afficher fond de carte (contextily)", value=False)
+            longueur_km = st.number_input("Longueur barre échelle (km)", min_value=5, max_value=300, value=50, step=5)
+        else:
+            st.info("Mode interactif activé : clique sur une zone de la carte pour synchroniser les filtres géographiques.")
+
+    _render_detailed_geo_level_map(
+        df_f=df_f,
+        geo_path=geo_prov,
+        level_label="province",
+        group_col=COL_PROV,
+        value_col="nb_cas_prov",
+        chart_key="detail_province_map",
+        clicked_state_key="map_clicked_province",
+        filter_state_key="prov_sel",
+        match_threshold=seuil_match,
+        map_display_mode=map_display_mode,
+        annoter_map=annoter_map,
+        annoter_map_mode=annoter_map_mode,
+        seuil_aff=seuil_aff,
+        afficher_fond=afficher_fond,
+        longueur_km=longueur_km,
+        height=560,
+        static_title="RDC - Cas notifiés par province",
+    )
+
+    st.divider()
+
+    _render_detailed_geo_level_map(
+        df_f=df_f,
+        geo_path=geo_zs,
+        level_label="zone de santé",
+        group_col=COL_ZS,
+        value_col="nb_cas_zs",
+        chart_key="detail_zone_map",
+        clicked_state_key="map_clicked_zone",
+        filter_state_key="zs_sel",
+        match_threshold=seuil_match,
+        map_display_mode=map_display_mode,
+        annoter_map=annoter_map,
+        annoter_map_mode=annoter_map_mode,
+        seuil_aff=seuil_aff,
+        afficher_fond=afficher_fond,
+        longueur_km=longueur_km,
+        height=620,
+        static_title="RDC - Cas notifiés par zone de santé",
+    )
+
+
+def _render_idsr_geo_level_map(
+    df_f: pd.DataFrame,
+    geo_path: Optional[str],
+    level_label: str,
+    group_col: str,
+    cases_col: str,
+    chart_key: str,
+    filter_state_key: str,
+    clear_state_keys: list[str],
+    match_threshold: float,
+    map_display_mode: str,
+    annoter_map: bool,
+    annoter_map_mode: str,
+    seuil_aff: float,
+    afficher_fond: bool,
+    longueur_km: float,
+    height: int,
+    static_title: str,
+) -> None:
+    """Render a detailed IDSR map aggregated on Total_cas and sync the IDSR filters."""
+    st.subheader(f"Carte des cas agrégés par {level_label}")
+    if not (geo_path and Path(geo_path).exists() and group_col in df_f.columns and cases_col in df_f.columns):
+        st.info(f"Carte {level_label}: charge un GeoJSON {level_label} et assure-toi que les colonnes requises sont présentes.")
+        return
+
+    df_carte = df_f[[group_col, cases_col]].copy()
+    df_carte[cases_col] = pd.to_numeric(df_carte[cases_col], errors="coerce").fillna(0)
+    df_carte = df_carte[df_carte[group_col].notna()].copy()
+    if df_carte.empty:
+        st.info(f"Aucune donnée exploitable n'est disponible pour la carte {level_label}.")
+        return
+
+    gdf_geo = gpd.read_file(geo_path)
+    df_carte = df_carte.groupby(group_col, as_index=False)[cases_col].sum()
+
+    gdf_join, df_map, match_rate = joindre_donnees_fuzzy_geo(
+        carte_gdf=gdf_geo,
+        df_donnees=df_carte,
+        colonne_cle_geo="name",
+        colonne_cle_data=group_col,
+        colonne_valeurs=cases_col,
+        seuil=match_threshold,
+    )
+
+    st.caption(f"Taux de correspondance (données→carte) : {match_rate:.1%}")
+    with st.expander(f"Diagnostic matching {level_label} (pire en haut)"):
+        st.dataframe(df_map.head(50), width="stretch")
+
+    if map_display_mode == "Interactive":
+        gdf_map_ready = enrich_fuzzy_geo_map_labels(
+            gdf_join=gdf_join,
+            df_map=df_map,
+            df_source=df_f[[group_col]].dropna().copy(),
+            source_label_col=group_col,
+        )
+        fig_map, gdf_map = build_interactive_geo_map(
+            gdf=gdf_map_ready,
+            value_col=cases_col,
+            label_col="_map_label",
+            hover_metric_label="Cas",
+            height=height,
+        )
+        if fig_map is not None:
+            selection_state = st.plotly_chart(
+                fig_map,
+                width="stretch",
+                height=height,
+                key=chart_key,
+                on_select="rerun",
+                selection_mode="points",
+                config={
+                    "displayModeBar": True,
+                    "scrollZoom": True,
+                    "responsive": True,
+                    "displaylogo": False,
+                    "modeBarButtonsToAdd": ["zoomInGeo", "zoomOutGeo", "resetGeo"],
+                },
+            )
+            clicked_point = get_selected_map_point(selection_state)
+            selected_label = get_clicked_map_label(clicked_point, gdf_map, label_col="_map_label")
+            selected_value = _resolve_map_filter_value(
+                selected_label,
+                df_f[group_col].dropna().unique().tolist(),
+            )
+            current_filter = st.session_state.get(filter_state_key, [])
+            if selected_value and current_filter != [selected_value]:
+                st.session_state[filter_state_key] = [selected_value]
+                for clear_key in clear_state_keys:
+                    st.session_state[clear_key] = []
+                st.rerun()
+            st.caption("Clique sur une zone pour mettre à jour les filtres IDSR.")
+        else:
+            st.error(f"Impossible de générer la carte {level_label}.")
+    else:
+        fig = carte_statique_matplotlib(
+            gdf=gdf_join,
+            colonne_valeurs=cases_col,
+            titre=static_title,
+            annoter=annoter_map,
+            mode_annotation=annoter_map_mode,
+            nom_zone="name",
+            fmt_valeurs="{:.0f}",
+            seuil_affichage=float(seuil_aff),
+            cmap="Reds",
+            afficher_fond_carte=afficher_fond,
+            longueur_barre_km=float(longueur_km),
+        )
+        if fig:
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.error(f"Impossible de générer la carte {level_label}.")
+
+
+def render_idsr_maps_section(
+    df_f: pd.DataFrame,
+    province_col: str,
+    zs_col: Optional[str],
+    cases_col: str = "Total_cas",
+) -> None:
+    """Render detailed IDSR maps with static/interactive modes."""
+    st.markdown("### Cartographie IDSR détaillée")
+    st.caption("Cartes provinces / zones de santé sur les cas agrégés filtrés, avec modes statique et interactif.")
+    if "idsr_show_detailed_maps" not in st.session_state:
+        st.session_state["idsr_show_detailed_maps"] = False
+
+    cases_total = (
+        pd.to_numeric(df_f[cases_col], errors="coerce").fillna(0).sum()
+        if cases_col in df_f.columns
+        else 0
+    )
+    provinces_total = (
+        int(df_f[province_col].dropna().nunique())
+        if province_col in df_f.columns
+        else 0
+    )
+    zs_total = (
+        int(df_f[zs_col].dropna().nunique())
+        if zs_col and zs_col in df_f.columns
+        else 0
+    )
+
+    with st.expander(
+        "Cartographie IDSR détaillée",
+        expanded=bool(st.session_state.get("idsr_show_detailed_maps", False)),
+    ):
+        r1, r2, r3 = st.columns(3)
+        r1.metric("Cas agrégés", f"{int(cases_total):,}".replace(",", " "))
+        r2.metric("Provinces", f"{provinces_total:,}".replace(",", " "))
+        r3.metric("Zones de santé", f"{zs_total:,}".replace(",", " "))
+
+        if st.session_state.get("idsr_show_detailed_maps", False):
+            st.caption("La cartographie détaillée est active. Tu peux la refermer si tu veux alléger la page.")
+            if st.button("Masquer la cartographie", key="idsr_hide_detailed_maps"):
+                st.session_state["idsr_show_detailed_maps"] = False
+                st.rerun()
+        else:
+            st.caption("Charge les cartes uniquement quand tu en as besoin, avec GeoJSON personnalisés et interactions carte → filtres.")
+            if st.button("Charger la cartographie", key="idsr_open_detailed_maps"):
+                st.session_state["idsr_show_detailed_maps"] = True
+                st.rerun()
+
+    if not st.session_state.get("idsr_show_detailed_maps", False):
+        return
+
+    if gpd is None:
+        st.warning("geopandas n'est pas installé. Ajoute 'geopandas' dans requirements.txt si tu veux les cartes IDSR.")
+        return
+
+    geo_prov_default = "data/geometry_rdc_provinces.geojson"
+    geo_zs_default = "data/geometry_rdc_zones_sante.geojson"
+    with st.expander("GeoJSON personnalisés (optionnel)", expanded=False):
+        st.caption("Utilise les fichiers du dépôt par défaut, ou remplace-les ici si tu veux des fonds de carte spécifiques.")
+
+        up_col1, up_col2 = st.columns(2)
+        with up_col1:
+            geo_prov_upl = st.file_uploader(
+                "📍 Provinces IDSR",
+                type=["geojson", "json"],
+                key="idsr_geojson_prov",
+            )
+            if Path(geo_prov_default).exists():
+                st.caption("Par défaut : GeoJSON provinces du dépôt.")
+            else:
+                st.caption("Aucun GeoJSON provinces par défaut détecté.")
+        with up_col2:
+            geo_zs_upl = st.file_uploader(
+                "📍 Zones de santé IDSR",
+                type=["geojson", "json"],
+                key="idsr_geojson_zs",
+            )
+            if Path(geo_zs_default).exists():
+                st.caption("Par défaut : GeoJSON zones de santé du dépôt.")
+            else:
+                st.caption("Aucun GeoJSON zones de santé par défaut détecté.")
+
+        col_reset1, col_reset2 = st.columns([1, 3])
+        with col_reset1:
+            if st.button("↩️ Réinitialiser", key="idsr_reset_geojson_uploads"):
+                st.session_state["idsr_geojson_prov"] = None
+                st.session_state["idsr_geojson_zs"] = None
+                st.rerun()
+        with col_reset2:
+            st.caption("Réinitialise les GeoJSON IDSR téléversés et revient aux fichiers par défaut du dépôt.")
+
+    geo_prov = _upload_geojson_to_temp(geo_prov_upl) or (geo_prov_default if Path(geo_prov_default).exists() else None)
+    geo_zs = _upload_geojson_to_temp(geo_zs_upl) or (geo_zs_default if Path(geo_zs_default).exists() else None)
+
+    with st.expander("Paramètres avancés des cartes IDSR", expanded=False):
+        seuil_match = st.slider("Seuil de matching (fuzzy)", 0.70, 1.00, 0.90, 0.01, key="idsr_map_match_threshold")
+        map_display_mode = st.radio(
+            "Mode de carte",
+            ["Statique", "Interactive"],
+            index=0,
+            horizontal=True,
+            key="idsr_map_display_mode",
+        )
+        annoter_map_label = st.selectbox(
+            "Contenu des annotations",
+            options=list(MAP_ANNOTATION_MODE_OPTIONS.keys()),
+            index=3,
+            key="idsr_map_annotation_mode",
+        )
+        annoter_map_mode = MAP_ANNOTATION_MODE_OPTIONS[annoter_map_label]
+        annoter_map = annoter_map_mode != "aucun"
+        seuil_aff = st.number_input(
+            "Seuil affichage annotation (valeur >)",
+            min_value=0,
+            max_value=100000,
+            value=1,
+            step=1,
+            key="idsr_map_annotation_threshold",
+        )
+        afficher_fond = False
+        longueur_km = 50
+        if map_display_mode == "Statique":
+            afficher_fond = st.checkbox("Afficher fond de carte (contextily)", value=False, key="idsr_map_show_background")
+            longueur_km = st.number_input(
+                "Longueur barre échelle (km)",
+                min_value=5,
+                max_value=300,
+                value=50,
+                step=5,
+                key="idsr_map_scale_km",
+            )
+        else:
+            st.info("Mode interactif activé : clique sur une zone pour mettre à jour les filtres IDSR.")
+
+    if zs_col:
+        col_prov, col_zs = st.columns(2)
+        with col_prov:
+            _render_idsr_geo_level_map(
+                df_f=df_f,
+                geo_path=geo_prov,
+                level_label="province",
+                group_col=province_col,
+                cases_col=cases_col,
+                chart_key="idsr_detail_province_map",
+                filter_state_key="tab9_prov_sel",
+                clear_state_keys=["tab9_zs_sel"],
+                match_threshold=seuil_match,
+                map_display_mode=map_display_mode,
+                annoter_map=annoter_map,
+                annoter_map_mode=annoter_map_mode,
+                seuil_aff=seuil_aff,
+                afficher_fond=afficher_fond,
+                longueur_km=longueur_km,
+                height=560,
+                static_title="RDC - Cas agrégés IDSR par province",
+            )
+        with col_zs:
+            _render_idsr_geo_level_map(
+                df_f=df_f,
+                geo_path=geo_zs,
+                level_label="zone de santé",
+                group_col=zs_col,
+                cases_col=cases_col,
+                chart_key="idsr_detail_zs_map",
+                filter_state_key="tab9_zs_sel",
+                clear_state_keys=["tab9_prov_sel"],
+                match_threshold=seuil_match,
+                map_display_mode=map_display_mode,
+                annoter_map=annoter_map,
+                annoter_map_mode=annoter_map_mode,
+                seuil_aff=seuil_aff,
+                afficher_fond=afficher_fond,
+                longueur_km=longueur_km,
+                height=620,
+                static_title="RDC - Cas agrégés IDSR par zone de santé",
+            )
+    else:
+        _render_idsr_geo_level_map(
+            df_f=df_f,
+            geo_path=geo_prov,
+            level_label="province",
+            group_col=province_col,
+            cases_col=cases_col,
+            chart_key="idsr_detail_province_map",
+            filter_state_key="tab9_prov_sel",
+            clear_state_keys=["tab9_zs_sel"],
+            match_threshold=seuil_match,
+            map_display_mode=map_display_mode,
+            annoter_map=annoter_map,
+            annoter_map_mode=annoter_map_mode,
+            seuil_aff=seuil_aff,
+            afficher_fond=afficher_fond,
+            longueur_km=longueur_km,
+            height=560,
+            static_title="RDC - Cas agrégés IDSR par province",
+        )
 
 
