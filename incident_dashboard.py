@@ -73,8 +73,8 @@ st.sidebar.header("Période")
 year_filter_slot = st.sidebar.container()
 use_week_filter = st.sidebar.checkbox(
     "Filtrer sur la semaine épidémiologique",
-    value=False,
-    help="Désactivé par défaut pour éviter de restreindre l'analyse à la semaine 1 au premier chargement.",
+    value=True,
+    help="Activé par défaut. La fenêtre initiale couvre toute l'année épidémiologique (semaine 1 à 53).",
 )
 week_min = st.sidebar.number_input(
     "Semaine min",
@@ -723,8 +723,18 @@ def render_overview_dashboard(
                 seuil_min=0,
                 croissant=True,
                 afficher_signe_negatif_dans_label=False,
-                hauteur=430,
             )
+            if fig_pyr is not None:
+                fig_pyr.update_layout(
+                    height=430,
+                    margin=dict(t=52, b=44, l=72, r=56),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+                    uniformtext_minsize=8,
+                    uniformtext_mode="hide",
+                    barmode="relative",
+                )
+                fig_pyr.update_xaxes(automargin=True)
+                fig_pyr.update_yaxes(automargin=True)
             st_plot(fig_pyr, key="overview_pyramid", height=430, annotate_values=False)
         else:
             st.info("Pyramide indisponible : variables Age/Sexe insuffisantes.")
