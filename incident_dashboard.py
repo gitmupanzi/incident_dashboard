@@ -719,7 +719,7 @@ def render_overview_dashboard(
                 col_categorie="Tranche_age_5ans_dashboard",
                 col_groupe=COL_SEX,
                 valeurs_neg=["Masculin", "Homme", "M"],
-                titre="Pyramide age-sexe des cas",
+                titre=None,
                 seuil_min=0,
                 croissant=True,
                 afficher_signe_negatif_dans_label=False,
@@ -727,7 +727,7 @@ def render_overview_dashboard(
             if fig_pyr is not None:
                 fig_pyr.update_layout(
                     height=430,
-                    margin=dict(t=52, b=44, l=72, r=56),
+                    margin=dict(t=18, b=44, l=72, r=56),
                     legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
                     uniformtext_minsize=8,
                     uniformtext_mode="hide",

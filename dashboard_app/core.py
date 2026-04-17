@@ -1329,15 +1329,6 @@ def plot_pyramide_symetrique(
         logger.info("[INFO] Aucun groupe ne correspond au seuil minimal.")
         return None
 
-    if valeurs_neg is not None and afficher_signe_negatif:
-        valeurs_neg_lower = {v.lower() for v in valeurs_neg}
-        counts["Nombre de cas"] = counts.apply(
-            lambda row: -row["Nombre de cas"]
-            if str(row[col_groupe]).lower() in valeurs_neg_lower
-            else row["Nombre de cas"],
-            axis=1,
-        )
-
     if not afficher_signe_negatif_dans_label:
         counts["label_text"] = counts["Nombre de cas"].abs().astype(str)
     else:
@@ -1355,34 +1346,89 @@ def plot_pyramide_symetrique(
 
     counts[col_categorie] = pd.Categorical(counts[col_categorie], categories=ordre_categories, ordered=True)
 
-    fig = px.bar(
-        counts,
-        y=col_categorie,
-        x="Nombre de cas",
-        color=col_groupe,
-        orientation="h",
-        title=titre,
-        labels={col_categorie: col_categorie, "Nombre de cas": "Nombre de cas", col_groupe: col_groupe},
-        text="label_text",
-        color_discrete_sequence=px.colors.qualitative.Set1,
+    sexe_display_map = {
+        "feminin": "Feminin",
+        "féminin": "Feminin",
+        "f": "Feminin",
+        "female": "Feminin",
+        "femme": "Feminin",
+        "masculin": "Masculin",
+        "m": "Masculin",
+        "male": "Masculin",
+        "homme": "Masculin",
+    }
+    counts["_groupe_display"] = counts[col_groupe].apply(
+        lambda value: sexe_display_map.get(str(value).strip().lower(), str(value).strip())
     )
 
-    fig.update_traces(texttemplate="%{text}", textposition="outside", cliponaxis=False)
+    categorie_label = "Tranche d'âge" if "tranche" in str(col_categorie).lower() else str(col_categorie)
+    groupe_label = "Sexe" if str(col_groupe).strip().lower() in {"sexe", "sex"} else str(col_groupe)
+    color_map = {
+        "Feminin": "#E70B0B",
+        "Masculin": "#1a1e2b",
+    }
 
-    max_val = max(abs(counts["Nombre de cas"]))
+    # Force explicit zero-filled traces per sex so bars stay perfectly aligned per age band.
+    pivot = (
+        counts.pivot_table(
+            index=col_categorie,
+            columns="_groupe_display",
+            values="Nombre de cas",
+            aggfunc="sum",
+            fill_value=0,
+            observed=False,
+        )
+        .reindex(ordre_categories)
+        .fillna(0)
+    )
+
+    preferred_order = [label for label in ["Feminin", "Masculin"] if label in pivot.columns]
+    remaining = [label for label in pivot.columns.tolist() if label not in preferred_order]
+    trace_order = preferred_order + remaining
+
+    fig = go.Figure()
+    negative_groups = {sexe_display_map.get(str(v).strip().lower(), str(v).strip()) for v in (valeurs_neg or [])}
+    for group_name in trace_order:
+        values = pd.to_numeric(pivot[group_name], errors="coerce").fillna(0).abs()
+        signed_values = -values if (afficher_signe_negatif and group_name in negative_groups) else values
+        text_values = values.astype(int).astype(str) if not afficher_signe_negatif_dans_label else signed_values.astype(int).astype(str)
+        fig.add_trace(
+            go.Bar(
+                y=ordre_categories,
+                x=signed_values.tolist(),
+                orientation="h",
+                name=str(group_name),
+                marker=dict(color=color_map.get(str(group_name), SEX_COLOR_MAP.get(str(group_name), None))),
+                text=text_values.tolist(),
+                texttemplate="%{text}",
+                textposition="outside",
+                cliponaxis=False,
+                hovertemplate=f"{groupe_label}: {group_name}<br>{categorie_label}: %{{y}}<br>Nombre de cas: %{{customdata}}<extra></extra>",
+                customdata=values.astype(int).tolist(),
+            )
+        )
+
+    max_val = int(max(abs(v) for tr in fig.data for v in tr.x)) if fig.data else 0
+    axis_max = max(1, int(np.ceil(max_val * 1.08)))
     fig.update_layout(
         barmode="relative",
+        title_text=titre or "",
         xaxis=dict(
             tickvals=[-max_val, 0, max_val],
             ticktext=[str(max_val), "0", str(max_val)],
             automargin=True,
+            zeroline=True,
+            zerolinewidth=1.2,
+            zerolinecolor="rgba(26,30,43,0.28)",
+            range=[-axis_max, axis_max],
         ),
         bargap=0.1,
         template="plotly_white",
-        yaxis=dict(categoryorder="array", categoryarray=ordre_categories),
+        yaxis=dict(categoryorder="array", categoryarray=ordre_categories, title=categorie_label),
+        xaxis_title="Nombre de cas",
         height=int(hauteur),
         margin=dict(t=52, b=44, l=72, r=56),
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+        legend=dict(title=None, orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
         uniformtext_minsize=8,
         uniformtext_mode="hide",
     )
