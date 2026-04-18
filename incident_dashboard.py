@@ -4,7 +4,7 @@ from dashboard_app.core import _normalize_metric_alias_columns
 st.set_page_config(page_title="LL RDC ? Dashboard", layout="wide")
 
 from dashboard_app.domain import *
-from dashboard_app.domain import _norm_key, _resolve_map_filter_value
+from dashboard_app.domain import _is_yes_series, _norm_key, _resolve_map_filter_value, _tdr_result_norm
 from dashboard_app.overview import *
 from dashboard_app.advanced import *
 
@@ -806,6 +806,582 @@ with tab_overview_detail:
     )
 
 
+def _prepare_surveillance_period_scope(df_scope: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Construit un repère temporel robuste pour les fenêtres de surveillance."""
+    if df_scope is None or df_scope.empty:
+        return pd.DataFrame(), pd.DataFrame(columns=["order", "label"])
+
+    scoped = df_scope.copy()
+    scoped["_surv_order"] = np.nan
+    scoped["_surv_label"] = pd.NA
+
+    if COL_WNUM in scoped.columns and pd.to_numeric(scoped[COL_WNUM], errors="coerce").notna().any():
+        week_num = pd.to_numeric(scoped[COL_WNUM], errors="coerce")
+        if COL_YEAR in scoped.columns and pd.to_numeric(scoped[COL_YEAR], errors="coerce").notna().any():
+            year_num = pd.to_numeric(scoped[COL_YEAR], errors="coerce")
+            mask = week_num.notna() & year_num.notna()
+            scoped.loc[mask, "_surv_order"] = (year_num[mask] * 100) + week_num[mask]
+            scoped.loc[mask, "_surv_label"] = [
+                f"SE{int(w):02d}-{int(y)}"
+                for y, w in zip(year_num[mask], week_num[mask])
+            ]
+        else:
+            mask = week_num.notna()
+            scoped.loc[mask, "_surv_order"] = week_num[mask]
+            scoped.loc[mask, "_surv_label"] = [f"SE{int(w):02d}" for w in week_num[mask]]
+    elif "YW" in scoped.columns and scoped["YW"].notna().any():
+        yw_text = scoped["YW"].astype("string").fillna("").str.strip()
+        parsed = yw_text.str.extract(r"(?P<year>\d{4}).*?(?P<week>\d{1,2})")
+        year_num = pd.to_numeric(parsed["year"], errors="coerce")
+        week_num = pd.to_numeric(parsed["week"], errors="coerce")
+        mask = year_num.notna() & week_num.notna()
+        if mask.any():
+            scoped.loc[mask, "_surv_order"] = (year_num[mask] * 100) + week_num[mask]
+            scoped.loc[mask, "_surv_label"] = [
+                f"SE{int(w):02d}-{int(y)}"
+                for y, w in zip(year_num[mask], week_num[mask])
+            ]
+        else:
+            valid_mask = yw_text != ""
+            scoped.loc[valid_mask, "_surv_label"] = yw_text[valid_mask]
+            categories = pd.Categorical(scoped.loc[valid_mask, "_surv_label"])
+            scoped.loc[valid_mask, "_surv_order"] = categories.codes
+
+    reference = (
+        scoped.loc[scoped["_surv_order"].notna() & scoped["_surv_label"].notna(), ["_surv_order", "_surv_label"]]
+        .drop_duplicates()
+        .rename(columns={"_surv_order": "order", "_surv_label": "label"})
+        .sort_values("order")
+        .reset_index(drop=True)
+    )
+    return scoped, reference
+
+
+def _build_surveillance_top_table(
+    df_scope: pd.DataFrame,
+    group_cols: list[str],
+    top_n: int = 5,
+) -> pd.DataFrame:
+    """Construit un top géographique avec cas, décès et létalité."""
+    valid_group_cols = [c for c in group_cols if c in df_scope.columns]
+    if df_scope is None or df_scope.empty or not valid_group_cols:
+        return pd.DataFrame()
+
+    tmp = df_scope.copy()
+    tmp["_cas_"] = 1
+    tmp["_deces_"] = (
+        pd.to_numeric(tmp["is_death"], errors="coerce").fillna(0).astype(int)
+        if "is_death" in tmp.columns
+        else 0
+    )
+
+    for col in valid_group_cols:
+        tmp[col] = (
+            tmp[col]
+            .fillna("Inconnu")
+            .astype(str)
+            .str.strip()
+            .replace("", "Inconnu")
+        )
+
+    grouped = (
+        tmp.groupby(valid_group_cols, as_index=False)
+        .agg(Cas=("_cas_", "sum"), Décès=("_deces_", "sum"))
+        .sort_values(["Cas", "Décès"], ascending=[False, False])
+        .head(int(top_n))
+        .copy()
+    )
+    grouped["Létalité (%)"] = np.where(
+        grouped["Cas"] > 0,
+        grouped["Décès"] / grouped["Cas"] * 100.0,
+        np.nan,
+    ).round(2)
+    grouped.insert(0, "Rang", range(1, len(grouped) + 1))
+    return grouped
+
+
+def _describe_surveillance_top_table(
+    table: pd.DataFrame,
+    label_cols: list[str],
+    total_cases: int,
+    empty_label: str,
+) -> str:
+    """Génère une lecture rapide du top 5 géographique."""
+    if table.empty or total_cases <= 0:
+        return empty_label
+
+    leader = table.iloc[0]
+    leader_parts = [str(leader[col]) for col in label_cols if col in table.columns and pd.notna(leader[col])]
+    leader_label = " / ".join([part for part in leader_parts if part and part != "nan"]) or "Non renseigné"
+    leader_share = float(leader["Cas"]) / float(total_cases) * 100.0
+    top5_share = float(table["Cas"].sum()) / float(total_cases) * 100.0
+    return (
+        f"{leader_label} concentre {leader_share:.1f}% des cas de cette période ; "
+        f"le top 5 en concentre {top5_share:.1f}%."
+    )
+
+
+def _surveillance_scope_kpis(df_scope: pd.DataFrame) -> tuple[int, int, float]:
+    """Retourne cas, décès et létalité pour une fenêtre donnée."""
+    if df_scope is None or df_scope.empty:
+        return 0, 0, np.nan
+    total_cases = int(len(df_scope))
+    total_deaths = int(
+        pd.to_numeric(df_scope["is_death"], errors="coerce").fillna(0).sum()
+    ) if "is_death" in df_scope.columns else 0
+    cfr = safe_pct(total_deaths, total_cases)
+    return total_cases, total_deaths, cfr
+
+
+def _surveillance_clean_text_series(series: pd.Series) -> pd.Series:
+    """Nettoie une série texte pour les comptages métier."""
+    if series is None:
+        return pd.Series(dtype="object")
+    cleaned = series.fillna("").astype(str).str.strip()
+    return cleaned[cleaned != ""]
+
+
+def _surveillance_period_bounds(df_scope: pd.DataFrame) -> tuple[Optional[pd.Timestamp], Optional[pd.Timestamp], Optional[str]]:
+    """Déduit la meilleure période lisible à partir des dates disponibles."""
+    for col in [DATE_NOTIF, DATE_ONSET, DATE_ADM, DATE_INV]:
+        if col in df_scope.columns:
+            dt = pd.to_datetime(df_scope[col], errors="coerce")
+            if dt.notna().any():
+                return dt.min(), dt.max(), col
+    return None, None, None
+
+
+def _format_surveillance_date(dt_value: Optional[pd.Timestamp]) -> str:
+    """Formate une date de résumé si disponible."""
+    if dt_value is None or pd.isna(dt_value):
+        return "-"
+    try:
+        return pd.Timestamp(dt_value).strftime("%d/%m/%Y")
+    except Exception:
+        return str(dt_value)
+
+
+def _normalize_severity_label(value: Any) -> str:
+    """Harmonise les modalités de sévérité/déshydratation."""
+    if value is None or pd.isna(value):
+        return MISSING_LABEL
+    raw = str(value).strip()
+    if not raw:
+        return MISSING_LABEL
+    norm = "".join(
+        c for c in unicodedata.normalize("NFD", raw.lower())
+        if unicodedata.category(c) != "Mn"
+    )
+    if "sever" in norm:
+        return "Sévère"
+    if "moder" in norm:
+        return "Modérée"
+    if "leger" in norm or "legere" in norm or "mild" in norm:
+        return "Légère"
+    if "inconnu" in norm or "non renseigne" in norm or norm == "na":
+        return MISSING_LABEL
+    return raw
+
+
+def _build_severity_summary_text(df_scope: pd.DataFrame) -> Optional[str]:
+    """Construit une phrase courte sur la sévérité si la variable est disponible."""
+    if COL_DEHY not in df_scope.columns:
+        return None
+    severity = _surveillance_clean_text_series(df_scope[COL_DEHY])
+    if severity.empty:
+        return None
+    counts = (
+        severity.map(_normalize_severity_label)
+        .value_counts()
+        .rename_axis("Modalité")
+        .reset_index(name="n")
+    )
+    preferred_order = {"Légère": 0, "Modérée": 1, "Sévère": 2, MISSING_LABEL: 3}
+    counts["_order"] = counts["Modalité"].map(lambda x: preferred_order.get(x, 99))
+    counts = counts.sort_values(["_order", "n"], ascending=[True, False])
+    parts = [f"{row['Modalité']} : {int(row['n'])}" for _, row in counts.iterrows()]
+    if not parts:
+        return None
+    return "Degré de sévérité selon la variable disponible : " + " | ".join(parts)
+
+
+def _build_investigation_summary_text(df_scope: pd.DataFrame) -> Optional[str]:
+    """Construit un résumé standard des cas investigués."""
+    if DATE_INV not in df_scope.columns:
+        return None
+    total_cases = int(len(df_scope))
+    if total_cases <= 0:
+        return None
+    investigated = int(pd.to_datetime(df_scope[DATE_INV], errors="coerce").notna().sum())
+    return (
+        f"Cas investigués : {format_metric_value(investigated)} "
+        f"({format_metric_value(safe_pct(investigated, total_cases), decimals=1)}%)."
+    )
+
+
+def _build_tdr_summary_text(df_scope: pd.DataFrame) -> Optional[str]:
+    """Construit un résumé standard des TDR réalisés et de la positivité."""
+    if COL_TDR not in df_scope.columns:
+        return None
+
+    tdr_yes = _is_yes_series(df_scope[COL_TDR])
+    n_tdr = int(tdr_yes.sum())
+    if n_tdr <= 0:
+        return "TDR réalisés : 0."
+
+    if COL_TDRR not in df_scope.columns:
+        return f"TDR réalisés : {format_metric_value(n_tdr)}."
+
+    res_n = _tdr_result_norm(df_scope[COL_TDRR])
+    valid_mask = tdr_yes & res_n.isin(TDR_POS_SET.union(TDR_NEG_SET))
+    n_valid = int(valid_mask.sum())
+    n_pos = int((tdr_yes & res_n.isin(TDR_POS_SET)).sum())
+    if n_valid > 0:
+        positivity = safe_pct(n_pos, n_valid)
+        return (
+            f"TDR réalisés : {format_metric_value(n_tdr)} "
+            f"(positivité : {format_metric_value(positivity, decimals=1)}%; "
+            f"{format_metric_value(n_pos)} positifs sur {format_metric_value(n_valid)} résultats interprétables)."
+        )
+    return f"TDR réalisés : {format_metric_value(n_tdr)} (positivité non calculable : résultats interprétables absents)."
+
+
+def _build_comparison_sentence(
+    current_df: pd.DataFrame,
+    previous_df: Optional[pd.DataFrame],
+    current_label: Optional[str] = None,
+    previous_label: Optional[str] = None,
+) -> Optional[str]:
+    """Produit une phrase standard de tendance par rapport à une période de référence."""
+    if previous_df is None or previous_df.empty:
+        return None
+
+    cur_cases, cur_deaths, cur_cfr = _surveillance_scope_kpis(current_df)
+    prev_cases, prev_deaths, prev_cfr = _surveillance_scope_kpis(previous_df)
+    if cur_cases <= 0:
+        return None
+
+    cur_label_txt = current_label or "la période courante"
+    prev_label_txt = previous_label or "la période précédente"
+
+    if prev_cases <= 0:
+        return (
+            f"{cur_label_txt} : {format_metric_value(cur_cases)} cas et {format_metric_value(cur_deaths)} décès "
+            f"(létalité {format_metric_value(cur_cfr, decimals=1)}%). "
+            f"Aucun cas n’avait été rapporté durant {prev_label_txt}."
+        )
+
+    delta = pct_change_safe(cur_cases, prev_cases)
+    if pd.isna(delta):
+        trend_text = "La variation par rapport à la période précédente n’est pas calculable."
+    elif delta > 0:
+        trend_text = f"Une hausse de {abs(delta):.1f}% est observée"
+    elif delta < 0:
+        trend_text = f"Une baisse de {abs(delta):.1f}% est observée"
+    else:
+        trend_text = "La situation est stable"
+
+    return (
+        f"{cur_label_txt} : {format_metric_value(cur_cases)} cas et {format_metric_value(cur_deaths)} décès "
+        f"(létalité {format_metric_value(cur_cfr, decimals=1)}%). "
+        f"{trend_text} par rapport à {prev_label_txt} "
+        f"({format_metric_value(prev_cases)} cas, {format_metric_value(prev_deaths)} décès, "
+        f"létalité {format_metric_value(prev_cfr, decimals=1)}%)."
+    )
+
+
+def _build_top_province_summary_text(df_scope: pd.DataFrame) -> Optional[str]:
+    """Construit une phrase standard sur la concentration géographique provinciale."""
+    total_cases, _, _ = _surveillance_scope_kpis(df_scope)
+    top_prov = _build_surveillance_top_table(df_scope, [COL_PROV], top_n=5)
+    if top_prov.empty or total_cases <= 0:
+        return None
+
+    top5_share = safe_pct(top_prov["Cas"].sum(), total_cases)
+    province_bits = []
+    for _, row in top_prov.iterrows():
+        province_bits.append(
+            f"{row[COL_PROV]} ({safe_pct(row['Cas'], total_cases):.1f}%)"
+        )
+    return (
+        f"La majorité des cas ({top5_share:.1f}%) est concentrée dans les provinces suivantes : "
+        + "; ".join(province_bits)
+        + "."
+    )
+
+
+def _build_scope_overview_text(
+    df_scope: pd.DataFrame,
+    scope_kind: str,
+    latest_week_df: Optional[pd.DataFrame] = None,
+    latest_label: Optional[str] = None,
+) -> Optional[str]:
+    """Construit le paragraphe d'ouverture adapté à la fenêtre courante."""
+    total_cases, total_deaths, cfr = _surveillance_scope_kpis(df_scope)
+    if total_cases <= 0:
+        return None
+
+    n_prov = (
+        _surveillance_clean_text_series(df_scope[COL_PROV]).nunique()
+        if COL_PROV in df_scope.columns else 0
+    )
+    n_zs = (
+        _surveillance_clean_text_series(df_scope[COL_ZS]).nunique()
+        if COL_ZS in df_scope.columns else 0
+    )
+    dmin, dmax, _ = _surveillance_period_bounds(df_scope)
+    date_span = None
+    if dmin is not None and dmax is not None:
+        date_span = f"du {_format_surveillance_date(dmin)} au {_format_surveillance_date(dmax)}"
+
+    if scope_kind == "weekly":
+        prefix = f"Durant {latest_label or 'la semaine la plus récente'}"
+    elif scope_kind == "recent4":
+        prefix = "Au cours des 4 dernières semaines"
+    else:
+        prefix = f"Sur le cumul {date_span}" if date_span else "Sur l’ensemble de la fenêtre sélectionnée"
+
+    geo_text = ""
+    if n_zs > 0 and n_prov > 0:
+        geo_text = f"{format_metric_value(n_zs)} ZS dans {format_metric_value(n_prov)} provinces"
+    elif n_zs > 0:
+        geo_text = f"{format_metric_value(n_zs)} ZS"
+    elif n_prov > 0:
+        geo_text = f"{format_metric_value(n_prov)} provinces"
+
+    base = (
+        f"{prefix}, {format_metric_value(total_cases)} cas suspects et {format_metric_value(total_deaths)} décès "
+        f"ont été enregistrés (létalité : {format_metric_value(cfr, decimals=1)}%)."
+    )
+
+    if geo_text:
+        base += f" Les notifications proviennent de {geo_text}."
+
+    if scope_kind == "cumulative" and latest_week_df is not None and not latest_week_df.empty:
+        wk_cases, wk_deaths, wk_cfr = _surveillance_scope_kpis(latest_week_df)
+        if latest_label:
+            base += (
+                f" La semaine la plus récente ({latest_label}) totalise "
+                f"{format_metric_value(wk_cases)} cas, {format_metric_value(wk_deaths)} décès "
+                f"et une létalité de {format_metric_value(wk_cfr, decimals=1)}%."
+            )
+    return base
+
+
+def _build_province_interpretations(
+    df_scope: pd.DataFrame,
+    comparison_df: Optional[pd.DataFrame] = None,
+    comparison_label: Optional[str] = None,
+    top_n: int = 5,
+) -> list[str]:
+    """Construit un résumé narratif standard par province pour le top 5."""
+    if df_scope is None or df_scope.empty or COL_PROV not in df_scope.columns:
+        return []
+
+    top_prov = _build_surveillance_top_table(df_scope, [COL_PROV], top_n=top_n)
+    if top_prov.empty:
+        return []
+
+    summaries: list[str] = []
+    for _, row in top_prov.iterrows():
+        province_name = row.get(COL_PROV, MISSING_LABEL)
+        prov_mask = df_scope[COL_PROV].fillna("").astype(str).str.strip() == str(province_name).strip()
+        prov_df = df_scope.loc[prov_mask].copy()
+        if prov_df.empty:
+            continue
+
+        prov_cases, prov_deaths, prov_cfr = _surveillance_scope_kpis(prov_df)
+        sentence = (
+            f"{province_name} : {format_metric_value(prov_cases)} cas suspects, "
+            f"dont {format_metric_value(prov_deaths)} décès "
+            f"(létalité : {format_metric_value(prov_cfr, decimals=1)}%)."
+        )
+
+        if comparison_df is not None and not comparison_df.empty and COL_PROV in comparison_df.columns:
+            prev_mask = comparison_df[COL_PROV].fillna("").astype(str).str.strip() == str(province_name).strip()
+            prev_df = comparison_df.loc[prev_mask].copy()
+            if not prev_df.empty:
+                prev_cases, prev_deaths, prev_cfr = _surveillance_scope_kpis(prev_df)
+                if prev_cases > 0:
+                    delta = pct_change_safe(prov_cases, prev_cases)
+                    if not pd.isna(delta):
+                        if delta > 0:
+                            trend = f"Une hausse de {abs(delta):.1f}% est observée"
+                        elif delta < 0:
+                            trend = f"Une baisse de {abs(delta):.1f}% est observée"
+                        else:
+                            trend = "La situation est stable"
+                        sentence += (
+                            f" {trend} par rapport à {comparison_label or 'la période précédente'} "
+                            f"({format_metric_value(prev_cases)} cas, {format_metric_value(prev_deaths)} décès, "
+                            f"létalité {format_metric_value(prev_cfr, decimals=1)}%)."
+                        )
+                else:
+                    sentence += f" Aucun cas n’avait été rapporté durant {comparison_label or 'la période précédente'}."
+
+        if COL_ZS in prov_df.columns:
+            zs_series = _surveillance_clean_text_series(prov_df[COL_ZS])
+            n_zs_reporting = int(zs_series.nunique())
+            if n_zs_reporting > 0:
+                mean_cases = prov_cases / n_zs_reporting
+                sentence += (
+                    f" Une moyenne de {mean_cases:.1f} cas par ZS est observée parmi "
+                    f"{format_metric_value(n_zs_reporting)} ZS ayant notifié des cas."
+                )
+
+                top_zs = _build_surveillance_top_table(prov_df, [COL_ZS], top_n=3)
+                if not top_zs.empty:
+                    top_zs_bits = [
+                        f"{zs_row[COL_ZS]} ({format_metric_value(zs_row['Cas'])} cas)"
+                        for _, zs_row in top_zs.iterrows()
+                    ]
+                    sentence += " Les ZS les plus touchées sont : " + ", ".join(top_zs_bits) + "."
+
+        severity_text = _build_severity_summary_text(prov_df)
+        if severity_text is not None:
+            sentence += f" {severity_text}."
+
+        summaries.append(sentence)
+
+    return summaries
+
+
+def _build_surveillance_summary_lines(
+    df_scope: pd.DataFrame,
+    scope_kind: str,
+    current_label: Optional[str] = None,
+    comparison_df: Optional[pd.DataFrame] = None,
+    comparison_label: Optional[str] = None,
+    latest_week_df: Optional[pd.DataFrame] = None,
+    latest_label: Optional[str] = None,
+) -> list[str]:
+    """Assemble le résumé automatique standard à afficher dans chaque situation."""
+    lines: list[str] = []
+
+    overview_text = _build_scope_overview_text(
+        df_scope,
+        scope_kind=scope_kind,
+        latest_week_df=latest_week_df,
+        latest_label=latest_label,
+    )
+    if overview_text:
+        lines.append(overview_text)
+
+    comparison_text = _build_comparison_sentence(
+        current_df=df_scope,
+        previous_df=comparison_df,
+        current_label=current_label,
+        previous_label=comparison_label,
+    )
+    if comparison_text:
+        lines.append(comparison_text)
+
+    top_prov_text = _build_top_province_summary_text(df_scope)
+    if top_prov_text:
+        lines.append(top_prov_text)
+
+    severity_text = _build_severity_summary_text(df_scope)
+    if severity_text:
+        lines.append(severity_text + ".")
+
+    investigation_text = _build_investigation_summary_text(df_scope)
+    if investigation_text:
+        lines.append(investigation_text)
+
+    tdr_text = _build_tdr_summary_text(df_scope)
+    if tdr_text:
+        lines.append(tdr_text)
+
+    return lines
+
+
+def _render_surveillance_window(
+    title: str,
+    df_scope: pd.DataFrame,
+    description: str,
+    empty_message: str,
+    narrative_context: Optional[dict[str, Any]] = None,
+) -> None:
+    """Affiche une fenêtre standardisée de surveillance."""
+    st.markdown(f"### {title}")
+    st.caption(description)
+
+    if df_scope.empty:
+        st.info(empty_message)
+        return
+
+    total_cases = int(len(df_scope))
+    total_deaths = int(
+        pd.to_numeric(df_scope["is_death"], errors="coerce").fillna(0).sum()
+    ) if "is_death" in df_scope.columns else 0
+    cfr = (total_deaths / total_cases * 100.0) if total_cases > 0 else np.nan
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Cas", format_metric_value(total_cases))
+    k2.metric("Décès", format_metric_value(total_deaths))
+    k3.metric("Létalité (%)", format_metric_value(cfr, decimals=2))
+
+    narrative_context = narrative_context or {}
+    summary_lines = _build_surveillance_summary_lines(
+        df_scope=df_scope,
+        scope_kind=narrative_context.get("scope_kind", "cumulative"),
+        current_label=narrative_context.get("current_label"),
+        comparison_df=narrative_context.get("comparison_df"),
+        comparison_label=narrative_context.get("comparison_label"),
+        latest_week_df=narrative_context.get("latest_week_df"),
+        latest_label=narrative_context.get("latest_label"),
+    )
+
+    if summary_lines:
+        st.markdown("**Résumé automatique**")
+        st.markdown("\n".join([f"- {line}" for line in summary_lines]))
+
+    g1, g2 = st.columns(2)
+    with g1:
+        st.markdown("**Analyse des 5 provinces les plus touchées**")
+        top_prov = _build_surveillance_top_table(df_scope, [COL_PROV], top_n=5)
+        if top_prov.empty:
+            st.info("L’analyse provinciale est indisponible : variable Province absente ou non renseignée.")
+        else:
+            st.caption(
+                _describe_surveillance_top_table(
+                    top_prov,
+                    [COL_PROV],
+                    total_cases,
+                    "Aucune province exploitable dans cette fenêtre.",
+                )
+            )
+            st.dataframe(top_prov, width="stretch", hide_index=True)
+
+    with g2:
+        st.markdown("**Analyse des 5 zones de santé les plus touchées**")
+        zs_group_cols = [c for c in [COL_PROV, COL_ZS] if c in df_scope.columns]
+        top_zs = _build_surveillance_top_table(df_scope, zs_group_cols, top_n=5)
+        if top_zs.empty:
+            st.info("L’analyse des zones de santé est indisponible : variable ZS absente ou non renseignée.")
+        else:
+            st.caption(
+                _describe_surveillance_top_table(
+                    top_zs,
+                    zs_group_cols,
+                    total_cases,
+                    "Aucune zone de santé exploitable dans cette fenêtre.",
+                )
+            )
+            st.dataframe(top_zs, width="stretch", hide_index=True)
+
+    province_interpretations = _build_province_interpretations(
+        df_scope,
+        comparison_df=narrative_context.get("comparison_df"),
+        comparison_label=narrative_context.get("comparison_label"),
+        top_n=5,
+    )
+    if province_interpretations:
+        with st.expander("Interprétation automatique par province (top 5)", expanded=False):
+            for province_text in province_interpretations:
+                st.markdown(f"- {province_text}")
+
+
 # =========================
 # NAVIGATION COMPACTE
 # - Surveillance & promptitude = anciens onglets 1 + 2 + 3
@@ -824,105 +1400,108 @@ with tab_surveillance:
         tab_help(
             "Comment lire cet onglet",
             """
-            **🎯 Objectif** : suivre la dynamique temporelle de l’événement et apprécier la promptitude des principales étapes de notification et de prise en charge.
+            **🎯 Objectif** : suivre la situation selon trois niveaux de lecture complémentaires pour distinguer l’hebdomadaire, la tendance récente et le cumul.
 
             **📖 Logique de lecture**
-            - Lire d’abord la **tendance hebdomadaire consolidée** pour repérer les changements de volume et de gravité.
-            - Compléter ensuite par la **table hebdomadaire de synthèse** pour appuyer l’interprétation et l’export.
-            - Les visuels géographiques et les KPI sentinelles de haut niveau sont volontairement concentrés sur la **page d’accueil** afin d’éviter les redondances.
+            - La **situation hebdomadaire** reflète la semaine la plus récente visible dans la plage filtrée.
+            - La **situation des 4 dernières semaines** permet de lire rapidement la tendance récente.
+            - La **situation cumulée** consolide l’ensemble de la fenêtre active pour orienter la réponse.
 
             **⚠️ Point d’attention**
-            - Les tendances doivent être interprétées en tenant compte de la complétude, du retard de notification et de la disponibilité du diagnostic.
+            - Les indicateurs dépendent directement des filtres actifs de semaines, de géographie et de classification.
             """,
             expanded=False
         )
 
-        render_section_title(1, "Surveillance temporelle hebdomadaire")
-        st.subheader("Évolution hebdomadaire")
-
-        week_col_epi = None
-        if "YW" in df_f.columns and df_f["YW"].notna().any():
-            week_col_epi = "YW"
-        elif COL_WNUM in df_f.columns and df_f[COL_WNUM].notna().any():
-            week_col_epi = COL_WNUM
-        elif COL_WEEK in df_f.columns and df_f[COL_WEEK].notna().any():
-            week_col_epi = COL_WEEK
-
-        if week_col_epi is not None:
-            weekly_tbl = df_f.groupby(week_col_epi, as_index=False).agg(
-                Cas=(week_col_epi, "count"),
-                Décès=("is_death", "sum"),
-            )
-            weekly_tbl["Létalité (%)"] = np.where(
-                weekly_tbl["Cas"] > 0,
-                weekly_tbl["Décès"] / weekly_tbl["Cas"] * 100.0,
-                np.nan,
-            )
-
-            st.markdown("### Tendance hebdomadaire des cas et de la létalité observée")
-            fig_combo = build_weekly_cases_cfr_combo(
-                df=df_f,
-                week_col=week_col_epi,
-                death_col="is_death",
-                titre="",
-                rotation=45,
-                annot_bars=annot_vals,
-                annot_line=annot_vals,
-                pas_x=int(pas_x) if week_col_epi in [COL_WNUM, "YW"] else None,
-                taille_fig=(1500, 600),
-            )
-            st_plot(fig_combo, key="week_cases_cfr_combo_main")
-
-            if COL_PROV in df_f.columns and df_f[COL_PROV].notna().any():
-                st.markdown("### Courbe épidémiologique multi-provinces")
-                prov_totals = df_f[[COL_PROV]].dropna().copy()
-                prov_totals["_prov"] = prov_totals[COL_PROV].astype(str).str.strip()
-                prov_totals = prov_totals[prov_totals["_prov"] != ""]
-                prov_options = prov_totals["_prov"].value_counts().index.tolist()
-                default_provs = prov_options if len(prov_options) <= 10 else prov_options[:10]
-                selected_curve_provs = st.multiselect(
-                    "Provinces à afficher",
-                    options=prov_options,
-                    default=default_provs,
-                    key="surveillance_multi_curve_provinces",
-                    help="Tu peux aussi cliquer sur la légende du graphique pour masquer ou afficher une province.",
-                )
-                if selected_curve_provs:
-                    fig_multi_prov = build_weekly_multiline_by_group(
-                        df=df_f,
-                        week_col=week_col_epi,
-                        group_col=COL_PROV,
-                        selected_groups=selected_curve_provs,
-                        titre=" ",
-                        x_titre="Semaine épidémiologique",
-                        y_titre="Nombre de cas",
-                        rotation=45,
-                        pas_x=int(pas_x) if week_col_epi in [COL_WNUM, "YW"] else None,
-                        annot=annot_vals,
-                        taille_fig=(1500, 700),
-                    )
-                    if fig_multi_prov is not None:
-                        st.plotly_chart(fig_multi_prov, width="stretch", key="surveillance_multi_curve_province")
-                        st.caption("Astuce : clique sur une province dans la légende pour masquer ou afficher sa courbe. Double-clique pour isoler une province.")
-                else:
-                    st.info("Sélectionne au moins une province pour afficher la courbe épidémiologique multi-provinces.")
-
-            s1, s2, s3 = st.columns(3)
-            s1.metric("Cas dernière semaine", format_metric_value(weekly_tbl["Cas"].iloc[-1]))
-            s2.metric("Décès dernière semaine", format_metric_value(weekly_tbl["Décès"].iloc[-1]))
-            s3.metric(
-                "Létalité dernière semaine (%)",
-                format_metric_value(weekly_tbl["Létalité (%)"].iloc[-1], decimals=2),
-            )
-
-            with st.expander("Afficher la table hebdomadaire de synthèse", expanded=False):
-                st_dataframe_safe(weekly_tbl)
-        else:
-            st.info("Variable semaine indisponible : aucune colonne temporelle exploitable n’a été détectée.")
+        render_section_title(1, "Surveillance épidémiologique")
         st.caption(
-            "Les cartes statiques, la distribution géographique des notifications et les indicateurs sentinelles de performance "
-            "sont consolidés sur la page d’accueil pour éviter les répétitions dans cet onglet."
+            "Cette organisation permet une lecture progressive de la situation à partir de la plage de semaines active dans la barre latérale."
         )
+
+        df_surv_scope, surv_reference = _prepare_surveillance_period_scope(df_f)
+
+        if not surv_reference.empty:
+            latest_order = surv_reference["order"].iloc[-1]
+            latest_label = str(surv_reference["label"].iloc[-1])
+            last4_reference = surv_reference.tail(4).copy()
+            last4_orders = last4_reference["order"].tolist()
+            last4_labels = last4_reference["label"].astype(str).tolist()
+            first_label = str(surv_reference["label"].iloc[0])
+            previous_week_reference = surv_reference.tail(2).head(1).copy() if len(surv_reference) >= 2 else pd.DataFrame()
+            previous_week_df = pd.DataFrame()
+            previous_week_label = None
+            if not previous_week_reference.empty:
+                previous_week_label = str(previous_week_reference["label"].iloc[0])
+                previous_week_df = df_surv_scope[
+                    df_surv_scope["_surv_order"] == previous_week_reference["order"].iloc[0]
+                ].copy()
+
+            prev4_reference = (
+                surv_reference.iloc[max(len(surv_reference) - 8, 0): max(len(surv_reference) - 4, 0)].copy()
+                if len(surv_reference) > 4 else pd.DataFrame()
+            )
+            prev4_df = pd.DataFrame()
+            prev4_label = None
+            if not prev4_reference.empty:
+                prev4_orders = prev4_reference["order"].tolist()
+                prev4_df = df_surv_scope[df_surv_scope["_surv_order"].isin(prev4_orders)].copy()
+                prev4_labels = prev4_reference["label"].astype(str).tolist()
+                if prev4_labels:
+                    prev4_label = ", ".join(prev4_labels)
+
+            df_latest_week = df_surv_scope[df_surv_scope["_surv_order"] == latest_order].copy()
+            df_last4_weeks = df_surv_scope[df_surv_scope["_surv_order"].isin(last4_orders)].copy()
+
+            _render_surveillance_window(
+                "1. Situation hebdomadaire",
+                df_latest_week,
+                f"Semaine la plus récente dans la fenêtre filtrée : {latest_label}.",
+                "Aucune donnée n’est disponible pour la semaine hebdomadaire sélectionnée.",
+                narrative_context={
+                    "scope_kind": "weekly",
+                    "current_label": latest_label,
+                    "comparison_df": previous_week_df if not previous_week_df.empty else None,
+                    "comparison_label": previous_week_label,
+                    "latest_week_df": df_latest_week,
+                    "latest_label": latest_label,
+                },
+            )
+
+            st.divider()
+
+            _render_surveillance_window(
+                "2. Situation des 4 dernières semaines",
+                df_last4_weeks,
+                f"Lecture glissante sur les {len(last4_labels)} semaines les plus récentes de la sélection : {', '.join(last4_labels)}.",
+                "Aucune donnée n’est disponible pour construire la tendance des 4 dernières semaines.",
+                narrative_context={
+                    "scope_kind": "recent4",
+                    "current_label": "Les 4 dernières semaines",
+                    "comparison_df": prev4_df if not prev4_df.empty else None,
+                    "comparison_label": "les 4 semaines précédentes" if prev4_label else None,
+                    "latest_week_df": df_latest_week,
+                    "latest_label": latest_label,
+                },
+            )
+
+            st.divider()
+
+            _render_surveillance_window(
+                "3. Situation cumulée",
+                df_surv_scope,
+                f"Cumul de toute la fenêtre active : {first_label} à {latest_label}.",
+                "Aucune donnée n’est disponible pour la situation cumulée.",
+                narrative_context={
+                    "scope_kind": "cumulative",
+                    "current_label": f"{first_label} à {latest_label}",
+                    "comparison_df": None,
+                    "comparison_label": None,
+                    "latest_week_df": df_latest_week,
+                    "latest_label": latest_label,
+                },
+            )
+        else:
+            st.info("Variable semaine indisponible : aucune colonne temporelle exploitable n’a été détectée pour organiser la surveillance par fenêtres.")
     # Section suivante : promptitude. Les indicateurs de performance et de létalité déjà présentés plus haut ne sont pas répétés ici afin d’éviter les redondances.
 
 with tab_surveillance:
@@ -958,75 +1537,87 @@ with tab_surveillance:
             df_del = df_f.copy()
             for c in delais_cols:
                 df_del.loc[df_del[c] < 0, c] = np.nan
-        
-            st.markdown("**Distribution des délais observés (jours)**")
-            if use_custom_viz and HAS_CUSTOM_VIZ:
-                fig = plot_boxplot_delais_plotly(
-                    df=df_del,
-                    colonnes_delais=delais_cols,
-                    col_groupe=COL_PROV if COL_PROV in df_del.columns else None,
-                    titre=" ",
-                    taille_fig=(1500, 600),
-                    rotation=45
-                )
-                st_plot(fig, key="boxplot_delais_custom")
-            else:
-                long = df_del.melt(value_vars=delais_cols, var_name="Type_delai", value_name="Jours").dropna()
-                fig = px.box(long, x="Type_delai", y="Jours", points="outliers", title="Boxplot des délais (global)")
-                fig = apply_plotly_value_annotations(fig, annot_vals)
-                st.plotly_chart(fig, width="stretch")
-        
-            st.divider()
-        
-            st.markdown(f"**% sous seuil (≤ {seuil_jours} jours)**")
-            c1, c2= st.columns(2)
+
+            delay_summary_std = build_standard_delay_summary(df_del)
+            available_delay_pairs = list_available_standard_delays(df_del)
+            seuil_val = float(seuil_jours)
+            seuil_lab = int(seuil_val) if seuil_val.is_integer() else round(seuil_val, 1)
+
+            st.markdown("**Lecture opérationnelle prioritaire**")
+            st.caption(
+                "Les indicateurs et classements ci-dessous sont plus utiles pour l’action immédiate que la distribution graphique brute."
+            )
+
+            c1, c2, c3, c4 = st.columns(4)
             with c1:
                 p1, n1 = pct_under_threshold(df_del.get("delai_onset_to_adm"), seuil_jours)
                 st.metric("Admission ≤ seuil (%)", "-" if np.isnan(p1) else f"{p1:.1f}", help=f"n = {n1}")
             with c2:
                 p2, n2 = pct_under_threshold(df_del.get("delai_onset_to_prel"), seuil_jours)
-                st.metric("Prélèvement ≤ seuil (%)", "-" if np.isnan(p2) else f"{p2:.1f}", help=f"n = {n2}")        
-        
-            if use_custom_viz and HAS_CUSTOM_VIZ and COL_PROV in df_del.columns:
-                st.subheader("Promptitude par province (% de cas sous le seuil retenu)")
-        
-                rows = []
-                for prov, sub in df_del.groupby(COL_PROV):
-                    s = pd.to_numeric(sub.get("delai_onset_to_adm"), errors="coerce").dropna()
-                    n = int(len(s))
-                    sous = int((s <= seuil_jours).sum()) if n else 0
-                    pct = (sous / n * 100) if n else np.nan
-                    rows.append([prov, n, sous, pct])
-        
-                df_resume = pd.DataFrame(rows, columns=[COL_PROV, "n", "sous_seuil", "pct_sous_seuil_%"])
-        
-                fig = plot_barres_pct_sous_seuil(
-                    df_resume_groupe=df_resume,
-                    col_groupe=COL_PROV,
-                    col_n="n",
-                    col_sous_seuil="sous_seuil",
-                    col_pct="pct_sous_seuil_%",
-                    titre=f"% admission ≤ {seuil_jours} jours par province",
-                    seuil=seuil_jours,
-                    taille_fig=(1500, 600),
-                    rotation=45,
-                    annot=True,
-                    tri_desc=True
-                )
-                st_plot(fig, key="timeliness_pct_prov")
-        
-                with st.expander("Table timeliness (résumé)"):
-                    st.dataframe(df_resume.sort_values("pct_sous_seuil_%", ascending=False), width="stretch")
-
-            delay_summary_std = build_standard_delay_summary(df_del)
-            available_delay_pairs = list_available_standard_delays(df_del)
+                st.metric("Prélèvement ≤ seuil (%)", "-" if np.isnan(p2) else f"{p2:.1f}", help=f"n = {n2}")
+            with c3:
+                st.metric("Délais admission documentés", format_metric_value(n1))
+            with c4:
+                st.metric("Délais prélèvement documentés", format_metric_value(n2))
 
             if not delay_summary_std.empty:
-                st.divider()
                 st.markdown("**Résumé standard des délais disponibles**")
                 st_dataframe_safe(delay_summary_std, height=320)
 
+            if COL_PROV in df_del.columns:
+                st.markdown("**Provinces à surveiller en priorité**")
+                ranking_specs = []
+                if "delai_onset_to_adm" in delais_cols:
+                    ranking_specs.append(("delai_onset_to_adm", "Début maladie → admission"))
+                if "delai_onset_to_prel" in delais_cols:
+                    ranking_specs.append(("delai_onset_to_prel", "Début maladie → prélèvement"))
+
+                if ranking_specs:
+                    rank_cols = st.columns(len(ranking_specs))
+                    for col_ui, (delay_col, delay_label) in zip(rank_cols, ranking_specs):
+                        delay_group_tbl = build_delay_group_summary(
+                            df_del,
+                            delay_col=delay_col,
+                            group_col=COL_PROV,
+                            threshold=seuil_jours,
+                        )
+                        pct_col = f"% <= {seuil_lab} j"
+                        if not delay_group_tbl.empty and pct_col in delay_group_tbl.columns:
+                            delay_group_tbl = delay_group_tbl[
+                                pd.to_numeric(delay_group_tbl["n"], errors="coerce").fillna(0) > 0
+                            ].copy()
+                            delay_group_tbl = (
+                                delay_group_tbl
+                                .sort_values([pct_col, "Mediane_j", "n"], ascending=[True, False, False], na_position="last")
+                                .head(10)
+                                .copy()
+                            )
+                        with col_ui:
+                            st.markdown(f"**{delay_label}**")
+                            if delay_group_tbl.empty:
+                                st.info("Pas assez de données exploitables pour établir un classement provincial.")
+                            else:
+                                st.dataframe(delay_group_tbl, width="stretch", height=360, hide_index=True)
+
+            with st.expander("Distribution détaillée des délais observés (graphique)", expanded=False):
+                if use_custom_viz and HAS_CUSTOM_VIZ:
+                    fig = plot_boxplot_delais_plotly(
+                        df=df_del,
+                        colonnes_delais=delais_cols,
+                        col_groupe=COL_PROV if COL_PROV in df_del.columns else None,
+                        titre=" ",
+                        taille_fig=(1500, 600),
+                        rotation=45
+                    )
+                    st_plot(fig, key="boxplot_delais_custom")
+                else:
+                    long = df_del.melt(value_vars=delais_cols, var_name="Type_delai", value_name="Jours").dropna()
+                    fig = px.box(long, x="Type_delai", y="Jours", points="outliers", title="Boxplot des délais (global)")
+                    fig = apply_plotly_value_annotations(fig, annot_vals)
+                    st.plotly_chart(fig, width="stretch")
+
             if available_delay_pairs:
+                st.divider()
                 st.markdown("**Analyse détaillée d'un délai standard**")
                 delay_label_to_col = {label: col for col, label in available_delay_pairs}
                 delay_focus_label = st.selectbox(
@@ -1073,8 +1664,6 @@ with tab_surveillance:
                     )
 
                     if not delay_group_tbl.empty:
-                        seuil_val = float(seuil_jours)
-                        seuil_lab = int(seuil_val) if seuil_val.is_integer() else round(seuil_val, 1)
                         pct_col = f"% <= {seuil_lab} j"
                         sort_col = "Mediane_j" if delay_metric_focus.startswith("Mediane") else pct_col
                         ascending = bool(delay_metric_focus.startswith("Mediane"))
