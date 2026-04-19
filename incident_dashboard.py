@@ -1382,6 +1382,197 @@ def _render_surveillance_window(
                 st.markdown(f"- {province_text}")
 
 
+def _build_sitrep_week_label(se: Any, annee: Any) -> str:
+    """Formate un libellé standard de semaine pour le SITREP."""
+    try:
+        return f"SE{int(float(se)):02d}/{int(float(annee))}"
+    except Exception:
+        return f"SE{se}/{annee}"
+
+
+def _format_sitrep_metric_delta(current: Any, previous: Any) -> Optional[str]:
+    """Retourne un delta court et lisible pour les KPI du SITREP."""
+    if previous is None or pd.isna(previous):
+        return None
+    try:
+        cur_val = float(current)
+        prev_val = float(previous)
+    except Exception:
+        return None
+
+    if prev_val > 0:
+        delta = pct_change_safe(cur_val, prev_val)
+        if pd.isna(delta):
+            return None
+        return f"{delta:+.1f}%"
+    if cur_val > 0:
+        return f"+{int(cur_val)} vs 0"
+    return "stable"
+
+
+def _build_sitrep_alert_summary(alert_df: pd.DataFrame) -> Optional[str]:
+    """Construit une phrase courte sur les signaux statistiques disponibles."""
+    if alert_df is None or not isinstance(alert_df, pd.DataFrame) or alert_df.empty:
+        return None
+
+    signal_col = next(
+        (col for col in ["signal", "Signal", "alerte", "Alerte"] if col in alert_df.columns),
+        None,
+    )
+    if signal_col is not None:
+        signals = _surveillance_clean_text_series(alert_df[signal_col])
+        if not signals.empty:
+            counts = signals.value_counts().head(3)
+            details = [f"{label} ({int(count)})" for label, count in counts.items()]
+            return "Signaux statistiques à vérifier sur la dernière semaine disponible : " + ", ".join(details) + "."
+
+    return (
+        f"{format_metric_value(len(alert_df))} signaux statistiques sont remontés sur la dernière "
+        "semaine disponible et nécessitent une vérification."
+    )
+
+
+def _build_sitrep_critical_cfr_summary(payload: dict[str, Any]) -> Optional[str]:
+    """Résume les unités géographiques à létalité élevée pour le SITREP."""
+    provcrit = payload.get("prov_cfr_crit")
+    zscrit = payload.get("zs_cfr_crit")
+    parts: list[str] = []
+
+    if isinstance(provcrit, pd.DataFrame) and not provcrit.empty and COL_PROV in provcrit.columns:
+        focus = [
+            f"{row[COL_PROV]} ({format_metric_value(row['CFR_%'], decimals=1)}%)"
+            for _, row in provcrit.head(3).iterrows()
+        ]
+        if focus:
+            parts.append("provinces " + ", ".join(focus))
+
+    if isinstance(zscrit, pd.DataFrame) and not zscrit.empty and COL_ZS in zscrit.columns:
+        focus = []
+        for _, row in zscrit.head(5).iterrows():
+            if COL_PROV in zscrit.columns:
+                label = f"{row[COL_PROV]} / {row[COL_ZS]}"
+            else:
+                label = str(row[COL_ZS])
+            focus.append(f"{label} ({format_metric_value(row['CFR_%'], decimals=1)}%)")
+        if focus:
+            parts.append("zones de santé " + ", ".join(focus))
+
+    if not parts:
+        return None
+
+    return "La létalité doit être vérifiée en priorité dans les " + " ; ".join(parts) + "."
+
+
+def _build_sitrep_summary_lines(payload: dict[str, Any]) -> list[str]:
+    """Assemble les messages-clés du SITREP à partir du périmètre sélectionné."""
+    lines: list[str] = []
+    current_df = payload.get("selected_df", pd.DataFrame())
+    cumulative_df = payload.get("cumulative_df", pd.DataFrame())
+    previous_df = payload.get("previous_df", pd.DataFrame())
+    current_label = payload.get("selected_week_label")
+    previous_label = payload.get("previous_week_label")
+
+    if isinstance(current_df, pd.DataFrame) and not current_df.empty:
+        overview_text = _build_scope_overview_text(
+            current_df,
+            scope_kind="weekly",
+            latest_week_df=current_df,
+            latest_label=current_label,
+        )
+        if overview_text:
+            lines.append(overview_text)
+
+        comparison_text = _build_comparison_sentence(
+            current_df=current_df,
+            previous_df=previous_df if isinstance(previous_df, pd.DataFrame) and not previous_df.empty else None,
+            current_label=current_label,
+            previous_label=previous_label,
+        )
+        if comparison_text:
+            lines.append(comparison_text)
+
+        top_prov_text = _build_top_province_summary_text(current_df)
+        if top_prov_text:
+            lines.append(top_prov_text)
+
+        investigation_text = _build_investigation_summary_text(current_df)
+        if investigation_text:
+            lines.append(investigation_text)
+
+        tdr_text = _build_tdr_summary_text(current_df)
+        if tdr_text:
+            lines.append(tdr_text)
+    else:
+        lines.append(
+            f"Aucun cas n’est rapporté pour {current_label or 'la semaine sélectionnée'} dans le périmètre filtré."
+        )
+
+    if isinstance(cumulative_df, pd.DataFrame) and not cumulative_df.empty:
+        cumulative_text = _build_scope_overview_text(
+            cumulative_df,
+            scope_kind="cumulative",
+            latest_week_df=current_df if isinstance(current_df, pd.DataFrame) and not current_df.empty else None,
+            latest_label=current_label,
+        )
+        if cumulative_text:
+            lines.append(cumulative_text)
+
+    critical_text = _build_sitrep_critical_cfr_summary(payload)
+    if critical_text:
+        lines.append(critical_text)
+
+    alert_text = _build_sitrep_alert_summary(payload.get("alertes_last"))
+    if alert_text:
+        lines.append(alert_text)
+
+    return lines
+
+
+def _build_sitrep_action_lines(payload: dict[str, Any]) -> list[str]:
+    """Construit des priorités opérationnelles courtes pour le SITREP."""
+    current_df = payload.get("selected_df", pd.DataFrame())
+    current_label = payload.get("selected_week_label", "la semaine sélectionnée")
+    actions: list[str] = []
+
+    if not isinstance(current_df, pd.DataFrame) or current_df.empty:
+        return [
+            f"Vérifier si l’absence de cas en {current_label} reflète réellement la situation ou un retard de notification."
+        ]
+
+    total_cases = int(len(current_df))
+    top_prov = payload.get("top_prov_focus")
+    if isinstance(top_prov, pd.DataFrame) and not top_prov.empty and total_cases > 0:
+        leader = top_prov.iloc[0]
+        leader_share = safe_pct(leader["Cas"], total_cases)
+        actions.append(
+            f"Cibler en priorité {leader[COL_PROV]}, qui concentre {leader_share:.1f}% des cas de {current_label}."
+        )
+
+    critical_text = _build_sitrep_critical_cfr_summary(payload)
+    if critical_text:
+        actions.append(critical_text)
+
+    alert_text = _build_sitrep_alert_summary(payload.get("alertes_last"))
+    if alert_text:
+        actions.append(alert_text)
+
+    if COL_TDR in current_df.columns:
+        n_tdr = int(_is_yes_series(current_df[COL_TDR]).sum())
+        if n_tdr <= 0:
+            actions.append(
+                "Aucun TDR n’est documenté sur la semaine sélectionnée : renforcer la confirmation biologique si elle est attendue."
+            )
+
+    if DATE_INV in current_df.columns:
+        investigated = int(pd.to_datetime(current_df[DATE_INV], errors="coerce").notna().sum())
+        if investigated < total_cases:
+            actions.append(
+                f"Compléter l’investigation de {format_metric_value(total_cases - investigated)} cas pour consolider la lecture opérationnelle."
+            )
+
+    return actions[:4]
+
+
 # =========================
 # NAVIGATION COMPACTE
 # - Surveillance & promptitude = anciens onglets 1 + 2 + 3
@@ -2547,27 +2738,181 @@ with tab_qualite:
         )
         
         st.subheader("Extraction des données filtrées, traçabilité et options d’export")
-        
-        st_dataframe_safe(df_f, height=420)
-        
-        csv = df_to_csv_bytes(df_f)
-        st.download_button(
-            "Télécharger CSV (filtré)",
-            data=csv,
-            file_name="cholera_filtre.csv",
-            mime="text/csv"
+
+        def _build_export_traceability_table(df_scope: pd.DataFrame) -> pd.DataFrame:
+            """Construit une table simple de traçabilité pour les exports."""
+            week_min_val = "-"
+            week_max_val = "-"
+            year_min_val = "-"
+            year_max_val = "-"
+
+            if COL_WNUM in df_scope.columns and df_scope[COL_WNUM].notna().any():
+                week_num = pd.to_numeric(df_scope[COL_WNUM], errors="coerce").dropna()
+                if not week_num.empty:
+                    week_min_val = int(week_num.min())
+                    week_max_val = int(week_num.max())
+
+            if COL_YEAR in df_scope.columns and df_scope[COL_YEAR].notna().any():
+                year_num = pd.to_numeric(df_scope[COL_YEAR], errors="coerce").dropna()
+                if not year_num.empty:
+                    year_min_val = int(year_num.min())
+                    year_max_val = int(year_num.max())
+
+            rows = [
+                {"Paramètre": "Date export", "Valeur": str(date.today())},
+                {"Paramètre": "Maladie / line list", "Valeur": DISEASE_SPECS.get(disease_key, {}).get("label", disease_key)},
+                {"Paramètre": "Sources chargées", "Valeur": ", ".join(files_used) if isinstance(files_used, list) and files_used else "Non documenté"},
+                {"Paramètre": "Cas exportés", "Valeur": int(len(df_scope))},
+                {"Paramètre": "Colonnes exportées", "Valeur": int(len(df_scope.columns))},
+                {"Paramètre": "SE min observée", "Valeur": week_min_val},
+                {"Paramètre": "SE max observée", "Valeur": week_max_val},
+                {"Paramètre": "Année min observée", "Valeur": year_min_val},
+                {"Paramètre": "Année max observée", "Valeur": year_max_val},
+                {
+                    "Paramètre": "Provinces distinctes",
+                    "Valeur": int(_surveillance_clean_text_series(df_scope[COL_PROV]).nunique()) if COL_PROV in df_scope.columns else 0,
+                },
+                {
+                    "Paramètre": "Zones de santé distinctes",
+                    "Valeur": int(_surveillance_clean_text_series(df_scope[COL_ZS]).nunique()) if COL_ZS in df_scope.columns else 0,
+                },
+            ]
+            return pd.DataFrame(rows)
+
+        export_traceability = _build_export_traceability_table(df_f)
+        export_quality_summary = standard_data_quality_summary(df_f)
+        export_qc_flags = qc_flags(df_f)
+        export_qc_resume = (
+            export_qc_flags["flag"].value_counts().rename_axis("Flag").reset_index(name="Occurrences")
+            if not export_qc_flags.empty else pd.DataFrame(columns=["Flag", "Occurrences"])
         )
-        
+        export_duplicates = duplicate_candidates_table(df_f)
+
+        export_completeness = pd.DataFrame()
+        export_completeness_by = None
+        export_required_fields = [
+            COL_PROV, COL_ZS, COL_AS, "YW", COL_WNUM, COL_SEX, COL_AGE,
+            COL_UNIT, DATE_ONSET, COL_PREL, COL_TDR, COL_TDRR, COL_HOSP,
+            COL_ISSUE, COL_CLASS,
+        ]
+        for group_col in [COL_PROV, COL_ZS, "YW", COL_WNUM]:
+            if group_col in df_f.columns and df_f[group_col].notna().any():
+                export_completeness = completeness_table(df_f, export_required_fields, by=group_col)
+                if not export_completeness.empty:
+                    export_completeness_by = group_col
+                    break
+
+        export_base_name = f"{str(disease_key).strip().lower()}_filtre"
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Cas exportés", format_metric_value(len(df_f)))
+        m2.metric("Colonnes", format_metric_value(len(df_f.columns)))
+        m3.metric(
+            "Provinces distinctes",
+            format_metric_value(int(_surveillance_clean_text_series(df_f[COL_PROV]).nunique()) if COL_PROV in df_f.columns else 0),
+        )
+        m4.metric(
+            "ZS distinctes",
+            format_metric_value(int(_surveillance_clean_text_series(df_f[COL_ZS]).nunique()) if COL_ZS in df_f.columns else 0),
+        )
+
+        info1, info2 = st.columns([0.9, 1.1])
+        with info1:
+            st.markdown("**Traçabilité de l’export**")
+            st_dataframe_safe(export_traceability, height=360)
+        with info2:
+            st.markdown("**Résumé qualité inclus dans le pack d’export**")
+            if not export_quality_summary.empty:
+                st_dataframe_safe(export_quality_summary, height=360)
+            else:
+                st.info("Aucun résumé qualité n’est disponible pour le périmètre filtré.")
+
+        with st.expander("Prévisualiser les contenus additionnels du pack d’export", expanded=False):
+            if not export_qc_resume.empty:
+                st.markdown("**Résumé des incohérences détectées**")
+                st_dataframe_safe(export_qc_resume, height=260)
+            else:
+                st.caption("Aucune incohérence détectée par `qc_flags` sur le périmètre filtré.")
+
+            if not export_duplicates.empty:
+                st.markdown("**Doublons potentiels**")
+                st_dataframe_safe(export_duplicates.head(100), height=260)
+            else:
+                st.caption("Aucun doublon potentiel n’a été identifié.")
+
+            if export_completeness_by and not export_completeness.empty:
+                st.markdown(f"**Complétude par {export_completeness_by}**")
+                st_dataframe_safe(export_completeness.head(100), height=260)
+            else:
+                st.caption("Aucun tableau de complétude additionnel n’a pu être préparé pour l’export.")
+
+        st.markdown("**Aperçu de la line list filtrée**")
+        st_dataframe_safe(df_f, height=420)
+
+        export_mode = st.radio(
+            "Type d’export",
+            ["Pack qualité + line list", "Line list uniquement"],
+            index=0,
+            horizontal=True,
+            key="qualite_export_mode",
+        )
+
+        dl1, dl2, dl3 = st.columns([1, 1, 1])
+        with dl1:
+            st.download_button(
+                "Télécharger CSV line list",
+                data=df_to_csv_bytes(df_f),
+                file_name=f"{export_base_name}.csv",
+                mime="text/csv",
+                key="dl_quality_export_csv_ll",
+            )
+        with dl2:
+            if not export_qc_flags.empty:
+                st.download_button(
+                    "Télécharger QC flags (CSV)",
+                    data=export_qc_flags.to_csv(index=False).encode("utf-8"),
+                    file_name=f"{export_base_name}_qc_flags.csv",
+                    mime="text/csv",
+                    key="dl_quality_export_csv_qc",
+                )
+        with dl3:
+            if not export_duplicates.empty:
+                st.download_button(
+                    "Télécharger doublons (CSV)",
+                    data=export_duplicates.to_csv(index=False).encode("utf-8"),
+                    file_name=f"{export_base_name}_doublons.csv",
+                    mime="text/csv",
+                    key="dl_quality_export_csv_dup",
+                )
+
         try:
             buffer = BytesIO()
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                df_f.to_excel(writer, sheet_name="LL_Cholera", index=False)
-        
+                df_f.to_excel(writer, sheet_name="LL_filtre", index=False)
+
+                if export_mode == "Pack qualité + line list":
+                    export_traceability.to_excel(writer, sheet_name="Traceabilite", index=False)
+                    export_quality_summary.to_excel(writer, sheet_name="Resume_qualite", index=False)
+                    if not export_qc_resume.empty:
+                        export_qc_resume.to_excel(writer, sheet_name="QC_resume", index=False)
+                    if not export_qc_flags.empty:
+                        export_qc_flags.to_excel(writer, sheet_name="QC_detail", index=False)
+                    if not export_duplicates.empty:
+                        export_duplicates.to_excel(writer, sheet_name="Doublons", index=False)
+                    if not export_completeness.empty:
+                        export_completeness.to_excel(writer, sheet_name="Completude", index=False)
+
+            excel_name = (
+                f"{export_base_name}_pack_qualite.xlsx"
+                if export_mode == "Pack qualité + line list"
+                else f"{export_base_name}.xlsx"
+            )
             st.download_button(
-                "Télécharger Excel (filtré)",
+                "Télécharger Excel",
                 data=buffer.getvalue(),
-                file_name="cholera_filtre.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                file_name=excel_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_quality_export_xlsx",
             )
         except Exception:
             st.info("Exportation Excel indisponible (openpyxl ?).")
@@ -2889,55 +3234,26 @@ with tab_sitrep:
         tab_help(
             "Comment lire cet onglet",
             """
-            ### 📰 Objectif du SITREP épidémiologique automatique
-            Cet onglet génère un **rapport épidémiologique hebdomadaire** à partir des données actuellement filtrées dans le tableau de bord.
+            **🎯 Objectif**
+            - Produire une lecture décisionnelle courte de la **semaine épidémiologique sélectionnée** à partir des filtres actifs.
 
-            ---
+            **📖 Logique de lecture**
+            - Le SITREP met l’accent sur la **semaine ciblée**, sa comparaison à la semaine précédente disponible et le **cumul annuel**.
+            - Les foyers géographiques, la létalité critique et les signaux utiles à l’action sont synthétisés en priorité.
 
-            ### ⚙️ Comment ça fonctionne
-            - Le SITREP épidémiologique utilise **les données filtrées (df_f)** : provinces, ZS, période, classification, etc.
-            - Les indicateurs sont recalculés **automatiquement** selon la **SE** et l’**année** sélectionnées.
-            - Si tu changes les filtres du dashboard, le SITREP épidémiologique se met à jour.
+            **🚫 Ce qui n’est pas répété ici**
+            - Les analyses détaillées de délais restent dans **Surveillance**.
+            - Les profils démographiques détaillés restent dans **Profil**.
+            - Les tableaux exhaustifs de qualité et de complétude restent dans **Données, complétude & qualité**.
 
-            ---
-
-            ### 📌 Sections du rapport
-            **1️⃣ Points saillants**  
-            Résumé automatique de la situation :
-            - nombre de cas et décès de la semaine
-            - évolution par rapport aux semaines précédentes
-            - zones de santé les plus affectées
-
-            **2️⃣ Situation épidémiologique**  
-            Indicateurs clés :
-            - Cas et décès de la semaine
-            - Taux de létalité (CFR)
-            - Cas cumulés de l’année
-            - Tableau des zones de santé les plus touchées
-
-            **3️⃣ Labo / qualité / signaux**  
-            Indicateurs de surveillance :
-            - Cascade prélèvement → TDR → résultat (si données disponibles)
-            - Alertes statistiques basées sur l’évolution récente des cas
-
-            **4️⃣ Analyse spatiale & gravité**  
-            - Tableau provinces (Cas/Décès/CFR)
-            - ZS à létalité critique (seuil configurable)
-
-            **5️⃣ Interprétation complémentaire pour la décision**  
-            - Lecture automatisée des principaux signaux observés
-            - Renvoi vers les onglets Profil et Surveillance pour les détails démographiques et de délais
-
-            ---
-
-            ### 📤 Exportation
-            Tu peux télécharger le SITREP épidémiologique généré automatiquement au format **PDF** en bas de page.
-            Le document exporté reflète exactement les données visibles dans cet onglet.
-
-            ---
-            ℹ️ **Astuce :** Pour produire le SITREP épidémiologique officiel de la semaine, règle d’abord les filtres du tableau de bord (période, province, etc.), puis viens ici pour exporter.
+            **📤 Exportation**
+            - Le PDF reprend la synthèse affichée dans cet onglet pour le périmètre actif.
             """,
             expanded=False
+        )
+
+        st.caption(
+            "Le SITREP reprend uniquement les informations nécessaires à la décision rapide, sans dupliquer les analyses détaillées déjà portées par les autres onglets."
         )
 
         # =========================================================
@@ -2992,8 +3308,8 @@ with tab_sitrep:
             annee = int(y_max)
 
         st.caption(
-            f"Scope SITREP épidémiologique: df_f (filtré). SE disponibles: {w_min}–{w_max}. "
-            f"Années disponibles: {y_min}–{y_max}."
+            f"Périmètre SITREP : données filtrées (`df_f`). SE disponibles : {w_min}–{w_max}. "
+            f"Années disponibles : {y_min}–{y_max}. Semaine ciblée : {_build_sitrep_week_label(semaine, annee)}."
         )
 
         # =========================================================
@@ -3164,6 +3480,50 @@ with tab_sitrep:
 
             cas_se, dec_se, cfr_se = _kpi(d_se)
             cas_cum, dec_cum, cfr_cum = _kpi(d_cum)
+            weekly_summary = build_weekly_summary(d)
+            selected_week_label = _build_sitrep_week_label(se, annee)
+            previous_week_df = pd.DataFrame()
+            previous_week_label = None
+
+            if not weekly_summary.empty and {COL_YEAR, COL_WNUM}.issubset(weekly_summary.columns):
+                weekly_reference = weekly_summary.reset_index(drop=True).copy()
+                match_mask = (
+                    pd.to_numeric(weekly_reference[COL_YEAR], errors="coerce") == int(annee)
+                ) & (
+                    pd.to_numeric(weekly_reference[COL_WNUM], errors="coerce") == int(se)
+                )
+                if bool(match_mask.any()):
+                    selected_idx = int(np.flatnonzero(match_mask.to_numpy())[0])
+                    if selected_idx > 0:
+                        previous_row = weekly_reference.iloc[selected_idx - 1]
+                        prev_year = pd.to_numeric(pd.Series([previous_row[COL_YEAR]]), errors="coerce").iloc[0]
+                        prev_week = pd.to_numeric(pd.Series([previous_row[COL_WNUM]]), errors="coerce").iloc[0]
+                        if pd.notna(prev_year) and pd.notna(prev_week):
+                            previous_week_label = (
+                                _build_sitrep_week_label(prev_week, prev_year)
+                            )
+                            prev_mask = pd.Series(True, index=d.index)
+                            if COL_YEAR in d.columns:
+                                prev_mask &= pd.to_numeric(d[COL_YEAR], errors="coerce") == int(prev_year)
+                            if COL_WNUM in d.columns:
+                                prev_mask &= pd.to_numeric(d[COL_WNUM], errors="coerce") == int(prev_week)
+                            previous_week_df = d.loc[prev_mask].copy()
+
+            prev_cases, prev_deaths, prev_cfr = _kpi(previous_week_df)
+            provinces_reporting = (
+                int(_surveillance_clean_text_series(d_se[COL_PROV]).nunique())
+                if COL_PROV in d_se.columns else 0
+            )
+            zs_reporting = (
+                int(_surveillance_clean_text_series(d_se[COL_ZS]).nunique())
+                if COL_ZS in d_se.columns else 0
+            )
+            top_prov_focus = _build_surveillance_top_table(d_se, [COL_PROV], top_n=5)
+            top_zs_focus = _build_surveillance_top_table(
+                d_se,
+                [c for c in [COL_PROV, COL_ZS] if c in d_se.columns],
+                top_n=5,
+            )
 
             # Table épidémiologique par ZS (SE sélectionnée)
             table_epi = pd.DataFrame()
@@ -3183,39 +3543,29 @@ with tab_sitrep:
                 if COL_ZS in table_epi.columns:
                     table_epi = table_epi.rename(columns={COL_ZS: "Zone de santé"})
 
-            # Points saillants (base)
-            points = [
-                f"SE{int(se):02d}/{int(annee)} : {cas_se} cas, {dec_se} décès (CFR {cfr_se:.2f}%).",
-                f"Cumul année (SE01→SE{int(se):02d}) : {cas_cum} cas, {dec_cum} décès (CFR {cfr_cum:.2f}%).",
-            ]
-            if not table_epi.empty:
-                top5 = table_epi.head(5)
-                if "Province de notification" in table_epi.columns:
-                    points.append(
-                        "Top 5 ZS (cas) : " + ", ".join(
-                            [f"{r['Province de notification']} / {r['Zone de santé']}={int(r['cas'])}"
-                             for _, r in top5.iterrows()]
-                        )
-                    )
-                else:
-                    points.append(
-                        "Top 5 ZS (cas) : " + ", ".join(
-                            [f"{r['Zone de santé']}={int(r['cas'])}" for _, r in top5.iterrows()]
-                        )
-                    )
-
             payload = {
                 "meta": {"semaine": int(se), "annee": int(annee), "date_publication": date_pub},
                 "kpi": {
                     "cas_semaine": cas_se,
                     "deces_semaine": dec_se,
                     "cfr_semaine": cfr_se,
+                    "cas_semaine_prev": prev_cases,
+                    "deces_semaine_prev": prev_deaths,
+                    "cfr_semaine_prev": prev_cfr,
                     "cas_cumul": cas_cum,
                     "deces_cumul": dec_cum,
                     "cfr_cumul": cfr_cum,
+                    "provinces_reporting": provinces_reporting,
+                    "zs_reporting": zs_reporting,
                 },
                 "table_epi": table_epi,
-                "points_saillants": points,
+                "selected_df": d_se,
+                "cumulative_df": d_cum,
+                "previous_df": previous_week_df,
+                "selected_week_label": selected_week_label,
+                "previous_week_label": previous_week_label,
+                "top_prov_focus": top_prov_focus,
+                "top_zs_focus": top_zs_focus,
             }
 
             # Cascade labo (si fonction dispo)
@@ -3225,14 +3575,10 @@ with tab_sitrep:
             payload["alertes_last"] = call_optional_function("build_alerts_last_week", d, default=pd.DataFrame())
 
             # Série hebdo filtrée pour visualisation / PDF
-            payload["weekly"] = build_weekly_summary(d)
+            payload["weekly"] = weekly_summary
 
             # Analyse spatiale et gravité
             payload.update(build_geo_tables(d_se, min_cas_zs=min_cas_zs, min_cas_prov=min_cas_prov))
-
-            # Démographie et délais
-            payload.update(build_demo_tables(d_se))
-            payload["delais"] = build_delay_summary(d_se)
 
             # Interprétation automatisée
             interpret = []
@@ -3255,6 +3601,15 @@ with tab_sitrep:
                     interpret.append("ZS à létalité élevée (seuil) : " + ", ".join(parts))
 
             payload["interpretation"] = interpret
+            payload["summary_lines"] = _build_sitrep_summary_lines(payload)
+            payload["decision_focus"] = _build_sitrep_action_lines(payload)
+            payload["points_saillants"] = payload["summary_lines"][:5]
+            payload["defis_besoins"] = payload["decision_focus"][:4]
+            payload["perspectives"] = [
+                "Les analyses détaillées de délais sont consultables dans l’onglet Surveillance.",
+                "Les profils âge/sexe détaillés sont consultables dans l’onglet Profil.",
+                "Les vérifications exhaustives de complétude et de qualité restent dans l’onglet Données, complétude & qualité.",
+            ]
             payload["images"] = []
 
             if include_images:
@@ -3324,119 +3679,204 @@ with tab_sitrep:
             include_images=False,
         )
 
-        # =========================================================
-        # 4) Affichage (pliable)
-        # =========================================================
-        with st.expander("1) Points saillants", expanded=True):
-            if sitrep_payload.get("points_saillants"):
-                for b in sitrep_payload["points_saillants"]:
-                    st.markdown(f"- {b}")
+        selected_df = sitrep_payload.get("selected_df", pd.DataFrame())
+        selected_week_label = sitrep_payload.get("selected_week_label", _build_sitrep_week_label(semaine, annee))
+        previous_week_label = sitrep_payload.get("previous_week_label")
+        k = sitrep_payload["kpi"]
+
+        st.divider()
+        render_section_title(2, "Lecture rapide et message clé")
+        st.caption(
+            "Cette lecture reprend la semaine ciblée, sa comparaison avec la semaine précédente disponible et le cumul annuel, sans reprendre les analyses détaillées d’un autre onglet."
+        )
+
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric(
+            "Cas (SE)",
+            format_metric_value(k["cas_semaine"]),
+            delta=_format_sitrep_metric_delta(k["cas_semaine"], k.get("cas_semaine_prev")),
+        )
+        k2.metric(
+            "Décès (SE)",
+            format_metric_value(k["deces_semaine"]),
+            delta=_format_sitrep_metric_delta(k["deces_semaine"], k.get("deces_semaine_prev")),
+        )
+        k3.metric(
+            "Létalité (%)",
+            format_metric_value(k["cfr_semaine"], decimals=2),
+            delta=_format_sitrep_metric_delta(k["cfr_semaine"], k.get("cfr_semaine_prev")),
+        )
+        k4.metric("Provinces actives", format_metric_value(k["provinces_reporting"]))
+        k5.metric("ZS actives", format_metric_value(k["zs_reporting"]))
+
+        if previous_week_label:
+            st.caption(f"Comparaison de {selected_week_label} avec {previous_week_label}.")
+        else:
+            st.caption(f"Aucune semaine de référence antérieure n’est disponible pour comparer {selected_week_label}.")
+
+        st.caption(
+            (
+                f"Cumul annuel jusqu’à {selected_week_label} : {format_metric_value(k['cas_cumul'])} cas, "
+                f"{format_metric_value(k['deces_cumul'])} décès (létalité {format_metric_value(k['cfr_cumul'], decimals=2)}%)."
+            )
+        )
+
+        if isinstance(selected_df, pd.DataFrame) and selected_df.empty:
+            st.warning("La semaine sélectionnée ne contient aucun cas dans le périmètre filtré actuel.")
+
+        summary_lines = sitrep_payload.get("summary_lines", [])
+        if summary_lines:
+            st.markdown("**Résumé automatique**")
+            st.markdown("\n".join([f"- {line}" for line in summary_lines]))
+
+        decision_focus = sitrep_payload.get("decision_focus", [])
+        if decision_focus:
+            st.markdown("**Priorités opérationnelles immédiates**")
+            st.markdown("\n".join([f"- {line}" for line in decision_focus]))
+
+        st.divider()
+        render_section_title(3, "Foyers géographiques et dynamique")
+        st.caption(
+            "Le SITREP montre ici les foyers principaux et la dynamique utile à la décision. Les tableaux exhaustifs restent repliés pour éviter de surcharger la lecture."
+        )
+
+        geo1, geo2 = st.columns(2)
+        with geo1:
+            st.markdown("**Top 5 provinces de la semaine ciblée**")
+            top_prov = sitrep_payload.get("top_prov_focus")
+            if isinstance(top_prov, pd.DataFrame) and not top_prov.empty:
+                st.caption(
+                    _describe_surveillance_top_table(
+                        top_prov,
+                        [COL_PROV],
+                        int(len(selected_df)) if isinstance(selected_df, pd.DataFrame) else 0,
+                        "Aucune province exploitable pour cette semaine.",
+                    )
+                )
+                st.dataframe(top_prov, width="stretch", hide_index=True)
             else:
-                st.caption("Aucun point saillant n’a été identifié pour le périmètre sélectionné.")
+                st.info("Aucune province exploitable n’est disponible pour la semaine sélectionnée.")
 
-        with st.expander("2) Situation épidémiologique", expanded=True):
-            k = sitrep_payload["kpi"]
+        with geo2:
+            st.markdown("**Top 5 zones de santé de la semaine ciblée**")
+            top_zs = sitrep_payload.get("top_zs_focus")
+            zs_group_cols = [c for c in [COL_PROV, COL_ZS] if c in selected_df.columns] if isinstance(selected_df, pd.DataFrame) else []
+            if isinstance(top_zs, pd.DataFrame) and not top_zs.empty:
+                st.caption(
+                    _describe_surveillance_top_table(
+                        top_zs,
+                        zs_group_cols,
+                        int(len(selected_df)) if isinstance(selected_df, pd.DataFrame) else 0,
+                        "Aucune zone de santé exploitable pour cette semaine.",
+                    )
+                )
+                st.dataframe(top_zs, width="stretch", hide_index=True)
+            else:
+                st.info("Aucune zone de santé exploitable n’est disponible pour la semaine sélectionnée.")
 
-            k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("Cas (SE)", f"{k['cas_semaine']:,}".replace(",", " "))
-            k2.metric("Décès (SE)", f"{k['deces_semaine']:,}".replace(",", " "))
-            k3.metric("CFR (SE) %", f"{k['cfr_semaine']:.2f}")
-            k4.metric(
-                "Semaine min (filtré)",
-                str(df_f[COL_WNUM].min()) if (COL_WNUM in df_f.columns and len(df_f)) else "-"
-            )
-            k5.metric(
-                "Semaine max (filtré)",
-                str(df_f[COL_WNUM].max()) if (COL_WNUM in df_f.columns and len(df_f)) else "-"
-            )
-
-            st.caption(
-                (
-                    f"Cumul année (SE01→SE{int(semaine):02d}) : "
-                    f"{k['cas_cumul']:,} cas, {k['deces_cumul']:,} décès (CFR {k['cfr_cumul']:.2f}%)."
-                ).replace(",", " ")
-            )
-
+        with st.expander("Afficher le tableau détaillé par zone de santé", expanded=False):
             table_epi = sitrep_payload.get("table_epi")
             if table_epi is not None and isinstance(table_epi, pd.DataFrame) and not table_epi.empty:
                 st_dataframe_safe(table_epi, height=520)
             else:
-                st.caption("Le tableau des zones de santé est indisponible : absence de données sur la période sélectionnée ou variable ZS manquante.")
-
-            # Courbe hebdo (si dispo)
-            wk = sitrep_payload.get("weekly")
-            if isinstance(wk, pd.DataFrame) and not wk.empty and "YW" in wk.columns:
-                st.markdown("### Évolution hebdomadaire sur le périmètre filtré")
-                fig = build_weekly_cases_deaths_combo(
-                    weekly_df=wk,
-                    x_col="YW",
-                    cases_col="Cas",
-                    deaths_col="Décès",
-                    titre=" ",
-                    x_titre="Semaine (YW)",
-                    y_titre_cas="Nombre de cas",
-                    y_titre_deces="Nombre de décès",
-                    rotation=0,
-                    annot_bars=annot_vals,
-                    annot_line=annot_vals,
+                st.caption(
+                    "Le tableau détaillé des zones de santé est indisponible : absence de données sur la période sélectionnée ou variable ZS manquante."
                 )
-                fig = apply_plotly_value_annotations(fig, annot_vals)
-                st.plotly_chart(fig, width="stretch")
 
-        with st.expander("3) Labo / qualité / signaux", expanded=False):
+        st.divider()
+        render_section_title(4, "Signaux utiles à la décision")
+        st.caption(
+            "Cette section ne reprend que les signaux directement utiles à l’action immédiate. Les analyses détaillées restent accessibles dans leurs onglets spécialisés."
+        )
+
+        provcrit = sitrep_payload.get("prov_cfr_crit")
+        zscrit = sitrep_payload.get("zs_cfr_crit")
+        n_investigated = (
+            int(pd.to_datetime(selected_df[DATE_INV], errors="coerce").notna().sum())
+            if isinstance(selected_df, pd.DataFrame) and DATE_INV in selected_df.columns else 0
+        )
+        n_tdr = (
+            int(_is_yes_series(selected_df[COL_TDR]).sum())
+            if isinstance(selected_df, pd.DataFrame) and COL_TDR in selected_df.columns else 0
+        )
+
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Cas investigués", format_metric_value(n_investigated))
+        s2.metric("TDR documentés", format_metric_value(n_tdr))
+        s3.metric(
+            "Prov. CFR critique",
+            format_metric_value(len(provcrit)) if isinstance(provcrit, pd.DataFrame) else "0",
+        )
+        s4.metric(
+            "ZS CFR critique",
+            format_metric_value(len(zscrit)) if isinstance(zscrit, pd.DataFrame) else "0",
+        )
+
+        signal_lines = []
+        critical_summary = _build_sitrep_critical_cfr_summary(sitrep_payload)
+        if critical_summary:
+            signal_lines.append(critical_summary)
+        alert_summary = _build_sitrep_alert_summary(sitrep_payload.get("alertes_last"))
+        if alert_summary:
+            signal_lines.append(alert_summary)
+
+        if signal_lines:
+            st.markdown("**Points de vigilance**")
+            st.markdown("\n".join([f"- {line}" for line in signal_lines]))
+
+        with st.expander("Cascade biologique et investigation", expanded=False):
             cascad = sitrep_payload.get("cascade")
             if cascad is not None and isinstance(cascad, pd.DataFrame) and not cascad.empty:
-                st.markdown("### Cascade prélèvement → TDR → résultat")
+                st.markdown("**Cascade prélèvement → TDR → résultat**")
                 st_dataframe_safe(cascad, height=320)
             else:
                 st.caption("La cascade est indisponible : fonction absente, variables manquantes ou absence de données sur la semaine sélectionnée.")
 
+        with st.expander("Alertes statistiques", expanded=False):
             al = sitrep_payload.get("alertes_last")
             if al is not None and isinstance(al, pd.DataFrame) and not al.empty:
-                st.markdown("### Signaux d’alerte sur la dernière semaine disponible")
                 cols = [c for c in ["YW", "Cas", "Cas_prev", "var_%", "baseline_3w", "signal"] if c in al.columns]
                 st_dataframe_safe(al[cols] if cols else al, height=420)
             else:
                 st.caption("Les alertes sont indisponibles : fonction absente ou historique insuffisant.")
 
-        with st.expander("4) Analyse spatiale & gravité", expanded=True):
+        with st.expander("Létalité critique : détail provinces et zones de santé", expanded=False):
             provt = sitrep_payload.get("prov_table")
             if provt is not None and isinstance(provt, pd.DataFrame) and not provt.empty:
-                st.markdown("### Provinces — cas, décès et létalité (semaine sélectionnée)")
-                st_dataframe_safe(provt, height=360)
+                st.markdown("**Provinces — cas, décès et létalité (semaine sélectionnée)**")
+                st_dataframe_safe(provt, height=300)
 
-            provcrit = sitrep_payload.get("prov_cfr_crit")
             if provcrit is not None and isinstance(provcrit, pd.DataFrame) and not provcrit.empty:
-                st.markdown(f"### Provinces à CFR critique (Cas ≥ {int(min_cas_prov)})")
-                st_dataframe_safe(provcrit, height=280)
+                st.markdown(f"**Provinces à CFR critique (Cas ≥ {int(min_cas_prov)})**")
+                st_dataframe_safe(provcrit, height=260)
+            else:
+                st.caption("Aucune province ne dépasse le seuil critique défini.")
 
-            zscrit = sitrep_payload.get("zs_cfr_crit")
             if zscrit is not None and isinstance(zscrit, pd.DataFrame) and not zscrit.empty:
-                st.markdown(f"### ZS à CFR critique (Cas ≥ {int(min_cas_zs)})")
-                st_dataframe_safe(zscrit.head(30), height=520)
+                st.markdown(f"**ZS à CFR critique (Cas ≥ {int(min_cas_zs)})**")
+                st_dataframe_safe(zscrit.head(30), height=420)
             else:
-                st.caption("Aucune ZS ne dépasse le seuil (ou données insuffisantes).")
+                st.caption("Aucune ZS ne dépasse le seuil critique défini.")
 
-        with st.expander("5) Interprétation complémentaire", expanded=False):
-            st.caption(
-                "Les détails démographiques et les analyses de délais sont consolidés dans les onglets "
-                "**Profil épidémiologique des cas** et **Surveillance épidémiologique, létalité et promptitude** "
-                "afin d’éviter leur répétition dans le SITREP."
+        st.divider()
+        render_section_title(5, "Articulation avec les autres onglets")
+        st.caption("Chaque onglet garde une fonction distincte pour éviter les doublons dans le tableau de bord.")
+        st.markdown(
+            "\n".join(
+                [
+                    "- `SITREP` : synthèse courte, foyers prioritaires, signaux et export PDF.",
+                    "- `Surveillance` : dynamique par fenêtres temporelles, létalité et analyses détaillées de promptitude.",
+                    "- `Profil` : structure démographique, tableaux descriptifs détaillés et stratifications.",
+                    "- `Données, complétude & qualité` : cohérence, doublons, complétude et tableaux de contrôle détaillés.",
+                ]
             )
-
-            interp = sitrep_payload.get("interpretation", [])
-            if interp:
-                st.markdown("### Interprétation épidémiologique automatisée pour la décision")
-                for line in interp:
-                    st.markdown(f"- {line}")
-            else:
-                st.info("Aucune interprétation automatisée complémentaire n’est disponible pour le périmètre sélectionné.")
+        )
 
         # =========================================================
         # 5) Exportation PDF
         # =========================================================
         st.divider()
-        st.markdown("### Exportation")
+        render_section_title(6, "Exportation")
 
         if "export_sitrep_pdf" in globals() and callable(export_sitrep_pdf):
             cexp1, cexp2 = st.columns([1, 1])
