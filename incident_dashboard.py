@@ -1021,29 +1021,39 @@ def _build_investigation_summary_text(df_scope: pd.DataFrame) -> Optional[str]:
 
 def _build_tdr_summary_text(df_scope: pd.DataFrame) -> Optional[str]:
     """Construit un résumé standard des TDR réalisés et de la positivité."""
-    if COL_TDR not in df_scope.columns:
-        return None
+    result_col = None
+    if COL_TDRR in df_scope.columns and df_scope[COL_TDRR].notna().any():
+        result_col = COL_TDRR
+    elif "Resultat_labo" in df_scope.columns and df_scope["Resultat_labo"].notna().any():
+        result_col = "Resultat_labo"
 
-    tdr_yes = _is_yes_series(df_scope[COL_TDR])
-    n_tdr = int(tdr_yes.sum())
-    if n_tdr <= 0:
-        return "TDR réalisés : 0."
+    if COL_TDR in df_scope.columns:
+        tdr_yes = _is_yes_series(df_scope[COL_TDR])
+        n_tdr = int(tdr_yes.sum())
+        if n_tdr <= 0:
+            return "TDR réalisés : 0."
+        if result_col is None:
+            return f"TDR réalisés : {format_metric_value(n_tdr)}."
+        label_prefix = "TDR réalisés"
+    else:
+        if result_col is None:
+            return None
+        tdr_yes = pd.Series(True, index=df_scope.index)
+        n_tdr = int(df_scope[result_col].notna().sum())
+        label_prefix = "Résultats labo renseignés"
 
-    if COL_TDRR not in df_scope.columns:
-        return f"TDR réalisés : {format_metric_value(n_tdr)}."
-
-    res_n = _tdr_result_norm(df_scope[COL_TDRR])
+    res_n = _tdr_result_norm(df_scope[result_col])
     valid_mask = tdr_yes & res_n.isin(TDR_POS_SET.union(TDR_NEG_SET))
     n_valid = int(valid_mask.sum())
     n_pos = int((tdr_yes & res_n.isin(TDR_POS_SET)).sum())
     if n_valid > 0:
         positivity = safe_pct(n_pos, n_valid)
         return (
-            f"TDR réalisés : {format_metric_value(n_tdr)} "
+            f"{label_prefix} : {format_metric_value(n_tdr)} "
             f"(positivité : {format_metric_value(positivity, decimals=1)}%; "
             f"{format_metric_value(n_pos)} positifs sur {format_metric_value(n_valid)} résultats interprétables)."
         )
-    return f"TDR réalisés : {format_metric_value(n_tdr)} (positivité non calculable : résultats interprétables absents)."
+    return f"{label_prefix} : {format_metric_value(n_tdr)} (positivité non calculable : résultats interprétables absents)."
 
 
 def _build_comparison_sentence(
@@ -2140,6 +2150,10 @@ with tab_profil:
                 with st.expander("Afficher la table hebdomadaire des indicateurs laboratoire", expanded=False):
                     st_dataframe_safe(weekly_lab, height=320)
 
+            has_tdr_chain = COL_TDR in df_f.columns and df_f[COL_TDR].notna().any()
+            coverage_label = "TDR réalisé (%)" if has_tdr_chain else "Tests documentés (%)"
+            positivity_label = "Positivité TDR (%)" if has_tdr_chain else "Positivité labo (%)"
+
             if COL_PROV in df_f.columns:
                 st.markdown("**Tableau provincial consolidé des indicateurs clés de surveillance**")
                 prov_kpi = compute_group_indicators(df_f, COL_PROV).sort_values("Cas", ascending=False).head(15).copy()
@@ -2150,8 +2164,8 @@ with tab_profil:
                         "CFR_%": "CFR (%)",
                         "Prélèvement_%": "Prélèvement (%)",
                         "Hospitalisation_%": "Hospitalisation (%)",
-                        "TDR_réalisé_%": "TDR réalisé (%)",
-                        "Positivité_TDR_%": "Positivité TDR (%)",
+                        "TDR_réalisé_%": coverage_label,
+                        "Positivité_TDR_%": positivity_label,
                     }
                 )
                 st_dataframe_safe(prov_kpi, height=420)
@@ -2178,8 +2192,8 @@ with tab_profil:
                 "CFR (%)": "CFR (%)",
                 "Prélèvement (%)": "Prélèvement (%)",
                 "Hospitalisation (%)": "Hospitalisation (%)",
-                "TDR réalisé (%)": "TDR réalisé (%)",
-                "Positivité TDR (%)": "Positivité TDR (%)",
+                coverage_label: coverage_label,
+                positivity_label: positivity_label,
             }
 
             s_cfg1, s_cfg2, s_cfg3 = st.columns([1.15, 1.15, 0.9])
@@ -2214,8 +2228,8 @@ with tab_profil:
                     "CFR_%": "CFR (%)",
                     "Prélèvement_%": "Prélèvement (%)",
                     "Hospitalisation_%": "Hospitalisation (%)",
-                    "TDR_réalisé_%": "TDR réalisé (%)",
-                    "Positivité_TDR_%": "Positivité TDR (%)",
+                    "TDR_réalisé_%": coverage_label,
+                    "Positivité_TDR_%": positivity_label,
                 }
             )
 
@@ -2968,6 +2982,7 @@ with tab_qualite:
         
         kpi = compute_indicators(df_f)
         casc_global = cascade_metrics(df_f) if n_total else pd.DataFrame()
+        has_tdr_chain = COL_TDR in df_f.columns and df_f[COL_TDR].notna().any()
         
         # KPI “qualité TDR” (sur cascade)
         kpi_incoh_res_wo_tdr = _get_pct_from_cascade(casc_global, "Résultat renseigné mais TDR_realise != Oui")
@@ -2989,9 +3004,13 @@ with tab_qualite:
         )
         
         c3.metric(
-            "Couverture TDR (%)",
+            "Couverture TDR (%)" if has_tdr_chain else "Couverture test (%)",
             "-" if np.isnan(kpi["tdr_pct"]) else f"{kpi['tdr_pct']:.1f}",
-            help=f"TDR_realise=Oui / Tous les cas filtrés. n={kpi.get('tdr_num', 0)}/{kpi.get('tdr_den', kpi.get('n_cases', 0))}"
+            help=(
+                f"TDR_realise=Oui / Tous les cas filtrés. n={kpi.get('tdr_num', 0)}/{kpi.get('tdr_den', kpi.get('n_cases', 0))}"
+                if has_tdr_chain
+                else f"Tests documentés / Tous les cas filtrés. n={kpi.get('tdr_num', 0)}/{kpi.get('tdr_den', kpi.get('n_cases', 0))}"
+            )
         )
         
         # ✅ Positivité
@@ -2999,13 +3018,16 @@ with tab_qualite:
         if not np.isnan(kpi["pos_pct"]):
             pos_label = f"{kpi['pos_pct']:.1f}"
         c4.metric(
-            "Positivité TDR",
+            "Positivité TDR" if has_tdr_chain else "Positivité test",
             pos_label,
             help=(
-                "Positifs / (Positifs + Négatifs) parmi les TDR interprétables "
-                "(TDR_realise=Oui ET résultat valide Pos/Nég). "
-                f"n={kpi.get('pos_num', 0)}/{kpi.get('pos_den', 0)}"
-            )
+                (
+                    "Positifs / (Positifs + Négatifs) parmi les TDR interprétables "
+                    "(TDR_realise=Oui ET résultat valide Pos/Nég). "
+                )
+                if has_tdr_chain
+                else "Positifs / (Positifs + Négatifs) parmi les résultats labo interprétables. "
+            ) + f"n={kpi.get('pos_num', 0)}/{kpi.get('pos_den', 0)}"
         )
         
         # 🆕 Taux hospitalisation
@@ -3026,21 +3048,25 @@ with tab_qualite:
         if "invalid_pct" in kpi and not np.isnan(kpi["invalid_pct"]):
             inv_label = f"{kpi['invalid_pct']:.1f}"
         c7.metric(
-            "% TDR invalides",
+            "% TDR invalides" if has_tdr_chain else "% tests invalides",
             inv_label,
             help=(
-                "Invalides (ex: INBA/bande absente) / TDR réalisés (TDR_realise=Oui). "
-                f"n={kpi.get('invalid_num', 0)}/{kpi.get('invalid_den', 0)}"
+                (
+                    "Invalides (ex: INBA/bande absente) / TDR réalisés (TDR_realise=Oui). "
+                    if has_tdr_chain
+                    else "Invalides / tests documentés. "
+                )
+                + f"n={kpi.get('invalid_num', 0)}/{kpi.get('invalid_den', 0)}"
             )
         )
         
-        # Alertes qualité TDR (si dispo)
+        # Alertes qualité tests (si dispo)
         if not np.isnan(kpi_incoh_res_wo_tdr) or not np.isnan(kpi_status_in_result):
-            with st.expander("📌 Signaux qualité TDR (données)", expanded=False):
+            with st.expander("📌 Signaux qualité tests (données)", expanded=False):
                 if not np.isnan(kpi_incoh_res_wo_tdr):
-                    st.write(f"- **% Résultat renseigné mais TDR_realise ≠ Oui**: **{kpi_incoh_res_wo_tdr:.1f}%**")
+                    st.write(f"- **% Résultat renseigné mais TDR_realise ≠ Oui / statut test absent**: **{kpi_incoh_res_wo_tdr:.1f}%**")
                 if not np.isnan(kpi_status_in_result):
-                    st.write(f"- **% Statut saisi dans TDR_Resultat** (ex: non réalisé/non prélevé): **{kpi_status_in_result:.1f}%**")
+                    st.write(f"- **% Statut saisi dans la colonne de résultat** (ex: non réalisé/non prélevé): **{kpi_status_in_result:.1f}%**")
         
         with st.expander("🔎 Détail cascade labo (entonnoir) + incohérences", expanded=False):
             st_dataframe_safe(casc_global)

@@ -90,6 +90,10 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
         "notif_candidates": ["Date_notification"],
         "adm_candidates": ["Date_admission_au_CT"],
         "prel_candidates": ["Date_prelevement"],
+        "issue_candidates": ["Date_issue", "Date_sortie_au_CT", "Date_de_guerie"],
+        "result_candidates": ["Date_resultat"],
+        "receipt_candidates": ["Date_reception_labo"],
+        "class_candidates": ["Classification_finale"],
     },
     "rougeole": {
         "label": "Rougeole (line list)",
@@ -103,6 +107,10 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
         "notif_candidates": ["Date_notification"],
         "adm_candidates": ["Date_admission_au_CT", "Date_admission"],
         "prel_candidates": ["Date_prelevement", "Date_prelevement_clean"],
+        "issue_candidates": ["Date_issue"],
+        "result_candidates": ["Date_resultat", "Date_reception_resultat"],
+        "receipt_candidates": ["Date_reception_labo", "Date_reception_echantillon", "Date_acheminement"],
+        "class_candidates": ["Classification_finale", "Status_cas"],
     },
     "mpox": {
         "label": "Mpox (line list)",
@@ -208,6 +216,10 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
         "notif_candidates": ["Date_notification"],
         "adm_candidates": ["Date_admission_au_CT"],
         "prel_candidates": ["Date_prelevement"],
+        "issue_candidates": ["Date_issue", "Date_sortie_au_CT", "Date_deces"],
+        "result_candidates": ["Date_resultat"],
+        "receipt_candidates": ["Date_reception_labo"],
+        "class_candidates": ["Classification_finale"],
     },
     "intox": {
         "label": "Intoxication (line list)",
@@ -221,6 +233,10 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
         "notif_candidates": ["Date_notification", "Date_consultation"],
         "adm_candidates": ["Date_admission_au_CT"],
         "prel_candidates": ["Date_prelevement"],
+        "issue_candidates": ["Date_issue", "Date_sortie_au_CT"],
+        "result_candidates": ["Date_resultat"],
+        "receipt_candidates": ["Date_reception_labo"],
+        "class_candidates": ["Classification_finale"],
     },
     "idsr": {
         "label": "IDSR agrégé (hebdo)",
@@ -246,11 +262,18 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
         "label": "Méningite (line list)",
         "enabled": True,
         "default_sheet": "LL_Meningite",
-        "rename_map": {},
+        "rename_map": {
+            "Date_de_reception": "Date_reception_labo",
+            "Classification_investigation": "Classification_finale",
+        },
         "onset_candidates": ["Date_debut_maladie", "Date_debut_symptomes"],
         "notif_candidates": ["Date_notification", "Date_consultation"],
         "adm_candidates": ["Date_admission_au_CT", "Date_admission"],
         "prel_candidates": ["Date_prelevement"],
+        "issue_candidates": ["Date_issue", "Date_sortie_au_CT"],
+        "result_candidates": ["Date_resultat"],
+        "receipt_candidates": ["Date_reception_labo", "Date_de_reception"],
+        "class_candidates": ["Classification_finale", "Classification_investigation"],
     },
     "autre": {
         "label": "Autre (line list générique)",
@@ -274,6 +297,26 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
             "Date_prelevement",
             "Date_prelevement_clean",
         ],
+        "issue_candidates": [
+            "Date_issue",
+            "Date_sortie_au_CT",
+            "Date_deces",
+            "Date_de_guerie",
+        ],
+        "result_candidates": [
+            "Date_resultat",
+            "Date_reception_resultat",
+        ],
+        "receipt_candidates": [
+            "Date_reception_labo",
+            "Date_reception_echantillon",
+            "Date_de_reception",
+        ],
+        "class_candidates": [
+            "Classification_finale",
+            "Classification_investigation",
+            "Status_cas",
+        ],
     },
 }
 
@@ -296,27 +339,33 @@ def _coalesce_first(df: pd.DataFrame, candidates: List[str]) -> pd.Series:
         out = pd.Series([pd.NA] * len(df), index=df.index)
     return out
 
+
+def _rename_columns_by_alias_map(df: pd.DataFrame, alias_map: Dict[str, str]) -> pd.DataFrame:
+    """Applique un renommage robuste aux accents, espaces et variantes de casse."""
+    if not alias_map:
+        return df
+
+    real_cols_norm = {_normalize_name(c): c for c in df.columns}
+    rename_dict: Dict[str, str] = {}
+    for src, dst in alias_map.items():
+        real_src = real_cols_norm.get(_normalize_name(src))
+        if (real_src is not None) and (dst not in df.columns):
+            rename_dict[real_src] = dst
+
+    return df.rename(columns=rename_dict) if rename_dict else df
+
 def standardize_ll_by_disease(df: pd.DataFrame, disease_key: str) -> pd.DataFrame:
     """
     1) Renommage spécifique maladie (DISEASE_SPECS[disease_key]['rename_map'])
     2) Standardisation core (standardize_ll_core)
-    3) Coalesce dates: Date_debut_maladie / Date_notification / Date_admission_au_CT / Date_prelevement
+    3) Coalesce les dates et variables standards utiles aux onglets
        à partir des candidats de la maladie (si colonnes manquantes ou vides)
     """
     spec = DISEASE_SPECS.get(disease_key, DISEASE_SPECS["cholera"])
     df = _clean_colnames(df)
 
     # 1) Rename spécifique (robuste aux accents, espaces, ponctuation)
-    rmap = spec.get("rename_map", {}) or {}
-    real_cols_norm = {_normalize_name(c): c for c in df.columns}
-    rename_dict = {}
-    for src, dst in rmap.items():
-        src_norm = _normalize_name(src)
-        real_src = real_cols_norm.get(src_norm)
-        if (real_src is not None) and (dst not in df.columns):
-            rename_dict[real_src] = dst
-    if rename_dict:
-        df = df.rename(columns=rename_dict)
+    df = _rename_columns_by_alias_map(df, spec.get("rename_map", {}) or {})
 
     # 2) Core
     df = standardize_ll_core(df)
@@ -347,24 +396,38 @@ def standardize_ll_by_disease(df: pd.DataFrame, disease_key: str) -> pd.DataFram
             has_result = df["Resultat_labo"].notna()
             df.loc[has_result & df["TDR_realise"].isna(), "TDR_realise"] = "Oui"
 
-    # 3) Coalesce dates (si vides)
-    # - On convertit toutes les candidates en datetime (robuste)
-    for colset in ["onset_candidates", "notif_candidates", "adm_candidates", "prel_candidates"]:
+    # 3) Coalesce dates et variables standards (si vides)
+    date_candidate_map = {
+        "Date_debut_maladie": "onset_candidates",
+        "Date_notification": "notif_candidates",
+        "Date_admission_au_CT": "adm_candidates",
+        "Date_prelevement": "prel_candidates",
+        "Date_reception_labo": "receipt_candidates",
+        "Date_resultat": "result_candidates",
+        "Date_issue": "issue_candidates",
+    }
+    text_candidate_map = {
+        "Classification_finale": "class_candidates",
+    }
+
+    # - On convertit toutes les candidates de date en datetime (robuste)
+    for colset in date_candidate_map.values():
         for c in spec.get(colset, []) or []:
             if c in df.columns:
                 df[c] = _to_dt(df[c])
 
     # On remplit les colonnes standard si elles sont totalement vides
-    if ("Date_debut_maladie" in df.columns) and df["Date_debut_maladie"].isna().all():
-        df["Date_debut_maladie"] = _coalesce_first(df, spec.get("onset_candidates", []))
-    if ("Date_notification" in df.columns) and df["Date_notification"].isna().all():
-        df["Date_notification"] = _coalesce_first(df, spec.get("notif_candidates", []))
-    if ("Date_admission_au_CT" in df.columns):
-        if df["Date_admission_au_CT"].isna().all():
-            df["Date_admission_au_CT"] = _coalesce_first(df, spec.get("adm_candidates", []))
-    if ("Date_prelevement" in df.columns):
-        if df["Date_prelevement"].isna().all():
-            df["Date_prelevement"] = _coalesce_first(df, spec.get("prel_candidates", []))
+    for target_col, spec_key in date_candidate_map.items():
+        if target_col not in df.columns:
+            df[target_col] = pd.NaT
+        if df[target_col].isna().all():
+            df[target_col] = _coalesce_first(df, spec.get(spec_key, []))
+
+    for target_col, spec_key in text_candidate_map.items():
+        if target_col not in df.columns:
+            df[target_col] = pd.NA
+        if df[target_col].isna().all():
+            df[target_col] = _coalesce_first(df, spec.get(spec_key, []))
 
     # Recalcul ISO si nécessaire après coalesce
     # (ex: Mpox où Date_debut_maladie était vide et vient d'être rempli)
@@ -1134,7 +1197,7 @@ def clean_str(s: pd.Series) -> pd.Series:
     )
 
 def norm_yesno(x):
-    if x is None or (isinstance(x, float) and np.isnan(x)):
+    if x is None or pd.isna(x):
         return None
     s = str(x).strip().lower()
     if s in ["oui", "o", "y", "yes", "1", "true", "vrai"]:
@@ -1268,6 +1331,17 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
     prelev_pct, n_prelev_yes, den_cases = _rate_yes(COL_PREL)
     hosp_pct, n_hosp_yes, _ = _rate_yes(COL_HOSP)
     tdr_pct, n_tdr_yes, _ = _rate_yes(COL_TDR)
+    if (
+        ("Resultat_labo" in df.columns)
+        and (n_cases > 0)
+        and (
+            pd.isna(tdr_pct)
+            or (COL_TDR not in df.columns)
+            or (not df[COL_TDR].notna().any())
+        )
+    ):
+        n_tdr_yes = int(df["Resultat_labo"].notna().sum())
+        tdr_pct = safe_pct(n_tdr_yes, n_cases)
 
     # -----------------------------
     # Couverture TDR (explicite)
@@ -1280,9 +1354,15 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
     # -----------------------------
     # Positivité TDR (sur TDR réalisés + résultats valides)
     # -----------------------------
-    if (COL_TDR in df.columns) and (COL_TDRR in df.columns) and (n_cases > 0):
-        tdr_yes = _is_yes_series(df[COL_TDR])
-        res_n = _tdr_result_norm(df[COL_TDRR])
+    result_col = None
+    if COL_TDRR in df.columns and df[COL_TDRR].notna().any():
+        result_col = COL_TDRR
+    elif "Resultat_labo" in df.columns and df["Resultat_labo"].notna().any():
+        result_col = "Resultat_labo"
+
+    if (result_col is not None) and (n_cases > 0):
+        tdr_yes = _is_yes_series(df[COL_TDR]) if (COL_TDR in df.columns and df[COL_TDR].notna().any()) else pd.Series(True, index=df.index)
+        res_n = _tdr_result_norm(df[result_col])
 
         # Résultats valides = pos/neg uniquement
         valid_res = res_n.isin(TDR_POS_SET.union(TDR_NEG_SET))
@@ -1305,9 +1385,9 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
     invalid_den = 0
     invalid_pct = np.nan
 
-    if (COL_TDR in df.columns) and (COL_TDRR in df.columns) and (n_cases > 0):
-        tdr_yes = _is_yes_series(df[COL_TDR])
-        res_n = _tdr_result_norm(df[COL_TDRR])
+    if (result_col is not None) and (n_cases > 0):
+        tdr_yes = _is_yes_series(df[COL_TDR]) if (COL_TDR in df.columns and df[COL_TDR].notna().any()) else pd.Series(True, index=df.index)
+        res_n = _tdr_result_norm(df[result_col])
 
         # Définition "invalide" (ajuste au besoin)
         invalid_set = {"invalide", "invalid", "inba", "bande absente"}
@@ -1376,6 +1456,13 @@ def compute_group_indicators(df_in: pd.DataFrame, group_col: str) -> pd.DataFram
     df = df_in.copy()
     df = df[df[group_col].notna()]
 
+    result_col = None
+    if COL_TDRR in df.columns and df[COL_TDRR].notna().any():
+        result_col = COL_TDRR
+    elif "Resultat_labo" in df.columns and df["Resultat_labo"].notna().any():
+        result_col = "Resultat_labo"
+    has_tdr_chain = COL_TDR in df.columns and df[COL_TDR].notna().any()
+
     # Base (cas, décès)
     g = df.groupby(group_col, as_index=False).agg(
         Cas=(group_col, "size"),
@@ -1386,24 +1473,33 @@ def compute_group_indicators(df_in: pd.DataFrame, group_col: str) -> pd.DataFram
 
     g["CFR_%"] = [safe_pct(num, den) for num, den in zip(g["Décès"], g["Cas"])]
 
-    def _add_rate(col, new_name):
-        if col not in df.columns:
-            g[new_name] = np.nan
-            return
-        tmp = df[[group_col, col]].copy()
-        tmp["is_yes"] = _is_yes_series(tmp[col])
+    def _add_rate(col, new_name, yes_mask=None):
+        if yes_mask is not None:
+            tmp = df[[group_col]].copy()
+            tmp["is_yes"] = yes_mask.astype(bool)
+        else:
+            if col not in df.columns:
+                g[new_name] = np.nan
+                return
+            tmp = df[[group_col, col]].copy()
+            tmp["is_yes"] = _is_yes_series(tmp[col])
         num = tmp.groupby(group_col)["is_yes"].sum()
         den = tmp.groupby(group_col).size()
         g[new_name] = [safe_pct(n, d) for n, d in zip(num.reindex(g[group_col]).fillna(0), den.reindex(g[group_col]).fillna(0))]
 
     _add_rate(COL_PREL, "Prélèvement_%")
     _add_rate(COL_HOSP, "Hospitalisation_%")
-    _add_rate(COL_TDR, "TDR_réalisé_%")
+    if has_tdr_chain:
+        _add_rate(COL_TDR, "TDR_réalisé_%")
+    elif result_col == "Resultat_labo":
+        _add_rate(None, "TDR_réalisé_%", yes_mask=df["Resultat_labo"].notna())
+    else:
+        g["TDR_réalisé_%"] = np.nan
 
     # Positivité (parmi TDR=Oui + résultat valide)
-    if (COL_TDR in df.columns) and (COL_TDRR in df.columns):
-        tdr_yes = _is_yes_series(df[COL_TDR])
-        res_n = _tdr_result_norm(df[COL_TDRR])
+    if result_col is not None:
+        tdr_yes = _is_yes_series(df[COL_TDR]) if has_tdr_chain else pd.Series(True, index=df.index)
+        res_n = _tdr_result_norm(df[result_col])
         valid_res = res_n.isin(TDR_POS_SET.union(TDR_NEG_SET))
         df_pos = df[[group_col]].copy()
         df_pos["den_pos"] = (tdr_yes & valid_res).astype(int)
@@ -1486,8 +1582,12 @@ def standardize_df(df):
 
     # harmonisations standards
     if COL_CLASS in df.columns:
-        df["Classification_finale_std"] = (
+        class_norm = (
             df[COL_CLASS].astype("string").str.strip().str.lower()
+            .apply(lambda v: _strip_accents(v) if pd.notna(v) else v)
+        )
+        df["Classification_finale_std"] = (
+            class_norm
             .map({
                 "confirme": "Confirmé", "confirmé": "Confirmé", "confirme par labo": "Confirmé",
                 "probable": "Probable", "suspect": "Suspect", "compatible": "Compatible",
@@ -1495,9 +1595,19 @@ def standardize_df(df):
             })
             .fillna(df[COL_CLASS])
         )
+        df["Classification_finale_std"] = df["Classification_finale_std"].replace({
+            "confirmee": "Confirm\u00e9",
+            "confirme au labo": "Confirm\u00e9",
+            "positif": "Confirm\u00e9",
+            "cas suspect": "Suspect",
+        })
     if COL_ISSUE in df.columns:
-        df["Issue_std"] = (
+        issue_norm = (
             df[COL_ISSUE].astype("string").str.strip().str.lower()
+            .apply(lambda v: _strip_accents(v) if pd.notna(v) else v)
+        )
+        df["Issue_std"] = (
+            issue_norm
             .map({
                 "decede": "Décédé", "décédé": "Décédé", "deces": "Décédé", "décès": "Décédé",
                 "gueri": "Guéri", "guéri": "Guéri", "sorti gueri": "Guéri",
@@ -1505,6 +1615,14 @@ def standardize_df(df):
             })
             .fillna(df[COL_ISSUE])
         )
+        df["Issue_std"] = df["Issue_std"].replace({
+            "deceder": "D\u00e9c\u00e9d\u00e9",
+            "mort": "D\u00e9c\u00e9d\u00e9",
+            "en cours": "En traitement",
+            "traiter": "En traitement",
+            "traite": "En traitement",
+            "sorti": "Sorti",
+        })
 
     # indicateurs standards
     df["preleve_oui_non"] = _is_yes_series(df[COL_PREL]) if COL_PREL in df.columns else False
@@ -1901,7 +2019,12 @@ def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
     # Colonnes (si absentes -> séries NA pour ne pas planter)
     prelev = df[COL_PREL].astype("string") if COL_PREL in df.columns else pd.Series([pd.NA] * n_all)
     tdr    = df[COL_TDR].astype("string")  if COL_TDR  in df.columns else pd.Series([pd.NA] * n_all)
-    tdr_res_raw = df[COL_TDRR].astype("string") if COL_TDRR in df.columns else pd.Series([pd.NA] * n_all)
+    result_col = None
+    if COL_TDRR in df.columns and df[COL_TDRR].notna().any():
+        result_col = COL_TDRR
+    elif "Resultat_labo" in df.columns and df["Resultat_labo"].notna().any():
+        result_col = "Resultat_labo"
+    tdr_res_raw = df[result_col].astype("string") if result_col is not None else pd.Series([pd.NA] * n_all)
 
     # Normalisation minimale (trim + lower) pour gérer variantes d’écriture
     def _norm(s: pd.Series) -> pd.Series:
@@ -1941,7 +2064,7 @@ def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
         return s.str.contains(patt, case=False, na=False)
 
     prelev_yes = _is_yes(prelev_n)
-    tdr_yes    = _is_yes(tdr_n)
+    tdr_yes    = _is_yes(tdr_n) if COL_TDR in df.columns else pd.Series(True, index=df.index)
 
     # Comptes séquentiels (entonnoir)
     n_prelev = int(prelev_yes.sum())
@@ -1976,9 +2099,9 @@ def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
         # Cascade séquentielle
         ["Prélèvement=Oui", n_prelev, n_all, _pct(n_prelev, n_all)],
-        ["TDR réalisé=Oui (parmi prélevés)", n_tdr, n_prelev, _pct(n_tdr, n_prelev)],
-        ["Résultat TDR valide (Positif/Négatif) (parmi TDR)", n_res, n_tdr, _pct(n_res, n_tdr)],
-        ["TDR positif (parmi résultats valides)", n_pos, n_res, _pct(n_pos, n_res)],
+        ["TDR réalisé=Oui (parmi prélevés)" if COL_TDR in df.columns else "Test documenté (parmi prélevés)", n_tdr, n_prelev, _pct(n_tdr, n_prelev)],
+        ["Résultat valide (Positif/Négatif) (parmi tests)", n_res, n_tdr, _pct(n_res, n_tdr)],
+        ["Positifs (parmi résultats valides)", n_pos, n_res, _pct(n_pos, n_res)],
 
         # Qualité des données (signaux)
         ["⚠ Résultat renseigné mais TDR_realise != Oui", incoh_res_without_tdr, n_all, _pct(incoh_res_without_tdr, n_all)],
@@ -2632,6 +2755,12 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
         "date_onset": "Date_debut_maladie",
         "date_debut_symptomes": "Date_debut_maladie",
         "date_symptomes": "Date_debut_maladie",
+        "date_issue": "Date_issue",
+        "date_reception_labo": "Date_reception_labo",
+        "date_reception_echantillon": "Date_reception_labo",
+        "date_de_reception": "Date_reception_labo",
+        "date_resultat": "Date_resultat",
+        "date_reception_resultat": "Date_resultat",
 
         # Geo
         "province": "Province_notification",
@@ -2691,17 +2820,21 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
         "classification": "Classification_finale",
         "classif": "Classification_finale",
         "statut_cas": "Classification_finale",
+        "classification_investigation": "Classification_finale",
+
+        # Labo / prelevement
+        "echantillon_preleve": "Prelevement",
     }
-    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+    df = _rename_columns_by_alias_map(df, rename_map)
 
     # --- Colonnes attendues (création si absentes)
     required = [
-        "Date_notification", "Date_debut_maladie",
+        "Date_notification", "Date_debut_maladie", "Date_issue", "Date_resultat", "Date_reception_labo",
         "Province_notification", "Zone_de_sante_notification", "Aire_de_sante_notification",
         "Semaine_epid", "Num_semaine_epid", "Annee_epid",
         "Sexe", "Age", "Unite_age", "Age_en_ans",
         "Tranche_age", "Tranche_age_en_ans",
-        "Issue", "Classification_finale",
+        "Issue", "Classification_finale", "Prelevement", "TDR_realise", "TDR_Resultat", "Hospitalisation", "Resultat_labo",
     ]
     for c in required:
         if c not in df.columns:

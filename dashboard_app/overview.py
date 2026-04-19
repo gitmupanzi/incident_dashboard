@@ -102,24 +102,41 @@ def build_simple_lab_table(df_: pd.DataFrame) -> pd.DataFrame:
     if COL_PREL in df_.columns:
         n_prel = int(_is_yes_series(df_[COL_PREL]).sum())
         rows.append(("Prélèvement réalisé", n_prel, round(n_prel / n_cases * 100, 1) if n_cases else np.nan))
-    if COL_TDR in df_.columns:
+    if COL_TDR in df_.columns and df_[COL_TDR].notna().any():
         n_tdr = int(_is_yes_series(df_[COL_TDR]).sum())
         rows.append(("TDR réalisé", n_tdr, round(n_tdr / n_cases * 100, 1) if n_cases else np.nan))
-    if COL_TDRR in df_.columns:
-        res_n = _tdr_result_norm(df_[COL_TDRR])
+    result_col = None
+    if COL_TDRR in df_.columns and df_[COL_TDRR].notna().any():
+        result_col = COL_TDRR
+    elif "Resultat_labo" in df_.columns and df_["Resultat_labo"].notna().any():
+        result_col = "Resultat_labo"
+        rows.append(("R\u00e9sultat labo renseign\u00e9", int(df_["Resultat_labo"].notna().sum()), round(int(df_["Resultat_labo"].notna().sum()) / n_cases * 100, 1) if n_cases else np.nan))
+    if result_col is not None:
+        res_n = _tdr_result_norm(df_[result_col])
         n_pos = int(res_n.isin(TDR_POS_SET).sum())
         n_neg = int(res_n.isin(TDR_NEG_SET).sum())
         n_valid = n_pos + n_neg
         rows.append(("Résultat valide (Pos/Nég)", n_valid, round(n_valid / n_cases * 100, 1) if n_cases else np.nan))
         rows.append(("TDR positif", n_pos, round(n_pos / n_valid * 100, 1) if n_valid else np.nan))
         rows.append(("TDR négatif", n_neg, round(n_neg / n_valid * 100, 1) if n_valid else np.nan))
-    return pd.DataFrame(rows, columns=["Indicateur labo", "n", "%"])
+    df_out = pd.DataFrame(rows, columns=["Indicateur labo", "n", "%"])
+    if result_col == "Resultat_labo":
+        df_out["Indicateur labo"] = df_out["Indicateur labo"].replace({
+            "TDR positif": "Tests positifs",
+            "TDR négatif": "Tests négatifs",
+        })
+    return df_out
 
 
 def build_weekly_lab_summary(df_: pd.DataFrame) -> pd.DataFrame:
     """Construit un suivi hebdomadaire des tests valides et de la positivite."""
     week_col = resolve_week_column(df_)
-    if week_col is None or COL_TDRR not in df_.columns:
+    result_col = None
+    if COL_TDRR in df_.columns and df_[COL_TDRR].notna().any():
+        result_col = COL_TDRR
+    elif "Resultat_labo" in df_.columns and df_["Resultat_labo"].notna().any():
+        result_col = "Resultat_labo"
+    if week_col is None or result_col is None:
         return pd.DataFrame(columns=["Semaine", "Tests valides", "Tests positifs", "Positivité (%)"])
 
     tmp = df_.copy()
@@ -140,7 +157,7 @@ def build_weekly_lab_summary(df_: pd.DataFrame) -> pd.DataFrame:
     if tmp.empty:
         return pd.DataFrame(columns=["Semaine", "Tests valides", "Tests positifs", "Positivité (%)"])
 
-    res_n = _tdr_result_norm(tmp[COL_TDRR])
+    res_n = _tdr_result_norm(tmp[result_col])
     tmp["test_valide"] = res_n.isin(TDR_POS_SET.union(TDR_NEG_SET)).astype(int)
     tmp["test_positif"] = res_n.isin(TDR_POS_SET).astype(int)
 
@@ -162,7 +179,12 @@ def build_weekly_lab_summary(df_: pd.DataFrame) -> pd.DataFrame:
     return summary.drop(columns=["_order"])
 
 
-def build_delay_summary_table(df_: pd.DataFrame, delay_cols: list[str]) -> pd.DataFrame:
+def build_delay_summary_table(
+    df_: pd.DataFrame,
+    delay_cols: list[str],
+    seuil_jours: int | float | None = None,
+) -> pd.DataFrame:
+    seuil = get_session_int("seuil_jours", 2) if seuil_jours is None else float(seuil_jours)
     rows = []
     for col in delay_cols:
         s = pd.to_numeric(df_.get(col), errors='coerce')
@@ -176,7 +198,7 @@ def build_delay_summary_table(df_: pd.DataFrame, delay_cols: list[str]) -> pd.Da
             'Médiane': round(float(s.median()), 1),
             'Min': round(float(s.min()), 1),
             'Max': round(float(s.max()), 1),
-            f'% ≤ {seuil_jours} jours': round(float((s <= seuil_jours).mean() * 100), 1),
+            f'% ≤ {seuil:g} jours': round(float((s <= seuil).mean() * 100), 1),
         })
     return pd.DataFrame(rows)
 
@@ -228,8 +250,9 @@ def build_who_narrative_summary(df_: pd.DataFrame) -> str:
 
     lab_tbl = build_simple_lab_table(df_)
     lab_txt = "Aucun résultat de laboratoire interprétable n’est disponible dans le périmètre analysé."
-    if not lab_tbl.empty and "TDR positif" in lab_tbl["Indicateur labo"].values:
-        row = lab_tbl.loc[lab_tbl["Indicateur labo"] == "TDR positif"].iloc[0]
+    positive_label = "TDR positif" if "TDR positif" in lab_tbl["Indicateur labo"].values else ("Tests positifs" if "Tests positifs" in lab_tbl["Indicateur labo"].values else None)
+    if not lab_tbl.empty and positive_label is not None:
+        row = lab_tbl.loc[lab_tbl["Indicateur labo"] == positive_label].iloc[0]
         pct_val = row["%"] if pd.notna(row["%"]) else "-"
         lab_txt = (
             f"Au plan du laboratoire, {int(row['n'])} résultat(s) positif(s) ont été documentés, "
@@ -1245,5 +1268,4 @@ def render_idsr_maps_section(
             height=560,
             static_title="RDC - Cas agrégés IDSR par province",
         )
-
 
