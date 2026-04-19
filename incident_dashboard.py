@@ -49,6 +49,46 @@ def get_line_list_bundle_caption() -> str:
     return f"Fichiers inclus dans l'application : `{LINE_LIST_BUNDLE_LABEL}`"
 
 
+def _normalize_file_hint(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", _norm_key(value))
+
+
+def guess_preferred_included_file(
+    available_files: list[Path],
+    disease_key: str,
+    default_sheet: str,
+) -> Optional[Path]:
+    if not available_files:
+        return None
+
+    default_sheet_norm = _normalize_file_hint(default_sheet or "")
+    disease_label = DISEASE_SPECS.get(disease_key, {}).get("label", disease_key)
+    disease_norms = {
+        _normalize_file_hint(disease_key),
+        _normalize_file_hint(disease_label),
+    }
+
+    scored_files: list[tuple[int, Path]] = []
+    for path in available_files:
+        score = 0
+        file_name_norm = _normalize_file_hint(path.stem)
+        if default_sheet_norm and default_sheet_norm in file_name_norm:
+            score += 4
+        if any(d_norm and d_norm in file_name_norm for d_norm in disease_norms):
+            score += 2
+        if path.suffix.lower() in {".xlsx", ".xls"} and default_sheet:
+            try:
+                sheets = get_excel_sheet_names_from_path(path)
+            except Exception:
+                sheets = []
+            if default_sheet in sheets:
+                score += 6
+        scored_files.append((score, path))
+
+    scored_files.sort(key=lambda item: (-item[0], item[1].name.lower()))
+    return scored_files[0][1] if scored_files else available_files[0]
+
+
 def get_excel_sheet_names_from_path(path: Path) -> list[str]:
     try:
         return pd.ExcelFile(path).sheet_names
@@ -156,12 +196,12 @@ if not disease_enabled:
 
 if disease_key != "idsr":
     source_options = {
-        "Téléverser un fichier": "upload",
+        "T\u00e9l\u00e9verser un fichier": "upload",
         "Charger un fichier inclus": "local",
-        "Se connecter à PostgreSQL": "postgres",
+        "Se connecter \u00e0 PostgreSQL": "postgres",
     }
     source_label = st.sidebar.selectbox(
-        "Téléverser une line list (xlsx/csv)",
+        "Source de donn\u00e9es",
         options=list(source_options.keys()),
         index=0,
         key="ll_source_mode",
@@ -178,9 +218,26 @@ if disease_key != "idsr":
     elif line_list_source == "local":
         available_line_list_files = list_available_line_list_files()
         if available_line_list_files:
+            preferred_local_path = guess_preferred_included_file(
+                available_line_list_files,
+                disease_key=disease_key,
+                default_sheet=default_sheet,
+            )
+            previous_disease_key = st.session_state.get("_ll_local_prev_disease_key")
+            current_local_name = st.session_state.get("ll_local_file")
+            available_local_names = [p.name for p in available_line_list_files]
+            if (
+                previous_disease_key != disease_key
+                or current_local_name not in available_local_names
+            ):
+                st.session_state["ll_local_file"] = (
+                    preferred_local_path.name if preferred_local_path is not None else available_local_names[0]
+                )
+            st.session_state["_ll_local_prev_disease_key"] = disease_key
+
             selected_local_name = st.sidebar.selectbox(
                 "Fichier inclus",
-                options=[p.name for p in available_line_list_files],
+                options=available_local_names,
                 key="ll_local_file",
             )
             selected_local_path = next((p for p in available_line_list_files if p.name == selected_local_name), None)
@@ -189,13 +246,21 @@ if disease_key != "idsr":
                 if selected_local_path.suffix.lower() in {".xlsx", ".xls"}:
                     local_sheets = get_excel_sheet_names_from_path(selected_local_path)
                     local_default_sheet = default_sheet if default_sheet in local_sheets else local_sheets[0]
+                    previous_sheet_file = st.session_state.get("_ll_local_sheet_file")
+                    current_sheet_value = st.session_state.get("ll_local_sheet")
+                    if (
+                        previous_disease_key != disease_key
+                        or previous_sheet_file != selected_local_path.name
+                        or current_sheet_value not in local_sheets
+                    ):
+                        st.session_state["ll_local_sheet"] = local_default_sheet
+                    st.session_state["_ll_local_sheet_file"] = selected_local_path.name
                     sheet_upl = st.sidebar.text_input(
                         "Nom feuille (si Excel local)",
-                        value=local_default_sheet,
                         key="ll_local_sheet",
                     )
         else:
-            st.sidebar.warning("Aucun fichier `.xlsx`, `.xls` ou `.csv` inclus dans l'application n'a été trouvé.")
+            st.sidebar.warning("Aucun fichier `.xlsx`, `.xls` ou `.csv` inclus dans l'application n'a \u00e9t\u00e9 trouv\u00e9.")
     else:
         st.sidebar.caption("Connexion à une base PostgreSQL")
         postgres_host = st.sidebar.text_input("Hôte PostgreSQL", value="localhost", key="ll_pg_host")

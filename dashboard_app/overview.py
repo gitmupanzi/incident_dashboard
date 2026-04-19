@@ -71,17 +71,13 @@ def build_global_summary_table(df_: pd.DataFrame) -> pd.DataFrame:
     for col, label in [(COL_PROV, "Nombre de provinces touchées"), (COL_ZS, "Nombre de zones de santé touchées"), (COL_AS, "Nombre d'aires de santé touchées")]:
         if col in df_.columns:
             rows.append((label, int(df_[col].dropna().nunique())))
-    for col, label in [(DATE_NOTIF, "Période de notification"), (DATE_ONSET, "Période début maladie")]:
-        if col in df_.columns and df_[col].notna().any():
-            dmin = pd.to_datetime(df_[col], errors="coerce").min()
-            dmax = pd.to_datetime(df_[col], errors="coerce").max()
-            if pd.notna(dmin) and pd.notna(dmax):
-                rows.append((label, f"{dmin:%Y-%m-%d} à {dmax:%Y-%m-%d}"))
-                break
-    if "YW" in df_.columns and df_["YW"].notna().any():
-        rows.append(("Semaines épidémiologiques couvertes", f"{df_['YW'].dropna().astype(str).min()} à {df_['YW'].dropna().astype(str).max()}"))
-    elif COL_WNUM in df_.columns and df_[COL_WNUM].notna().any():
-        rows.append(("Semaines épidémiologiques couvertes", f"SE{int(df_[COL_WNUM].min()):02d} à SE{int(df_[COL_WNUM].max()):02d}"))
+    analysis_period = compute_analysis_period_value(df_)
+    if analysis_period != "-":
+        rows.append(("Période analysée", analysis_period.replace(" -> ", " à ")))
+
+    week_coverage = _build_week_coverage_text(df_)
+    if week_coverage:
+        rows.append(("Semaines épidémiologiques couvertes", week_coverage))
     return pd.DataFrame(rows, columns=["Indicateur", "Valeur"])
 
 
@@ -213,6 +209,63 @@ def _safe_top_label(df_: pd.DataFrame, col: str) -> str:
     return str(vc.index[0]) if len(vc) else "non disponible"
 
 
+def _build_week_coverage_text(df_: pd.DataFrame) -> str:
+    week_pairs = pd.DataFrame(columns=["year", "week"])
+
+    if "YW" in df_.columns and df_["YW"].notna().any():
+        extracted = (
+            df_["YW"]
+            .astype("string")
+            .dropna()
+            .str.extract(r"(?P<year>\d{4}).*?W(?P<week>\d{1,2})")
+        )
+        extracted["year"] = pd.to_numeric(extracted["year"], errors="coerce")
+        extracted["week"] = pd.to_numeric(extracted["week"], errors="coerce")
+        week_pairs = extracted.dropna(subset=["year", "week"]).copy()
+    elif COL_YEAR in df_.columns and COL_WNUM in df_.columns:
+        week_pairs = pd.DataFrame(
+            {
+                "year": pd.to_numeric(df_[COL_YEAR], errors="coerce"),
+                "week": pd.to_numeric(df_[COL_WNUM], errors="coerce"),
+            }
+        ).dropna(subset=["year", "week"]).copy()
+    elif COL_WNUM in df_.columns and pd.to_numeric(df_[COL_WNUM], errors="coerce").notna().any():
+        week_values = pd.to_numeric(df_[COL_WNUM], errors="coerce").dropna().astype(int)
+        return f"SE{int(week_values.min()):02d} à SE{int(week_values.max()):02d}"
+
+    if week_pairs.empty:
+        return ""
+
+    week_pairs["year"] = week_pairs["year"].astype(int)
+    week_pairs["week"] = week_pairs["week"].astype(int)
+    week_pairs = week_pairs[(week_pairs["week"] >= 1) & (week_pairs["week"] <= 53)].drop_duplicates()
+    if week_pairs.empty:
+        return ""
+
+    first = week_pairs.sort_values(["year", "week"]).iloc[0]
+    last = week_pairs.sort_values(["year", "week"]).iloc[-1]
+    return f"SE{int(first['week']):02d}-{int(first['year'])} à SE{int(last['week']):02d}-{int(last['year'])}"
+
+
+def _build_narrative_period_text(df_: pd.DataFrame) -> tuple[str, str]:
+    week_start, week_end = _extract_iso_week_bounds(df_)
+    week_txt = _build_week_coverage_text(df_)
+    if week_start is not None and week_end is not None:
+        period_txt = f"sur la période allant du {week_start:%d/%m/%Y} au {week_end:%d/%m/%Y}"
+        return period_txt, week_txt
+
+    for col in [DATE_NOTIF, DATE_ONSET]:
+        if col in df_.columns:
+            s = pd.to_datetime(df_[col], errors="coerce")
+            s = s[s.notna()]
+            if s.empty:
+                continue
+            period_txt = f"sur la période documentée du {s.min():%d/%m/%Y} au {s.max():%d/%m/%Y}"
+            return period_txt, week_txt
+
+    return "sur une période non documentée", week_txt
+
+
 def build_who_narrative_summary(df_: pd.DataFrame) -> str:
     """
     Résumé automatisé rédigé dans un langage de surveillance compatible
@@ -223,20 +276,7 @@ def build_who_narrative_summary(df_: pd.DataFrame) -> str:
     n_deaths = int(df_["is_death"].sum()) if "is_death" in df_.columns else 0
     cfr = safe_pct(n_deaths, n_cases)
 
-    period_txt = "sur une période non documentée"
-    for col in [DATE_NOTIF, DATE_ONSET]:
-        if col in df_.columns and pd.to_datetime(df_[col], errors="coerce").notna().any():
-            s = pd.to_datetime(df_[col], errors="coerce")
-            period_txt = f"sur la période du {s.min():%d/%m/%Y} au {s.max():%d/%m/%Y}"
-            break
-
-    week_txt = ""
-    if "YW" in df_.columns and df_["YW"].notna().any():
-        w = df_["YW"].dropna().astype(str)
-        week_txt = f" ; couverture hebdomadaire : {w.min()} à {w.max()}"
-    elif COL_WNUM in df_.columns and pd.to_numeric(df_[COL_WNUM], errors='coerce').notna().any():
-        w = pd.to_numeric(df_[COL_WNUM], errors='coerce').dropna().astype(int)
-        week_txt = f" ; couverture hebdomadaire : SE{w.min():02d} à SE{w.max():02d}"
+    period_txt, week_txt = _build_narrative_period_text(df_)
 
     sex_top = _safe_top_label(df_, COL_SEX)
     age_col = None
@@ -259,7 +299,7 @@ def build_who_narrative_summary(df_: pd.DataFrame) -> str:
             f"pour une positivité observée de {pct_val} % parmi les résultats interprétables."
         )
 
-    cfr_txt = "non calculable" if pd.isna(cfr) else f"{cfr:.2f}"
+    cfr_txt = "non calculable" if pd.isna(cfr) else format_metric_value(cfr, decimals=2)
     geo_txt = (
         f"La province la plus représentée est « {prov_top} »"
         if prov_top != "non disponible"
@@ -268,12 +308,22 @@ def build_who_narrative_summary(df_: pd.DataFrame) -> str:
     if zs_top != "non disponible":
         geo_txt += f", avec une concentration notable des notifications dans la zone de santé « {zs_top} »"
 
+    morbi_txt = (
+        f"Au total, {format_metric_value(n_cases)} cas, dont {format_metric_value(n_deaths)} décès, "
+        f"ont été enregistrés {period_txt}"
+    )
+    if week_txt:
+        morbi_txt += f". La couverture hebdomadaire observée s’étend de {week_txt}."
+    else:
+        morbi_txt += "."
+
     return (
-        f"Au total, {n_cases} cas et {n_deaths} décès ont été enregistrés {period_txt}{week_txt}. "
+        f"{morbi_txt} "
         f"La létalité observée (CFR) est estimée à {cfr_txt} %. "
-        f"Le profil des cas met principalement en évidence le sexe « {sex_top} » et le groupe d’âge « {age_top} ». "
-        f"{geo_txt}. {lab_txt} "
-        f"Cette synthèse descriptive doit être interprétée en tenant compte de la complétude, de la promptitude et de la qualité des données disponibles."
+        f"Le profil dominant des cas met en évidence le sexe « {sex_top} » et le groupe d’âge « {age_top} ». "
+        f"{geo_txt}. "
+        f"{lab_txt} "
+        f"Cette synthèse descriptive doit être interprétée à la lumière de la complétude, de la promptitude et de la qualité globale des données disponibles."
     )
 
 
@@ -1268,4 +1318,3 @@ def render_idsr_maps_section(
             height=560,
             static_title="RDC - Cas agrégés IDSR par province",
         )
-
