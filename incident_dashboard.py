@@ -1,15 +1,120 @@
 from dashboard_app.core import *
 from dashboard_app.core import _normalize_metric_alias_columns
 
-st.set_page_config(page_title="LL RDC ? Dashboard", layout="wide")
+st.set_page_config(page_title="LL RDC - Dashboard", layout="wide")
 
 from dashboard_app.domain import *
 from dashboard_app.domain import _is_yes_series, _norm_key, _resolve_map_filter_value, _tdr_result_norm
 from dashboard_app.overview import *
 from dashboard_app.advanced import *
 
+try:
+    from sqlalchemy import create_engine, text
+
+    SQLALCHEMY_AVAILABLE = True
+except ImportError:
+    SQLALCHEMY_AVAILABLE = False
+    create_engine = None
+    text = None
+
+try:
+    import psycopg2
+
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    PSYCOPG2_AVAILABLE = False
+    psycopg2 = None
+
 inject_professional_dashboard_css()
 render_professional_header()
+
+LINE_LIST_DIR = Path(__file__).resolve().parent / "line_list"
+LINE_LIST_BUNDLE_LABEL = "line_list/"
+
+
+def list_available_line_list_files() -> list[Path]:
+    if not LINE_LIST_DIR.exists():
+        return []
+    return sorted(
+        [
+            path
+            for path in LINE_LIST_DIR.iterdir()
+            if path.is_file() and path.suffix.lower() in {".xlsx", ".xls", ".csv"}
+        ],
+        key=lambda p: p.name.lower(),
+    )
+
+
+def get_line_list_bundle_caption() -> str:
+    return f"Fichiers inclus dans l'application : `{LINE_LIST_BUNDLE_LABEL}`"
+
+
+def get_excel_sheet_names_from_path(path: Path) -> list[str]:
+    try:
+        return pd.ExcelFile(path).sheet_names
+    except Exception as exc:
+        st.error(f"Impossible de lire le fichier Excel local : {exc}")
+        st.stop()
+
+
+def validate_table_identifier(identifier: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_\\.]*", str(identifier).strip()))
+
+
+def build_postgresql_query(query_mode: str, table_name: str, sql_query: str) -> str:
+    if query_mode == "Table":
+        clean_table_name = str(table_name).strip()
+        if not clean_table_name:
+            st.error("Renseigne le nom de la table PostgreSQL.")
+            st.stop()
+        if not validate_table_identifier(clean_table_name):
+            st.error("Le nom de table contient des caractères non autorisés.")
+            st.stop()
+        return f"SELECT * FROM {clean_table_name}"
+
+    clean_query = str(sql_query).strip()
+    if not clean_query:
+        st.error("Renseigne une requête SQL PostgreSQL.")
+        st.stop()
+    return clean_query
+
+
+def read_postgresql_file(
+    host: str,
+    port: int,
+    database: str,
+    user: str,
+    password: str,
+    query: str,
+) -> pd.DataFrame:
+    if not SQLALCHEMY_AVAILABLE and not PSYCOPG2_AVAILABLE:
+        st.error("Le connecteur PostgreSQL n'est pas installé. Ajoute `sqlalchemy` et `psycopg2-binary`.")
+        st.stop()
+
+    try:
+        if SQLALCHEMY_AVAILABLE:
+            engine = create_engine(
+                f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}",
+                pool_pre_ping=True,
+            )
+            with engine.connect() as connection:
+                df_loaded = pd.read_sql_query(text(query), connection)
+            engine.dispose()
+        else:
+            with psycopg2.connect(
+                host=host,
+                port=port,
+                dbname=database,
+                user=user,
+                password=password,
+            ) as connection:
+                df_loaded = pd.read_sql_query(query, connection)
+    except Exception as exc:
+        st.error(f"Impossible de charger les données PostgreSQL : {exc}")
+        st.stop()
+
+    df_loaded.columns = df_loaded.columns.astype(str).str.strip()
+    return df_loaded
 
 # =========================
 # SIDEBAR: INPUT
@@ -24,11 +129,19 @@ disease_key = st.sidebar.selectbox(
     index=0,
 )
 
-mode = "Téléverser (upload)"  # Déploiement en ligne : upload uniquement
-
-# --- Upload (line list ou IDSR selon la sélection)
-# NOTE: on garde le fonctionnement historique pour les line lists.
-#       En mode IDSR, on propose un upload IDSR séparé (2 façons: sidebar OU onglet 9).
+line_list_source = "upload"
+upl = None
+sheet_upl = ""
+selected_local_name = ""
+selected_local_path = None
+postgres_host = "localhost"
+postgres_port = 5432
+postgres_database = ""
+postgres_user = ""
+postgres_password = ""
+postgres_query_mode = "Table"
+postgres_table_name = ""
+postgres_sql_query = ""
 
 # Par défaut: feuille selon la maladie (modifiable)
 default_sheet = DISEASE_SPECS.get(disease_key, DISEASE_SPECS["cholera"]).get("default_sheet", "")
@@ -42,13 +155,76 @@ if not disease_enabled:
     )
 
 if disease_key != "idsr":
-    # --- Upload line list (toutes maladies sauf IDSR)
-    upl = st.sidebar.file_uploader(
-        "📤 Téléverser une line list (xlsx/csv)",
-        type=["xlsx", "xls", "csv"],
-        key="ll_upload"
+    source_options = {
+        "Téléverser un fichier": "upload",
+        "Charger un fichier inclus": "local",
+        "Se connecter à PostgreSQL": "postgres",
+    }
+    source_label = st.sidebar.selectbox(
+        "Téléverser une line list (xlsx/csv)",
+        options=list(source_options.keys()),
+        index=0,
+        key="ll_source_mode",
     )
-    sheet_upl = st.sidebar.text_input("Nom feuille (si Excel upload)", value=default_sheet)
+    line_list_source = source_options[source_label]
+
+    if line_list_source == "upload":
+        upl = st.sidebar.file_uploader(
+            "Fichier line list",
+            type=["xlsx", "xls", "csv"],
+            key="ll_upload"
+        )
+        sheet_upl = st.sidebar.text_input("Nom feuille (si Excel upload)", value=default_sheet)
+    elif line_list_source == "local":
+        available_line_list_files = list_available_line_list_files()
+        if available_line_list_files:
+            selected_local_name = st.sidebar.selectbox(
+                "Fichier inclus",
+                options=[p.name for p in available_line_list_files],
+                key="ll_local_file",
+            )
+            selected_local_path = next((p for p in available_line_list_files if p.name == selected_local_name), None)
+            if selected_local_path is not None:
+                st.sidebar.caption(get_line_list_bundle_caption())
+                if selected_local_path.suffix.lower() in {".xlsx", ".xls"}:
+                    local_sheets = get_excel_sheet_names_from_path(selected_local_path)
+                    local_default_sheet = default_sheet if default_sheet in local_sheets else local_sheets[0]
+                    sheet_upl = st.sidebar.text_input(
+                        "Nom feuille (si Excel local)",
+                        value=local_default_sheet,
+                        key="ll_local_sheet",
+                    )
+        else:
+            st.sidebar.warning("Aucun fichier `.xlsx`, `.xls` ou `.csv` inclus dans l'application n'a été trouvé.")
+    else:
+        st.sidebar.caption("Connexion à une base PostgreSQL")
+        postgres_host = st.sidebar.text_input("Hôte PostgreSQL", value="localhost", key="ll_pg_host")
+        postgres_port = st.sidebar.number_input(
+            "Port PostgreSQL",
+            min_value=1,
+            max_value=65535,
+            value=5432,
+            step=1,
+            key="ll_pg_port",
+        )
+        postgres_database = st.sidebar.text_input("Base de données", value="", key="ll_pg_database")
+        postgres_user = st.sidebar.text_input("Utilisateur", value="", key="ll_pg_user")
+        postgres_password = st.sidebar.text_input("Mot de passe", value="", type="password", key="ll_pg_password")
+        postgres_query_mode = st.sidebar.radio(
+            "Mode de lecture",
+            ["Table", "Requête SQL"],
+            index=0,
+            key="ll_pg_query_mode",
+        )
+        if postgres_query_mode == "Table":
+            postgres_table_name = st.sidebar.text_input("Nom de la table", value="", key="ll_pg_table")
+        else:
+            postgres_sql_query = st.sidebar.text_area(
+                "Requête SQL",
+                value="SELECT * FROM public.line_list",
+                height=120,
+                key="ll_pg_sql",
+            )
 else:
     st.sidebar.info(
         "Mode **IDSR agrégé (hebdo)** : le chargement du fichier et les analyses se font "
@@ -56,9 +232,7 @@ else:
     )
 
     # En mode IDSR, on ne force pas une line list
-    upl = None
     sheet_upl = default_sheet
-
 
 
 supp_doublons = st.sidebar.checkbox("Supprimer les doublons (simple)", value=False)
@@ -131,11 +305,24 @@ show_sidebar_summary = st.sidebar.checkbox(
 IDSR_MODE = (disease_key == "idsr")
 
 if not IDSR_MODE:
-    # Déploiement en ligne : source unique = upload (xlsx/csv)
-    if upl is None:
-        st.info(
-            "Veuillez téléverser un fichier de données (`.xlsx` ou `.csv`) pour démarrer l’analyse de surveillance."
-        )
+    source_ready = False
+    source_message = ""
+    if line_list_source == "upload":
+        source_ready = upl is not None
+        source_message = "Veuillez téléverser un fichier de données (`.xlsx` ou `.csv`) pour démarrer l’analyse de surveillance."
+    elif line_list_source == "local":
+        source_ready = selected_local_path is not None and selected_local_path.exists()
+        source_message = "Aucun fichier inclus exploitable n'est disponible dans l'application."
+    else:
+        source_ready = all([
+            str(postgres_host).strip(),
+            str(postgres_database).strip(),
+            str(postgres_user).strip(),
+        ])
+        source_message = "Renseigne les paramètres PostgreSQL pour charger les données de surveillance."
+
+    if not source_ready:
+        st.info(source_message)
 
         st.markdown(
             "<div class='cousp-panel-title'>Visualisations disponibles</div>",
@@ -181,28 +368,84 @@ if not IDSR_MODE:
 
         st.stop()
 
-    # --- Cache session : éviter de recharger/relire le fichier à chaque interaction (ex: changement d’onglet) ---
     try:
-        _bytes = upl.getvalue() if hasattr(upl, "getvalue") else None
-        _md5 = hashlib.md5(_bytes).hexdigest() if _bytes is not None else None
-        _cache_key = (upl.name, getattr(upl, "size", None), _md5, str(sheet_upl).strip() if sheet_upl is not None else "")
+        if line_list_source == "upload":
+            _bytes = upl.getvalue() if hasattr(upl, "getvalue") else None
+            _md5 = hashlib.md5(_bytes).hexdigest() if _bytes is not None else None
+            _cache_key = (
+                "upload",
+                upl.name,
+                getattr(upl, "size", None),
+                _md5,
+                str(sheet_upl).strip() if sheet_upl is not None else "",
+            )
 
-        if st.session_state.get("_ll_cache_key") == _cache_key and isinstance(st.session_state.get("_ll_cache_raw"), pd.DataFrame):
-            raw = st.session_state["_ll_cache_raw"]
-        else:
-            if upl.name.lower().endswith(".csv"):
-                raw = pd.read_csv(upl)
+            if st.session_state.get("_ll_cache_key") == _cache_key and isinstance(st.session_state.get("_ll_cache_raw"), pd.DataFrame):
+                raw = st.session_state["_ll_cache_raw"]
             else:
-                sh = sheet_upl.strip() if isinstance(sheet_upl, str) else ""
-                raw = pd.read_excel(upl, sheet_name=sh if sh else 0)
+                if upl.name.lower().endswith(".csv"):
+                    raw = pd.read_csv(upl)
+                else:
+                    sh = sheet_upl.strip() if isinstance(sheet_upl, str) else ""
+                    raw = pd.read_excel(upl, sheet_name=sh if sh else 0)
+                st.session_state["_ll_cache_key"] = _cache_key
+                st.session_state["_ll_cache_raw"] = raw
 
-            st.session_state["_ll_cache_key"] = _cache_key
-            st.session_state["_ll_cache_raw"] = raw
+            files_used = [f"upload:{upl.name}"]
+        elif line_list_source == "local":
+            sh = sheet_upl.strip() if isinstance(sheet_upl, str) else ""
+            _cache_key = (
+                "local",
+                str(selected_local_path.resolve()),
+                selected_local_path.stat().st_mtime_ns,
+                sh,
+            )
 
-        files_used = [f"upload:{upl.name}"]
+            if st.session_state.get("_ll_cache_key") == _cache_key and isinstance(st.session_state.get("_ll_cache_raw"), pd.DataFrame):
+                raw = st.session_state["_ll_cache_raw"]
+            else:
+                if selected_local_path.suffix.lower() == ".csv":
+                    raw = pd.read_csv(selected_local_path)
+                else:
+                    raw = pd.read_excel(selected_local_path, sheet_name=sh if sh else 0)
+                st.session_state["_ll_cache_key"] = _cache_key
+                st.session_state["_ll_cache_raw"] = raw
+
+            files_used = [f"bundle:{selected_local_path.name}"]
+        else:
+            query = build_postgresql_query(postgres_query_mode, postgres_table_name, postgres_sql_query)
+            _cache_key = (
+                "postgres",
+                postgres_host.strip(),
+                int(postgres_port),
+                postgres_database.strip(),
+                postgres_user.strip(),
+                query,
+            )
+
+            if st.session_state.get("_ll_cache_key") == _cache_key and isinstance(st.session_state.get("_ll_cache_raw"), pd.DataFrame):
+                raw = st.session_state["_ll_cache_raw"]
+            else:
+                raw = read_postgresql_file(
+                    postgres_host.strip(),
+                    int(postgres_port),
+                    postgres_database.strip(),
+                    postgres_user.strip(),
+                    postgres_password,
+                    query,
+                )
+                st.session_state["_ll_cache_key"] = _cache_key
+                st.session_state["_ll_cache_raw"] = raw
+
+            files_used = [f"postgres:{postgres_database.strip()}"]
 
     except Exception as e:
-        st.error(f"❌ Impossible de lire le fichier téléversé : {e}")
+        if line_list_source == "upload":
+            st.error(f"Impossible de lire le fichier téléversé : {e}")
+        elif line_list_source == "local":
+            st.error(f"Impossible de lire le fichier inclus sélectionné : {e}")
+        else:
+            st.error(f"Impossible de charger les données PostgreSQL : {e}")
         st.stop()
 
     if not disease_enabled:
@@ -1701,6 +1944,56 @@ with tab_surveillance:
                     "latest_label": latest_label,
                 },
             )
+
+
+            if (
+                COL_PROV in df_surv_scope.columns
+                and df_surv_scope[COL_PROV].notna().any()
+                and "_surv_label" in df_surv_scope.columns
+                and df_surv_scope["_surv_label"].notna().any()
+            ):
+                st.divider()
+                st.markdown("### Courbe épidémiologique des cas par province")
+                prov_totals = df_surv_scope[[COL_PROV]].dropna().copy()
+                prov_totals["_prov"] = prov_totals[COL_PROV].astype(str).str.strip()
+                prov_totals = prov_totals[prov_totals["_prov"] != ""]
+                prov_options = prov_totals["_prov"].value_counts().index.tolist()
+                default_provs = prov_options if len(prov_options) <= 10 else prov_options[:10]
+                selected_curve_provs = st.multiselect(
+                    "Provinces à afficher",
+                    options=prov_options,
+                    default=default_provs,
+                    key="surveillance_multi_curve_provinces",
+                    help="Tu peux aussi cliquer sur la légende du graphique pour masquer ou afficher une province.",
+                )
+                if selected_curve_provs:
+                    fig_multi_prov = build_weekly_multiline_by_group(
+                        df=df_surv_scope,
+                        week_col="_surv_label",
+                        group_col=COL_PROV,
+                        selected_groups=selected_curve_provs,
+                        titre=" ",
+                        x_titre="Semaine épidémiologique",
+                        y_titre="Nombre de cas",
+                        rotation=45,
+                        pas_x=int(pas_x),
+                        annot=annot_vals,
+                        taille_fig=(1500, 700),
+                    )
+                    if fig_multi_prov is not None:
+                        st.plotly_chart(
+                            fig_multi_prov,
+                            width="stretch",
+                            key="surveillance_multi_curve_province",
+                        )
+                        st.caption(
+                            "Astuce : clique sur une province dans la légende pour masquer ou afficher sa courbe. "
+                            "Double-clique pour isoler une province."
+                        )
+                    else:
+                        st.info("Aucune courbe exploitable n'a pu être construite pour les provinces sélectionnées.")
+                else:
+                    st.info("Sélectionne au moins une province pour afficher la courbe épidémiologique multi-provinces.")
         else:
             st.info("Variable semaine indisponible : aucune colonne temporelle exploitable n’a été détectée pour organiser la surveillance par fenêtres.")
     # Section suivante : promptitude. Les indicateurs de performance et de létalité déjà présentés plus haut ne sont pas répétés ici afin d’éviter les redondances.
@@ -2929,7 +3222,7 @@ with tab_qualite:
                 key="dl_quality_export_xlsx",
             )
         except Exception:
-            st.info("Exportation Excel indisponible (openpyxl ?).")
+            st.info("Exportation Excel indisponible (openpyxl manquant ?).")
         
     # =========================
     # TAB 7 — Labo / qualité / signaux
