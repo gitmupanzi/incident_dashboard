@@ -863,7 +863,7 @@ def render_detailed_maps_tab(
     idsr_mode: bool,
 ) -> None:
     """Render the detailed cartography tab for line-list analysis."""
-    render_section_title(7, "Cartographie détaillée de la distribution géographique")
+    render_section_title(8, "Cartographie détaillée de la distribution géographique")
     tab_help(
         "Comment lire cet onglet",
         """

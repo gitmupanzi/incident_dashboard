@@ -10,12 +10,14 @@ from dashboard_app.advanced import *
 
 try:
     from sqlalchemy import create_engine, text
+    from sqlalchemy.engine import URL
 
     SQLALCHEMY_AVAILABLE = True
 except ImportError:
     SQLALCHEMY_AVAILABLE = False
     create_engine = None
     text = None
+    URL = None
 
 try:
     import psycopg2
@@ -133,13 +135,23 @@ def read_postgresql_file(
 
     try:
         if SQLALCHEMY_AVAILABLE:
+            connection_url = URL.create(
+                "postgresql+psycopg2",
+                username=user,
+                password=password,
+                host=host,
+                port=int(port),
+                database=database,
+            )
             engine = create_engine(
-                f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}",
+                connection_url,
                 pool_pre_ping=True,
             )
-            with engine.connect() as connection:
-                df_loaded = pd.read_sql_query(text(query), connection)
-            engine.dispose()
+            try:
+                with engine.connect() as connection:
+                    df_loaded = pd.read_sql_query(text(query), connection)
+            finally:
+                engine.dispose()
         else:
             with psycopg2.connect(
                 host=host,
@@ -485,6 +497,7 @@ if not IDSR_MODE:
                 int(postgres_port),
                 postgres_database.strip(),
                 postgres_user.strip(),
+                hashlib.sha256(str(postgres_password).encode("utf-8")).hexdigest(),
                 query,
             )
 
@@ -1085,9 +1098,20 @@ else:
 
 st.caption("Sélectionnez un onglet détaillé ci-dessous. Le contenu s'affiche en pleine largeur sans navigation compacte par boutons.")
 
-tab_overview_detail, tab_surveillance, tab_profil, tab_qualite, tab_maps, tab_sitrep, tab_idsr, tab_irep = st.tabs(
+(
+    tab_overview_detail,
+    tab_methodology,
+    tab_surveillance,
+    tab_profil,
+    tab_qualite,
+    tab_maps,
+    tab_sitrep,
+    tab_idsr,
+    tab_irep,
+) = st.tabs(
     [
         "Vue d’ensemble",
+        "Méthodologie",
         "\U0001F4C8 Surveillance",
         "\U0001F465 Profil",
         "\U0001F5C2\ufe0f Qualité & export",
@@ -1626,6 +1650,12 @@ def _render_surveillance_window(
 
     if df_scope.empty:
         st.info(empty_message)
+        render_reader_narrative(
+            "Comment lire cette absence",
+            "Aucune ligne ne répond aux critères actuels. Cela peut venir d'une absence réelle de notification, "
+            "d'un filtre trop restrictif ou d'un retard de saisie. La conclusion doit rester prudente tant que la complétude n'est pas vérifiée.",
+            tone="missing",
+        )
         return
 
     total_cases = int(len(df_scope))
@@ -1899,12 +1929,133 @@ def _build_sitrep_action_lines(payload: dict[str, Any]) -> list[str]:
 # - Cartographie, SITREP, IDSR et IREP restent dédiés
 # =========================
 
+def render_reader_narrative(title: str, text: str, *, tone: str = "standard") -> None:
+    """Affiche un court narratif lisible par un public mixte et des epidemiologistes."""
+    accent = {
+        "standard": "#1f6feb",
+        "missing": "#b45309",
+        "decision": "#047857",
+    }.get(tone, "#1f6feb")
+    st.markdown(
+        f"""
+        <div class="cousp-detail-empty" style="border-left: 4px solid {accent};">
+            <strong>{title}</strong><br>
+            {text}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+TAB_NARRATIVES = {
+    "surveillance": (
+        "Lecture de l'onglet",
+        "Cet onglet suit l'évolution des notifications dans le temps. "
+        "Pour un lecteur non spécialiste, une hausse signale surtout un changement à vérifier. "
+        "Pour l'équipe épidémiologique, elle doit être interprétée avec la complétude, les retards de notification "
+        "et la distribution géographique avant de conclure à une flambée."
+    ),
+    "promptitude": (
+        "Lecture des délais",
+        "Les délais décrivent la rapidité du parcours entre début des signes, notification, prise en charge "
+        "et confirmation. Un délai long peut traduire un accès tardif aux soins, un retard de saisie ou une donnée incomplète."
+    ),
+    "profil": (
+        "Lecture du profil des cas",
+        "Les tableaux décrivent qui est touché, où les cas sont rapportés et quelles informations de laboratoire sont disponibles. "
+        "Ces résultats décrivent les notifications reçues ; ils ne remplacent pas une enquête de terrain ni une estimation de risque populationnel."
+    ),
+    "qualite": (
+        "Lecture qualité et décision",
+        "Cet onglet sert à distinguer les signaux de santé publique des problèmes de données. "
+        "Une alerte ou un score élevé indique une priorité de vérification, pas une confirmation automatique d'épidémie."
+    ),
+    "export": (
+        "Lecture et partage",
+        "Les exports reprennent le périmètre filtré à l'écran. Ils sont adaptés à la revue technique, au partage opérationnel "
+        "et à la traçabilité des analyses."
+    ),
+    "sitrep": (
+        "Lecture du SITREP",
+        "Le SITREP résume la situation pour une décision rapide. Il met en avant les messages clés, les zones à suivre "
+        "et les limites de lecture, sans remplacer les onglets détaillés."
+    ),
+    "idsr": (
+        "Lecture IDSR",
+        "L'IDSR agrégé donne une lecture hebdomadaire par maladie et par zone. "
+        "Les volumes doivent être interprétés avec les règles de rapportage, la complétude et les éventuelles corrections tardives."
+    ),
+    "irep": (
+        "Lecture de l'indice",
+        "L'IREP classe les provinces selon plusieurs dimensions de risque. "
+        "Il aide à prioriser l'attention mais ne doit pas être lu comme un diagnostic isolé."
+    ),
+    "cartographie": (
+        "Lecture cartographique",
+        "La carte situe les notifications dans l'espace. Elle dépend de la qualité des noms géographiques et des fichiers GeoJSON utilisés."
+    ),
+}
+
+
+ABSENCE_NARRATIVES = {
+    "idsr_line_list": (
+        "Analyse non applicable dans ce mode",
+        "Vous êtes en mode IDSR agrégé. Les analyses de liste linéaire reposent sur des cas individuels ; "
+        "utilisez l'onglet IDSR pour lire les données hebdomadaires agrégées."
+    ),
+    "week": (
+        "Lecture temporelle indisponible",
+        "Aucune variable de semaine exploitable n'a été trouvée dans le périmètre filtré. "
+        "Vérifiez les champs de date, d'année ou de semaine épidémiologique avant d'interpréter l'absence de courbe."
+    ),
+    "delays": (
+        "Délais non calculables",
+        "Les dates nécessaires ne sont pas disponibles ou ne sont pas suffisamment exploitables. "
+        "L'absence d'indicateur ne signifie pas que les délais sont bons ou mauvais ; elle signale d'abord une limite de documentation."
+    ),
+    "geo": (
+        "Lecture géographique limitée",
+        "Aucune variable géographique exploitable n'est disponible dans le périmètre filtré. "
+        "Vérifiez les champs Province, Zone de santé ou Aire de santé, ainsi que les filtres actifs."
+    ),
+    "alerts": (
+        "Alertes non calculables",
+        "L'historique disponible est insuffisant ou les variables nécessaires sont absentes. "
+        "Une absence d'alerte dans ce contexte ne doit pas être interprétée comme une absence de risque."
+    ),
+    "risk": (
+        "Priorisation non calculable",
+        "Le score de risque a besoin d'au moins une dimension géographique et de quelques indicateurs exploitables. "
+        "Lorsque ces éléments manquent, il faut revenir aux tableaux descriptifs et à la qualité des données."
+    ),
+    "profile": (
+        "Profil incomplet",
+        "La variable attendue est absente ou vide. Cette limite doit être mentionnée dans toute restitution, "
+        "car elle peut modifier la lecture des groupes les plus représentés."
+    ),
+    "quality": (
+        "Contrôle limité",
+        "Les champs nécessaires au contrôle ne sont pas disponibles dans le périmètre actuel. "
+        "Cela oriente d'abord vers une revue de structure du fichier plutôt que vers une conclusion sanitaire."
+    ),
+}
+
+
+def render_tab_narrative(key: str) -> None:
+    title, text = TAB_NARRATIVES[key]
+    render_reader_narrative(title, text)
+
+
+def render_absence_narrative(key: str) -> None:
+    title, text = ABSENCE_NARRATIVES[key]
+    render_reader_narrative(title, text, tone="missing")
+
 # =========================
 # TAB 1: DYNAMIQUE ÉPIDÉMIOLOGIQUE ET PROMPTITUDE
 # =========================
 with tab_surveillance:
     if IDSR_MODE:
-        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
+        render_absence_narrative("idsr_line_list")
     else:
         tab_help(
             "Comment lire cet onglet",
@@ -1922,7 +2073,8 @@ with tab_surveillance:
             expanded=False
         )
 
-        render_section_title(1, "Surveillance épidémiologique")
+        render_section_title(2, "Surveillance épidémiologique")
+        render_tab_narrative("surveillance")
         st.caption(
             "Cette organisation permet une lecture progressive de la situation à partir de la plage de semaines active dans la barre latérale."
         )
@@ -2059,16 +2211,168 @@ with tab_surveillance:
                         st.info("Aucune courbe exploitable n'a pu être construite pour les provinces sélectionnées.")
                 else:
                     st.info("Sélectionne au moins une province pour afficher la courbe épidémiologique multi-provinces.")
+
+            if "_surv_label" in df_surv_scope.columns and df_surv_scope["_surv_label"].notna().any():
+                st.divider()
+                st.markdown("### Alertes automatiques et clusters recents")
+                alert_group_options = [
+                    c for c in [COL_PROV, COL_ZS, COL_AS]
+                    if c in df_surv_scope.columns and df_surv_scope[c].notna().any()
+                ]
+                if alert_group_options:
+                    a1, a2, a3, a4 = st.columns([1.1, 0.9, 0.9, 0.9])
+                    with a1:
+                        alert_group_col = st.selectbox(
+                            "Niveau d'alerte",
+                            options=alert_group_options,
+                            key="surv_alert_group_col",
+                        )
+                    with a2:
+                        alert_min_cases = st.number_input(
+                            "Cas min",
+                            min_value=1,
+                            max_value=500,
+                            value=10,
+                            step=1,
+                            key="surv_alert_min_cases",
+                        )
+                    with a3:
+                        alert_ratio = st.number_input(
+                            "Ratio alerte",
+                            min_value=1.0,
+                            max_value=10.0,
+                            value=1.5,
+                            step=0.1,
+                            key="surv_alert_ratio",
+                        )
+                    with a4:
+                        alert_baseline = st.number_input(
+                            "Semaines ref.",
+                            min_value=2,
+                            max_value=8,
+                            value=3,
+                            step=1,
+                            key="surv_alert_baseline_weeks",
+                        )
+
+                    alert_group_cols = [alert_group_col]
+                    if alert_group_col == COL_ZS and COL_PROV in df_surv_scope.columns:
+                        alert_group_cols = [COL_PROV, COL_ZS]
+                    elif alert_group_col == COL_AS:
+                        alert_group_cols = [
+                            c for c in [COL_PROV, COL_ZS, COL_AS]
+                            if c in df_surv_scope.columns
+                        ]
+                    alert_group_key = "__alert_geo_key"
+                    alert_label_sep = " / "
+                    alert_scope = df_surv_scope.copy()
+                    alert_scope[alert_group_cols] = (
+                        alert_scope[alert_group_cols]
+                        .astype("string")
+                        .fillna("Non renseigné")
+                    )
+                    alert_scope[alert_group_key] = (
+                        alert_scope[alert_group_cols]
+                        .astype(str)
+                        .agg(alert_label_sep.join, axis=1)
+                    )
+
+                    alert_tbl = build_weekly_alerts(
+                        alert_scope,
+                        alert_group_key,
+                        week_col="_surv_label",
+                        baseline_weeks=int(alert_baseline),
+                        min_baseline_periods=2,
+                        min_cases=int(alert_min_cases),
+                        alert_ratio=float(alert_ratio),
+                    )
+                    if alert_tbl.empty:
+                        render_absence_narrative("alerts")
+                    else:
+                        latest_alert_week = alert_tbl["_surv_label"].dropna().max()
+                        latest_alerts = alert_tbl[alert_tbl["_surv_label"] == latest_alert_week].copy()
+                        if alert_group_key in latest_alerts.columns:
+                            split_cols = latest_alerts[alert_group_key].astype(str).str.split(
+                                alert_label_sep,
+                                expand=True,
+                            )
+                            for idx, geo_col in enumerate(alert_group_cols):
+                                if idx < split_cols.shape[1]:
+                                    latest_alerts[geo_col] = split_cols[idx]
+                            latest_alerts = latest_alerts.drop(columns=[alert_group_key])
+                        alert_display_cols = [
+                            c for c in alert_group_cols
+                            if c in latest_alerts.columns
+                        ] + [
+                            c for c in ["_surv_label", "Cas", "Cas_prev", "var_%", "baseline", "ratio_baseline", "signal_level", "signal"]
+                            if c in latest_alerts.columns
+                        ]
+                        latest_alerts = latest_alerts.sort_values(
+                            ["signal", "Cas", "ratio_baseline"],
+                            ascending=[False, False, False],
+                            na_position="last",
+                        )
+                        sig_count = int(latest_alerts["signal"].fillna(False).sum())
+                        st.caption(
+                            f"Dernière semaine analysée : {latest_alert_week} | Alertes détectées : {sig_count}. "
+                            "Un signal invite à vérifier la situation locale, il ne confirme pas à lui seul une flambée."
+                        )
+                        st.dataframe(latest_alerts[alert_display_cols].head(100), width="stretch", height=360, hide_index=True)
+
+                        sig_plot = latest_alerts[latest_alerts["signal"] == True].head(30)
+                        if not sig_plot.empty:
+                            sig_plot["_geo_label"] = (
+                                sig_plot[alert_group_cols]
+                                .astype("string")
+                                .fillna("Non renseigné")
+                                .astype(str)
+                                .agg(alert_label_sep.join, axis=1)
+                            )
+                            fig_alert = px.bar(
+                                sig_plot.sort_values("Cas", ascending=True),
+                                x="Cas",
+                                y="_geo_label",
+                                orientation="h",
+                                color="ratio_baseline",
+                                title="Groupes en alerte sur la derniere semaine",
+                                color_continuous_scale=["#fde68a", "#b91c1c"],
+                            )
+                            fig_alert.update_layout(coloraxis_colorbar_title="Ratio")
+                            fig_alert = apply_plotly_value_annotations(fig_alert, annot_vals)
+                            st.plotly_chart(fig_alert, width="stretch", key="surv_alert_latest_chart")
+
+                    cluster_cols = alert_group_cols
+                    cluster_tbl = build_spatiotemporal_cluster_table(
+                        df_surv_scope,
+                        group_cols=cluster_cols if cluster_cols else [alert_group_col],
+                        week_col="_surv_label",
+                        recent_weeks=2,
+                        previous_weeks=4,
+                        min_recent_cases=max(5, int(alert_min_cases // 2)),
+                        growth_ratio=float(alert_ratio),
+                    )
+                    if not cluster_tbl.empty:
+                        with st.expander("Clusters spatio-temporels recents", expanded=False):
+                            st.caption(
+                                "Ce tableau compare les deux dernières semaines à la fenêtre précédente. "
+                                "Il aide à repérer des foyers récents à vérifier avec les équipes locales."
+                            )
+                            st.dataframe(cluster_tbl.head(100), width="stretch", height=420, hide_index=True)
+                    else:
+                        render_absence_narrative("alerts")
+                else:
+                    render_absence_narrative("geo")
         else:
-            st.info("Variable semaine indisponible : aucune colonne temporelle exploitable n’a été détectée pour organiser la surveillance par fenêtres.")
+            render_absence_narrative("week")
     # Section suivante : promptitude. Les indicateurs de performance et de létalité déjà présentés plus haut ne sont pas répétés ici afin d’éviter les redondances.
 
 with tab_surveillance:
     st.divider()
-    render_section_title(2, "Promptitude de notification, investigation et prise en charge")
+    render_section_title(3, "Promptitude de notification, investigation et prise en charge")
     if IDSR_MODE:
-        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
+        render_absence_narrative("idsr_line_list")
     else:
+        render_tab_narrative("promptitude")
         tab_help(
             "Comment lire cet onglet",
             f"""
@@ -2091,7 +2395,7 @@ with tab_surveillance:
         delais_cols = [c for c in ["delai_onset_to_adm", "delai_onset_to_prel"] if c in df_f.columns]
         
         if not delais_cols:
-            st.info("Les analyses de délais sont indisponibles : les dates nécessaires sont absentes ou non exploitables.")
+            render_absence_narrative("delays")
         else:
             df_del = df_f.copy()
             for c in delais_cols:
@@ -2154,7 +2458,7 @@ with tab_surveillance:
                         with col_ui:
                             st.markdown(f"**{delay_label}**")
                             if delay_group_tbl.empty:
-                                st.info("Pas assez de données exploitables pour établir un classement provincial.")
+                                render_absence_narrative("delays")
                             else:
                                 st.dataframe(delay_group_tbl, width="stretch", height=360, hide_index=True)
 
@@ -2255,17 +2559,18 @@ with tab_surveillance:
                             fig_delay_focus = apply_plotly_value_annotations(fig_delay_focus, annot_vals)
                             st.plotly_chart(fig_delay_focus, width="stretch", key="timeliness_delay_focus_chart")
                     else:
-                        st.info("Le délai sélectionné ne dispose pas d'assez de données exploitables pour ce regroupement.")
+                        render_absence_narrative("delays")
                 else:
-                    st.info("Aucune variable standard de regroupement n'est disponible pour profiler les délais.")
+                    render_absence_narrative("profile")
 
     # =========================
     # TAB 4: Démographie
     # =========================
 with tab_profil:
     if IDSR_MODE:
-        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
+        render_absence_narrative("idsr_line_list")
     else:
+        render_tab_narrative("profil")
         tab_help(
             "Comment lire cet onglet",
             """
@@ -2336,7 +2641,7 @@ with tab_profil:
                 unit_dist.columns = ["Unite_age (valeur)", "N"]
                 st.dataframe(unit_dist, width="stretch", height=260)
             else:
-                st.info("La variable Unite_age est absente du fichier analysé.")
+                render_absence_narrative("profile")
 
             if extreme_mask.any():
                 show_cols = [c for c in [COL_PROV, COL_ZS, COL_AGE, COL_UNIT, DATE_ONSET, DATE_ADM, DATE_NOTIF] if c in df_f.columns]
@@ -2353,9 +2658,9 @@ with tab_profil:
     # =========================
 with tab_profil:
     st.divider()
-    render_section_title(3, "Analyse descriptive selon le modèle Temps-Lieu-Personne")
+    render_section_title(4, "Analyse descriptive selon le modèle Temps-Lieu-Personne")
     if IDSR_MODE:
-        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
+        render_absence_narrative("idsr_line_list")
     else:
         tab_help(
             "Comment lire cet onglet",
@@ -2388,7 +2693,7 @@ with tab_profil:
                 st.markdown("**Table de fréquence par sexe**")
                 st_dataframe_safe(sex_tbl)
             else:
-                st.info("La variable Sexe est absente du fichier analysé.")
+                render_absence_narrative("profile")
         with a2:
             age_display_col = None
             if COL_AGEG2 in df_f.columns and df_f[COL_AGEG2].notna().any():
@@ -2406,7 +2711,7 @@ with tab_profil:
                     st.markdown("**Résumé statistique de l’âge en années**")
                     st.dataframe(age_num.describe().T, width='stretch')
                 else:
-                    st.info("Aucune information d’âge exploitable n’a été détectée.")
+                    render_absence_narrative("profile")
 
         df_desc = df_f.copy()
         df_desc['Tranche_age_4cat_std'] = derive_age_4cat_generic(df_desc)
@@ -2431,7 +2736,7 @@ with tab_profil:
             )
             st_plot(fig, key='oms_pyr_faceted_prov')
         else:
-            st.info("La structure âge-sexe détaillée par province n’est pas disponible : Province, Sexe et une variable de tranche d’âge sont requis.")
+            render_absence_narrative("profile")
 
         st.divider()
         st.subheader("3. Dimension lieu — répartition par province, zone de santé et aire de santé")
@@ -2446,7 +2751,7 @@ with tab_profil:
             st.plotly_chart(fig, width='stretch', key='oms_geo_bar')
             st_dataframe_safe(geo_tbl)
         else:
-            st.info("Aucune variable géographique standard n’a été détectée.")
+            render_absence_narrative("geo")
 
         st.divider()
         st.subheader("4. Composante laboratoire — résumé opérationnel")
@@ -2528,7 +2833,7 @@ with tab_profil:
                 )
                 st_dataframe_safe(prov_kpi, height=420)
         else:
-            st.info("Aucune variable laboratoire simple n’a été détectée (prélèvement, TDR ou résultat).")
+            render_absence_narrative("profile")
 
         st.divider()
         st.subheader("5. Indicateurs standards stratifiés")
@@ -2629,9 +2934,9 @@ with tab_profil:
                     fig_strat = apply_plotly_value_annotations(fig_strat, annot_vals)
                     st.plotly_chart(fig_strat, width="stretch", key="std_strat_chart")
             else:
-                st.info("Les indicateurs standards sont indisponibles pour la variable de stratification sélectionnée.")
+                render_absence_narrative("profile")
         else:
-            st.info("Aucune variable standard exploitable n'est disponible pour une stratification transversale.")
+            render_absence_narrative("profile")
 
         st.divider()
         st.subheader("6. Tableaux descriptifs des variables catégorielles")
@@ -2689,10 +2994,11 @@ with tab_profil:
     # TAB 5: Complétude
     # =========================
 with tab_qualite:
-    render_section_title(4, "Complétude des données et couverture des rapports")
+    render_section_title(5, "Complétude des données et couverture des rapports")
     if IDSR_MODE:
-        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
+        render_absence_narrative("idsr_line_list")
     else:
+        render_tab_narrative("qualite")
         tab_help(
             "Comment lire cet onglet",
             """
@@ -3090,10 +3396,11 @@ with tab_qualite:
     # =========================
 with tab_qualite:
     st.divider()
-    render_section_title(5, "Extraction, revue et export des données")
+    render_section_title(6, "Extraction, revue et export des données")
     if IDSR_MODE:
-        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
+        render_absence_narrative("idsr_line_list")
     else:
+        render_tab_narrative("export")
         tab_help(
             "Comment lire cet onglet",
             """
@@ -3159,6 +3466,43 @@ with tab_qualite:
             if not export_qc_flags.empty else pd.DataFrame(columns=["Flag", "Occurrences"])
         )
         export_duplicates = duplicate_candidates_table(df_f)
+        export_risk_group = COL_ZS if COL_ZS in df_f.columns and df_f[COL_ZS].notna().any() else (
+            COL_PROV if COL_PROV in df_f.columns and df_f[COL_PROV].notna().any() else None
+        )
+        export_risk_score = (
+            build_operational_risk_score(
+                df_f,
+                group_col=export_risk_group,
+                week_col="YW" if "YW" in df_f.columns else COL_WEEK,
+                recent_weeks=4,
+                threshold_days=int(seuil_jours),
+            )
+            if export_risk_group else pd.DataFrame()
+        )
+        export_alerts = (
+            build_weekly_alerts(
+                df_f,
+                export_risk_group,
+                week_col="YW" if "YW" in df_f.columns else COL_WEEK,
+                baseline_weeks=3,
+                min_baseline_periods=2,
+                min_cases=10,
+                alert_ratio=1.5,
+            )
+            if export_risk_group and (("YW" in df_f.columns) or (COL_WEEK in df_f.columns)) else pd.DataFrame()
+        )
+        export_clusters = (
+            build_spatiotemporal_cluster_table(
+                df_f,
+                group_cols=[c for c in [COL_PROV, COL_ZS] if c in df_f.columns],
+                week_col="YW" if "YW" in df_f.columns else COL_WEEK,
+                recent_weeks=2,
+                previous_weeks=4,
+                min_recent_cases=5,
+                growth_ratio=1.5,
+            )
+            if (("YW" in df_f.columns) or (COL_WEEK in df_f.columns)) else pd.DataFrame()
+        )
 
         export_completeness = pd.DataFrame()
         export_completeness_by = None
@@ -3218,6 +3562,20 @@ with tab_qualite:
             else:
                 st.caption("Aucun tableau de complétude additionnel n’a pu être préparé pour l’export.")
 
+            if not export_risk_score.empty:
+                st.markdown(f"**Score de risque opérationnel ({export_risk_group})**")
+                st_dataframe_safe(export_risk_score.head(100), height=300)
+            else:
+                st.caption("Aucun score de risque opérationnel n’a pu être préparé pour l’export.")
+
+            if not export_alerts.empty:
+                st.markdown("**Alertes hebdomadaires automatiques**")
+                st_dataframe_safe(export_alerts.tail(100), height=300)
+
+            if not export_clusters.empty:
+                st.markdown("**Clusters spatio-temporels récents**")
+                st_dataframe_safe(export_clusters.head(100), height=300)
+
         st.markdown("**Aperçu de la line list filtrée**")
         st_dataframe_safe(df_f, height=420)
 
@@ -3273,6 +3631,12 @@ with tab_qualite:
                         export_duplicates.to_excel(writer, sheet_name="Doublons", index=False)
                     if not export_completeness.empty:
                         export_completeness.to_excel(writer, sheet_name="Completude", index=False)
+                    if not export_risk_score.empty:
+                        export_risk_score.to_excel(writer, sheet_name="Score_risque", index=False)
+                    if not export_alerts.empty:
+                        export_alerts.to_excel(writer, sheet_name="Alertes", index=False)
+                    if not export_clusters.empty:
+                        export_clusters.to_excel(writer, sheet_name="Clusters", index=False)
 
             excel_name = (
                 f"{export_base_name}_pack_qualite.xlsx"
@@ -3294,10 +3658,11 @@ with tab_qualite:
     # =========================
 with tab_qualite:
     st.divider()
-    render_section_title(6, "Qualité des données et alertes de gestion")
+    render_section_title(7, "Qualité des données et alertes de gestion")
     if IDSR_MODE:
-        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
+        render_absence_narrative("idsr_line_list")
     else:
+        render_tab_narrative("qualite")
         tab_help(
             "Comment lire cet onglet",
             """
@@ -3430,6 +3795,83 @@ with tab_qualite:
             st_dataframe_safe(casc_global)
 
         # ==========================================================
+        # 0a) Score de risque operationnel par zone/province
+        # ==========================================================
+        risk_group_options = [
+            c for c in [COL_ZS, COL_PROV, COL_AS]
+            if c in df_f.columns and df_f[c].notna().any()
+        ]
+        if risk_group_options:
+            with st.expander("Priorisation operationnelle par zone/province", expanded=True):
+                r1, r2, r3 = st.columns([1.15, 0.95, 0.95])
+                with r1:
+                    risk_group_col = st.selectbox(
+                        "Niveau de priorisation",
+                        options=risk_group_options,
+                        key="operational_risk_group_col",
+                    )
+                with r2:
+                    risk_recent_weeks = st.number_input(
+                        "Semaines recentes",
+                        min_value=2,
+                        max_value=8,
+                        value=4,
+                        step=1,
+                        key="operational_risk_recent_weeks",
+                    )
+                with r3:
+                    risk_topn = st.slider(
+                        "Top priorites",
+                        min_value=5,
+                        max_value=50,
+                        value=20,
+                        step=5,
+                        key="operational_risk_topn",
+                    )
+
+                risk_tbl = build_operational_risk_score(
+                    df_f,
+                    group_col=risk_group_col,
+                    week_col="YW" if "YW" in df_f.columns else COL_WEEK,
+                    recent_weeks=int(risk_recent_weeks),
+                    threshold_days=int(seuil_jours),
+                )
+                if risk_tbl.empty:
+                    render_absence_narrative("risk")
+                else:
+                    risk_view = risk_tbl.head(int(risk_topn)).copy()
+                    k_r1, k_r2, k_r3 = st.columns(3)
+                    k_r1.metric("Groupes classes", f"{len(risk_tbl):,}".replace(",", " "))
+                    k_r2.metric("Priorite tres elevee", str(int((risk_tbl["Priorite"] == "Tres elevee").sum())))
+                    k_r3.metric("Score max", f"{pd.to_numeric(risk_tbl['Score_risque'], errors='coerce').max():.1f}")
+
+                    left_risk, right_risk = st.columns([1.15, 1.35])
+                    with left_risk:
+                        st.dataframe(risk_view, width="stretch", height=520, hide_index=True)
+                    with right_risk:
+                        plot_risk = risk_view.sort_values("Score_risque", ascending=True)
+                        fig_risk = px.bar(
+                            plot_risk,
+                            x="Score_risque",
+                            y=risk_group_col,
+                            orientation="h",
+                            color="Priorite",
+                            title="Score de risque operationnel",
+                        )
+                        fig_risk.update_layout(xaxis_title="Score 0-100", yaxis_title=risk_group_col)
+                        fig_risk = apply_plotly_value_annotations(fig_risk, annot_vals)
+                        st.plotly_chart(fig_risk, width="stretch", key="operational_risk_chart")
+
+                    csv_risk = risk_tbl.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        "Telecharger score de risque (CSV)",
+                        data=csv_risk,
+                        file_name="score_risque_operationnel.csv",
+                        mime="text/csv",
+                        key="download_operational_risk_score",
+                    )
+
+        # ==========================================================
         # 0b) Résumé standard qualité / délais / disponibilité des champs
         # ==========================================================
         with st.expander("🔎 Résumé standard qualité / délais / disponibilité des champs", expanded=False):
@@ -3504,7 +3946,7 @@ with tab_qualite:
             comp = completeness_table(df_f, champs_cles, by=group_for_comp) if group_choices else pd.DataFrame()
         
             if comp.empty:
-                st.info("Impossible de calculer la complétude : variable de regroupement ou champs requis absents.")
+                render_absence_narrative("quality")
             else:
                 st_dataframe_safe(comp, height=520)
         
@@ -3530,7 +3972,7 @@ with tab_qualite:
         
             cascad = cascade_metrics(df_f) if n_total else pd.DataFrame()
             if cascad.empty:
-                st.info("La cascade est indisponible : aucune donnée n’est disponible après application des filtres.")
+                render_absence_narrative("quality")
             else:
                 st_dataframe_safe(cascad)
         
@@ -3546,8 +3988,8 @@ with tab_qualite:
                         len(sub),
                         _get_pct_from_cascade(c, "Prélèvement=Oui"),
                         _get_pct_from_cascade(c, "TDR réalisé=Oui"),
-                        _get_pct_from_cascade(c, "Résultat TDR valide"),
-                        _get_pct_from_cascade(c, "TDR positif"),
+                        _get_pct_from_cascade(c, "Résultat valide"),
+                        _get_pct_from_cascade(c, "Positifs"),
                         _get_pct_from_cascade(c, "Résultat renseigné mais TDR_realise != Oui"),
                     ])
         
@@ -3571,16 +4013,47 @@ with tab_qualite:
         # ==========================================================
         with st.expander("🔎 Alertes tendance (hausse vs baseline simple)", expanded=False):
             alert_group_choices = [c for c in [COL_PROV, COL_ZS] if c in df_f.columns]
-            alert_group = st.selectbox("Regrouper les alertes par", alert_group_choices, index=0 if alert_group_choices else 0)
-        
-            alerts = alerts_weekly_simple(df_f, alert_group) if alert_group_choices else pd.DataFrame()
+            if not alert_group_choices:
+                render_absence_narrative("geo")
+                alert_group = None
+                alerts = pd.DataFrame()
+            else:
+                alert_group = st.selectbox("Regrouper les alertes par", alert_group_choices, index=0)
+                min_alert_cases = st.number_input(
+                    "Cas minimum pour signal",
+                    min_value=1,
+                    max_value=500,
+                    value=10,
+                    step=1,
+                    key="quality_alert_min_cases",
+                )
+                alert_ratio_quality = st.number_input(
+                    "Ratio alerte vs baseline",
+                    min_value=1.0,
+                    max_value=10.0,
+                    value=1.5,
+                    step=0.1,
+                    key="quality_alert_ratio",
+                )
+                alerts = build_weekly_alerts(
+                    df_f,
+                    alert_group,
+                    week_col="YW",
+                    baseline_weeks=3,
+                    min_baseline_periods=2,
+                    min_cases=int(min_alert_cases),
+                    alert_ratio=float(alert_ratio_quality),
+                ) if "YW" in df_f.columns else pd.DataFrame()
         
             if alerts.empty:
-                st.info("Les alertes sont indisponibles : variable temporelle absente, groupe indisponible ou historique insuffisant.")
+                render_absence_narrative("alerts")
             else:
                 # Dernière semaine observée
                 last_yw = alerts["YW"].dropna().max()
-                st.caption(f"Dernière semaine observée: {last_yw}")
+                st.caption(
+                    f"Dernière semaine observée : {last_yw}. "
+                    "Les signaux ci-dessous servent à prioriser la vérification, pas à confirmer seuls une épidémie."
+                )
         
                 last = alerts[alerts["YW"] == last_yw].copy()
         
@@ -3597,7 +4070,7 @@ with tab_qualite:
                 last["signal"] = last["signal"].fillna(False)
                 last = last.sort_values(["signal", "Cas"], ascending=[False, False])
         
-                cols_out = [c for c in [alert_group, "YW", "Cas", "Cas_prev", "var_%", "baseline_3w", "signal"] if c in last.columns]
+                cols_out = [c for c in [alert_group, "YW", "Cas", "Cas_prev", "var_%", "baseline", "ratio_baseline", "signal_level", "signal"] if c in last.columns]
                 st_dataframe_safe(last[cols_out], height=520)
         
                 # Top signaux
@@ -3609,11 +4082,25 @@ with tab_qualite:
                     st.plotly_chart(figa, width="stretch")
                 else:
                     st.success("Aucun signal n’a été détecté avec les seuils actuellement définis (baseline × 1,5 et cas ≥ 10).")
+
+                cluster_quality = build_spatiotemporal_cluster_table(
+                    df_f,
+                    group_cols=[c for c in [COL_PROV, COL_ZS] if c in df_f.columns],
+                    week_col="YW",
+                    recent_weeks=2,
+                    previous_weeks=4,
+                    min_recent_cases=max(5, int(min_alert_cases // 2)),
+                    growth_ratio=float(alert_ratio_quality),
+                ) if "YW" in df_f.columns else pd.DataFrame()
+                if not cluster_quality.empty:
+                    st.markdown("**Clusters recents a investiguer**")
+                    st_dataframe_safe(cluster_quality.head(100), height=360)
 with tab_sitrep:
     if IDSR_MODE:
-        st.info("Mode **IDSR agrégé hebdomadaire** : les analyses de liste linéaire sont désactivées dans cet espace. Veuillez utiliser l’onglet **IDSR**.")
+        render_absence_narrative("idsr_line_list")
     else:
-        render_section_title(1, "Synthèse automatique de la situation épidémiologique (SITREP)")
+        render_section_title(9, "Synthèse automatique de la situation épidémiologique (SITREP)")
+        render_tab_narrative("sitrep")
 
         tab_help(
             "Comment lire cet onglet",
@@ -4069,7 +4556,7 @@ with tab_sitrep:
         k = sitrep_payload["kpi"]
 
         st.divider()
-        render_section_title(2, "Lecture rapide et message clé")
+        render_section_title(10, "Lecture rapide et message clé")
         st.caption(
             "Cette lecture reprend la semaine ciblée, sa comparaison avec la semaine précédente disponible et le cumul annuel, sans reprendre les analyses détaillées d’un autre onglet."
         )
@@ -4107,6 +4594,12 @@ with tab_sitrep:
 
         if isinstance(selected_df, pd.DataFrame) and selected_df.empty:
             st.warning("La semaine sélectionnée ne contient aucun cas dans le périmètre filtré actuel.")
+            render_reader_narrative(
+                "Lecture de l'absence de cas",
+                "Cette absence peut refléter une situation réellement calme, un retard de notification ou un filtre trop restrictif. "
+                "Avant diffusion, il est utile de vérifier la complétude des rapports et les filtres appliqués.",
+                tone="missing",
+            )
 
         summary_lines = sitrep_payload.get("summary_lines", [])
         if summary_lines:
@@ -4119,7 +4612,7 @@ with tab_sitrep:
             st.markdown("\n".join([f"- {line}" for line in decision_focus]))
 
         st.divider()
-        render_section_title(3, "Foyers géographiques et dynamique")
+        render_section_title(11, "Foyers géographiques et dynamique")
         st.caption(
             "Le SITREP montre ici les foyers principaux et la dynamique utile à la décision. Les tableaux exhaustifs restent repliés pour éviter de surcharger la lecture."
         )
@@ -4168,7 +4661,7 @@ with tab_sitrep:
                 )
 
         st.divider()
-        render_section_title(4, "Signaux utiles à la décision")
+        render_section_title(12, "Signaux utiles à la décision")
         st.caption(
             "Cette section ne reprend que les signaux directement utiles à l’action immédiate. Les analyses détaillées restent accessibles dans leurs onglets spécialisés."
         )
@@ -4243,7 +4736,7 @@ with tab_sitrep:
                 st.caption("Aucune ZS ne dépasse le seuil critique défini.")
 
         st.divider()
-        render_section_title(5, "Articulation avec les autres onglets")
+        render_section_title(13, "Articulation avec les autres onglets")
         st.caption("Chaque onglet garde une fonction distincte pour éviter les doublons dans le tableau de bord.")
         st.markdown(
             "\n".join(
@@ -4260,7 +4753,7 @@ with tab_sitrep:
         # 5) Exportation PDF
         # =========================================================
         st.divider()
-        render_section_title(6, "Exportation")
+        render_section_title(14, "Exportation")
 
         if "export_sitrep_pdf" in globals() and callable(export_sitrep_pdf):
             cexp1, cexp2 = st.columns([1, 1])
@@ -4317,6 +4810,7 @@ with tab_sitrep:
 # =========================
 with tab_idsr:
     st.markdown("## IDSR — Surveillance agrégée hebdomadaire")
+    render_tab_narrative("idsr")
 
     tab_help(
         "Comment lire cet onglet",
@@ -4362,7 +4856,12 @@ with tab_idsr:
                 src = None
 
     if df_idsr.empty:
-        st.info("Veuillez charger un fichier IDSR agrégé (.xlsx) pour afficher les analyses.")
+        render_reader_narrative(
+            "Données IDSR attendues",
+            "Chargez un fichier IDSR agrégé pour afficher les analyses hebdomadaires. "
+            "Tant que le fichier n'est pas chargé, aucune conclusion ne peut être tirée sur la situation.",
+            tone="missing",
+        )
     else:
         st.success(f"Fichier chargé : {src} | Lignes: {len(df_idsr):,}")
 
@@ -6377,6 +6876,7 @@ with tab_idsr:
 
 with tab_irep:
     st.subheader("Indice provincial composite de risque épidémique (IREP)")
+    render_tab_narrative("irep")
     tab_help(
         "Lecture et interprétation",
         """
@@ -6393,7 +6893,7 @@ with tab_irep:
     )
 
     if df is None or df.empty:
-        st.info("Aucune donnée n’est disponible pour calculer l’IREP.")
+        render_absence_narrative("risk")
     else:
         # -----------------------------
         # 1) Choisir colonne semaine
@@ -6529,7 +7029,7 @@ with tab_irep:
         )
 
         if irep is None or irep.empty:
-            st.info("IREP: aucun résultat (vérifie les colonnes Province / Semaine / Cas).")
+            render_absence_narrative("risk")
         else:
             # KPIs synthèse
             st.markdown("### Synthèse")
@@ -6569,10 +7069,130 @@ with tab_irep:
             )
 
 with tab_maps:
+    render_tab_narrative("cartographie")
     render_detailed_maps_tab(
         df_f=df_f,
         show_maps=show_maps,
         idsr_mode=IDSR_MODE,
     )
+
+with tab_methodology:
+    render_section_title(1, "Méthodologie, définitions et limites d'interprétation")
+    render_reader_narrative(
+        "Pourquoi cet onglet existe",
+        "Cette page documente les règles de lecture du tableau de bord. Elle permet de rendre les résultats plus transparents "
+        "pour le COUSP, les programmes, les DPS, les partenaires techniques et les lecteurs non spécialistes.",
+        tone="decision",
+    )
+
+    current_disease_label = DISEASE_SPECS.get(disease_key, {}).get("label", disease_key)
+    methodology_context = pd.DataFrame(
+        [
+            ("Maladie / source sélectionnée", current_disease_label),
+            ("Mode analytique", "IDSR agrégé hebdomadaire" if IDSR_MODE else "Liste linéaire individuelle"),
+            ("Périmètre actif", f"{len(df_f):,} lignes après filtres".replace(",", " ") if isinstance(df_f, pd.DataFrame) else "Non disponible"),
+            ("Lecture recommandée", "Décrire, vérifier, prioriser ; ne pas conclure automatiquement sans validation terrain."),
+        ],
+        columns=["Élément", "Description"],
+    )
+    st.dataframe(methodology_context, width="stretch", hide_index=True)
+
+    st.markdown("### 1. Principes généraux de lecture")
+    st.markdown(
+        """
+        - Les résultats décrivent les **données disponibles dans le périmètre filtré** ; ils ne représentent pas nécessairement toute la population exposée.
+        - Une augmentation de cas, une alerte ou un score élevé est un **signal de vérification**, pas une confirmation automatique d'épidémie.
+        - Les indicateurs doivent être lus avec la **complétude**, la **promptitude**, les filtres actifs et la connaissance terrain.
+        - Les résultats peuvent évoluer après rattrapage, correction ou consolidation des données.
+        """
+    )
+
+    indicator_defs = pd.DataFrame(
+        [
+            ("Cas", "Nombre de lignes/cas dans la liste filtrée", "Toutes les lignes du périmètre filtré", "Dépend de la déduplication et des filtres."),
+            ("Décès", "Cas dont l'issue est interprétée comme décès", "Tous les cas filtrés", "La qualité du champ Issue influence fortement l'indicateur."),
+            ("Létalité / CFR (%)", "Décès / Cas × 100", "Tous les cas filtrés", "À interpréter avec prudence si le nombre de cas est faible."),
+            ("Prélèvement (%)", "Cas avec prélèvement documenté Oui / Cas × 100", "Tous les cas filtrés", "Peut refléter la pratique terrain ou la complétude du champ."),
+            ("TDR ou test réalisé (%)", "Cas avec test documenté Oui / Cas × 100", "Tous les cas filtrés", "Selon la maladie, le test attendu peut différer."),
+            ("Positivité (%)", "Résultats positifs / Résultats valides positifs ou négatifs × 100", "Résultats valides", "Exclut les résultats invalides, en attente ou non interprétables."),
+            ("Promptitude ≤ seuil", "Cas dont le délai est inférieur ou égal au seuil choisi", "Cas avec dates valides et délai non négatif", "Un délai manquant n'est pas classé comme rapide ou lent."),
+            ("Complétude (%)", "Proportion moyenne de champs clés renseignés", "Champs standards disponibles", "Mesure la documentation, pas la qualité clinique intrinsèque."),
+            ("Alerte hebdomadaire", "Cas récents comparés à une moyenne historique courte", "Groupe géographique et semaine", "Signal à investiguer, sensible au faible historique."),
+            ("Score de risque", "Score composite 0-100 combinant volume, tendance, CFR, qualité et promptitude", "Groupe géographique sélectionné", "Priorise l'attention ; ne remplace pas l'analyse experte."),
+            ("IREP", "Indice provincial composite de risque épidémique", "Province", "Dépend des poids choisis et des indicateurs disponibles."),
+        ],
+        columns=["Indicateur", "Règle de calcul", "Dénominateur", "Limite principale"],
+    )
+    st.markdown("### 2. Définitions des indicateurs")
+    st.dataframe(indicator_defs, width="stretch", hide_index=True, height=420)
+
+    st.markdown("### 3. Règles de standardisation")
+    standardization_rules = pd.DataFrame(
+        [
+            ("Géographie", "Province, Zone de santé et Aire de santé sont harmonisées vers les colonnes standards du dashboard."),
+            ("Temps", "Les semaines épidémiologiques sont construites à partir des colonnes année/semaine ou des dates disponibles."),
+            ("Dates", "Les dates ISO sont lues en year-first ; les autres formats sont interprétés avec prudence en day-first."),
+            ("Âge", "L'âge est converti en années lorsque l'unité est disponible : jours, semaines, mois ou ans."),
+            ("Sexe", "Les variantes usuelles sont harmonisées vers Masculin/Feminin lorsque possible."),
+            ("Issue", "Les libellés compatibles avec décès alimentent l'indicateur is_death."),
+            ("Laboratoire", "Les résultats sont classés en positifs, négatifs, invalides ou non interprétables selon les valeurs disponibles."),
+        ],
+        columns=["Bloc", "Règle appliquée"],
+    )
+    st.dataframe(standardization_rules, width="stretch", hide_index=True)
+
+    st.markdown("### 4. Contrôles qualité appliqués")
+    qc_rules = pd.DataFrame(
+        [
+            ("Chronologie", "Dates incohérentes : notification avant début, résultat avant prélèvement, issue avant admission, etc."),
+            ("Âge", "Âges négatifs ou supérieurs aux limites plausibles."),
+            ("Géographie", "Zone de santé renseignée sans province, ou aire de santé renseignée sans zone."),
+            ("Laboratoire", "Résultat renseigné alors que le prélèvement ou le test n'est pas documenté comme réalisé."),
+            ("Issue", "Décès sans date d'issue lorsque la date est attendue."),
+            ("Doublons", "Empreintes probables construites à partir de l'identité, de l'âge, des dates et de la géographie lorsque disponibles."),
+        ],
+        columns=["Contrôle", "Interprétation"],
+    )
+    st.dataframe(qc_rules, width="stretch", hide_index=True)
+
+    st.markdown("### 5. Limites à mentionner dans les restitutions")
+    limitations = pd.DataFrame(
+        [
+            ("Données incomplètes", "Une variable absente ou peu renseignée peut modifier l'interprétation des tendances, profils et délais."),
+            ("Retards de notification", "Les semaines les plus récentes peuvent être sous-estimées si les données arrivent tardivement."),
+            ("Petits effectifs", "Les pourcentages et CFR peuvent varier fortement avec peu de cas."),
+            ("Doublons", "Les doublons potentiels doivent être revus avant toute conclusion définitive sur les volumes."),
+            ("Changements de définition", "Toute modification de définition de cas ou de stratégie de dépistage peut modifier les tendances."),
+            ("Cartographie", "Les résultats cartographiques dépendent de la qualité des libellés géographiques et des fichiers GeoJSON."),
+            ("Alertes automatiques", "Les alertes statistiques ne remplacent pas l'investigation, la vérification terrain et la validation épidémiologique."),
+        ],
+        columns=["Limite", "Conséquence pratique"],
+    )
+    st.dataframe(limitations, width="stretch", hide_index=True)
+
+    st.markdown("### 6. Confidentialité et diffusion")
+    st.markdown(
+        """
+        - Les listes linéaires peuvent contenir des informations nominatives ou indirectement identifiantes.
+        - Les exports destinés à un partage externe doivent être limités au strict nécessaire et, si possible, anonymisés.
+        - Les résultats diffusés publiquement devraient privilégier les agrégats par semaine, province ou zone de santé.
+        - Toute diffusion institutionnelle doit préciser la source, la période, les filtres appliqués et la date de génération.
+        """
+    )
+
+    st.markdown("### 7. Checklist avant validation institutionnelle")
+    checklist = pd.DataFrame(
+        [
+            ("Source vérifiée", "Le fichier chargé correspond à la maladie, à la période et au niveau attendu."),
+            ("Filtres vérifiés", "Les filtres géographiques, temporels et de classification sont cohérents avec la question analysée."),
+            ("Complétude revue", "Les champs clés sont suffisamment renseignés pour soutenir l'interprétation."),
+            ("Doublons revus", "Les doublons potentiels majeurs ont été vérifiés ou documentés."),
+            ("Délais interprétés avec prudence", "Les délais sont lus uniquement si les dates sources sont fiables."),
+            ("Alertes validées", "Les signaux automatiques ont été confrontés à l'information terrain."),
+            ("Export traçable", "L'export inclut la source, la période, les filtres et la date de génération."),
+        ],
+        columns=["Point de contrôle", "Critère attendu"],
+    )
+    st.dataframe(checklist, width="stretch", hide_index=True)
 
 render_footer()

@@ -2152,6 +2152,341 @@ def alerts_weekly_simple(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
 
     return weekly
 
+def _score_minmax_0_100(series: pd.Series, inverse: bool = False) -> pd.Series:
+    """Score min-max robuste entre 0 et 100, avec option d'inversion du risque."""
+    s = pd.to_numeric(series, errors="coerce")
+    out = pd.Series(np.nan, index=s.index, dtype="float64")
+    valid = s.dropna()
+    if valid.empty:
+        return out
+    lo = float(valid.min())
+    hi = float(valid.max())
+    if hi <= lo:
+        out.loc[valid.index] = 50.0
+    else:
+        out.loc[valid.index] = ((valid - lo) / (hi - lo)) * 100.0
+    if inverse:
+        out = 100.0 - out
+    return out
+
+
+def build_weekly_alerts(
+    df: pd.DataFrame,
+    group_col: str,
+    *,
+    week_col: str = "YW",
+    cases_col: Optional[str] = None,
+    baseline_weeks: int = 3,
+    min_baseline_periods: int = 2,
+    min_cases: int = 10,
+    alert_ratio: float = 1.5,
+    watch_ratio: float = 1.2,
+) -> pd.DataFrame:
+    """
+    Alertes hebdomadaires configurables par groupe.
+
+    - Cas = nombre de lignes, sauf si cases_col numerique est fourni.
+    - baseline = moyenne des semaines precedentes dans le groupe.
+    - signal_level distingue Alerte, Surveillance et Stable.
+    """
+    out_cols = [
+        group_col,
+        week_col,
+        "Cas",
+        "Cas_prev",
+        "var_%",
+        "baseline",
+        "ratio_baseline",
+        "signal_level",
+        "signal",
+    ]
+    if df is None or df.empty or group_col not in df.columns or week_col not in df.columns:
+        return pd.DataFrame(columns=out_cols)
+
+    cols = [group_col, week_col]
+    if cases_col and cases_col in df.columns:
+        cols.append(cases_col)
+    tmp = df[cols].copy()
+    tmp = tmp[tmp[group_col].notna() & tmp[week_col].notna()].copy()
+    if tmp.empty:
+        return pd.DataFrame(columns=out_cols)
+
+    tmp[group_col] = tmp[group_col].astype(str).str.strip()
+    tmp[week_col] = tmp[week_col].astype(str).str.strip()
+    tmp = tmp[(tmp[group_col] != "") & (tmp[week_col] != "")]
+    if tmp.empty:
+        return pd.DataFrame(columns=out_cols)
+
+    if cases_col and cases_col in tmp.columns:
+        tmp["_cases"] = pd.to_numeric(tmp[cases_col], errors="coerce")
+        if tmp["_cases"].notna().mean() < 0.5:
+            tmp["_cases"] = 1.0
+        tmp["_cases"] = tmp["_cases"].fillna(0.0)
+        weekly = tmp.groupby([group_col, week_col], as_index=False)["_cases"].sum()
+        weekly = weekly.rename(columns={"_cases": "Cas"})
+    else:
+        weekly = tmp.groupby([group_col, week_col], as_index=False).size().rename(columns={"size": "Cas"})
+
+    weekly = weekly.sort_values([group_col, week_col]).reset_index(drop=True)
+    weekly["Cas_prev"] = weekly.groupby(group_col)["Cas"].shift(1)
+    weekly["baseline"] = weekly.groupby(group_col)["Cas"].transform(
+        lambda x: x.shift(1).rolling(
+            int(baseline_weeks),
+            min_periods=max(1, int(min_baseline_periods)),
+        ).mean()
+    )
+    weekly["var_%"] = np.where(
+        pd.to_numeric(weekly["Cas_prev"], errors="coerce").fillna(0) > 0,
+        (weekly["Cas"] - weekly["Cas_prev"]) / weekly["Cas_prev"] * 100.0,
+        np.nan,
+    )
+    weekly["ratio_baseline"] = np.where(
+        pd.to_numeric(weekly["baseline"], errors="coerce").fillna(0) > 0,
+        weekly["Cas"] / weekly["baseline"],
+        np.nan,
+    )
+
+    weekly["signal_level"] = "Stable"
+    watch_mask = (weekly["Cas"] >= int(min_cases)) & (weekly["ratio_baseline"] >= float(watch_ratio))
+    alert_mask = (weekly["Cas"] >= int(min_cases)) & (weekly["ratio_baseline"] >= float(alert_ratio))
+    weekly.loc[watch_mask, "signal_level"] = "Surveillance"
+    weekly.loc[alert_mask, "signal_level"] = "Alerte"
+    weekly["signal"] = weekly["signal_level"].eq("Alerte")
+
+    return weekly[out_cols]
+
+
+def build_spatiotemporal_cluster_table(
+    df: pd.DataFrame,
+    *,
+    group_cols: Optional[List[str]] = None,
+    week_col: str = "YW",
+    cases_col: Optional[str] = None,
+    recent_weeks: int = 2,
+    previous_weeks: int = 4,
+    min_recent_cases: int = 5,
+    growth_ratio: float = 1.5,
+) -> pd.DataFrame:
+    """Repere les groupes avec concentration recente et croissance temporelle."""
+    if df is None or df.empty or week_col not in df.columns:
+        return pd.DataFrame()
+
+    if group_cols is None:
+        group_cols = [c for c in [COL_PROV, COL_ZS] if c in df.columns]
+    group_cols = [c for c in group_cols if c in df.columns]
+    if not group_cols:
+        return pd.DataFrame()
+
+    tmp_cols = group_cols + [week_col]
+    if cases_col and cases_col in df.columns:
+        tmp_cols.append(cases_col)
+    tmp = df[tmp_cols].copy()
+    tmp = tmp.dropna(subset=group_cols + [week_col])
+    if tmp.empty:
+        return pd.DataFrame()
+
+    tmp[week_col] = tmp[week_col].astype(str).str.strip()
+    weeks = sorted([w for w in tmp[week_col].dropna().unique().tolist() if str(w).strip()])
+    if not weeks:
+        return pd.DataFrame()
+
+    recent_list = weeks[-int(recent_weeks):]
+    previous_start = max(0, len(weeks) - int(recent_weeks) - int(previous_weeks))
+    previous_list = weeks[previous_start: max(0, len(weeks) - int(recent_weeks))]
+
+    if cases_col and cases_col in tmp.columns:
+        tmp["_cases"] = pd.to_numeric(tmp[cases_col], errors="coerce")
+        if tmp["_cases"].notna().mean() < 0.5:
+            tmp["_cases"] = 1.0
+        tmp["_cases"] = tmp["_cases"].fillna(0.0)
+        agg = tmp.groupby(group_cols + [week_col], as_index=False)["_cases"].sum().rename(columns={"_cases": "Cas"})
+    else:
+        agg = tmp.groupby(group_cols + [week_col], as_index=False).size().rename(columns={"size": "Cas"})
+
+    recent = (
+        agg[agg[week_col].isin(recent_list)]
+        .groupby(group_cols, as_index=False)["Cas"].sum()
+        .rename(columns={"Cas": "Cas_recents"})
+    )
+    previous = (
+        agg[agg[week_col].isin(previous_list)]
+        .groupby(group_cols, as_index=False)["Cas"].sum()
+        .rename(columns={"Cas": "Cas_precedents"})
+    )
+    out = recent.merge(previous, on=group_cols, how="left")
+    out["Cas_precedents"] = out["Cas_precedents"].fillna(0)
+    prev_den = out["Cas_precedents"] / max(len(previous_list), 1)
+    recent_den = out["Cas_recents"] / max(len(recent_list), 1)
+    out["ratio_croissance"] = recent_den / (prev_den + 1.0)
+    out["Semaines_recentes"] = ", ".join(recent_list)
+    out["Semaines_reference"] = ", ".join(previous_list) if previous_list else ""
+    out["cluster_signal"] = (
+        (out["Cas_recents"] >= int(min_recent_cases))
+        & (out["ratio_croissance"] >= float(growth_ratio))
+    )
+    out = out.sort_values(["cluster_signal", "Cas_recents", "ratio_croissance"], ascending=[False, False, False])
+    return out.reset_index(drop=True)
+
+
+def build_operational_risk_score(
+    df: pd.DataFrame,
+    *,
+    group_col: Optional[str] = None,
+    week_col: str = "YW",
+    recent_weeks: int = 4,
+    threshold_days: int = 2,
+) -> pd.DataFrame:
+    """
+    Score operationnel de priorisation par zone/province.
+
+    Combine volume, tendance recente, CFR, qualite, promptitude, positivite
+    et signaux QC quand les colonnes sont disponibles.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+    if group_col is None:
+        group_col = COL_ZS if COL_ZS in df.columns else (COL_PROV if COL_PROV in df.columns else None)
+    if group_col is None or group_col not in df.columns:
+        return pd.DataFrame()
+
+    d = df.copy()
+    d = d[d[group_col].notna()].copy()
+    if d.empty:
+        return pd.DataFrame()
+
+    d["_risk_group"] = d[group_col].astype(str).str.strip()
+    d = d[d["_risk_group"] != ""].copy()
+    if d.empty:
+        return pd.DataFrame()
+
+    d["_risk_death"] = (
+        pd.to_numeric(d["is_death"], errors="coerce").fillna(0)
+        if "is_death" in d.columns
+        else (d[COL_ISSUE].apply(is_death).astype(int) if COL_ISSUE in d.columns else 0)
+    )
+
+    base = (
+        d.groupby("_risk_group", as_index=False)
+        .agg(Cas=(group_col, "size"), Deces=("_risk_death", "sum"))
+        .rename(columns={"_risk_group": group_col})
+    )
+    base["CFR_%"] = [safe_pct(num, den) for num, den in zip(base["Deces"], base["Cas"])]
+
+    if week_col in d.columns and d[week_col].notna().any():
+        weeks = sorted(d[week_col].dropna().astype(str).unique().tolist())
+        recent_list = weeks[-int(recent_weeks):]
+        previous_list = weeks[max(0, len(weeks) - (int(recent_weeks) * 2)): max(0, len(weeks) - int(recent_weeks))]
+        recent = d[d[week_col].astype(str).isin(recent_list)].groupby("_risk_group", as_index=False).size()
+        recent = recent.rename(columns={"_risk_group": group_col, "size": "Cas_recents"})
+        previous = d[d[week_col].astype(str).isin(previous_list)].groupby("_risk_group", as_index=False).size()
+        previous = previous.rename(columns={"_risk_group": group_col, "size": "Cas_reference"})
+        base = base.merge(recent, on=group_col, how="left").merge(previous, on=group_col, how="left")
+        base["Cas_recents"] = base["Cas_recents"].fillna(0)
+        base["Cas_reference"] = base["Cas_reference"].fillna(0)
+        recent_avg = base["Cas_recents"] / max(len(recent_list), 1)
+        previous_avg = base["Cas_reference"] / max(len(previous_list), 1)
+        base["Ratio_tendance"] = recent_avg / (previous_avg + 1.0)
+    else:
+        base["Cas_recents"] = np.nan
+        base["Cas_reference"] = np.nan
+        base["Ratio_tendance"] = np.nan
+
+    key_cols = [c for c in [COL_PROV, COL_ZS, COL_AS, COL_SEX, COL_AGE, DATE_ONSET, DATE_NOTIF, COL_ISSUE] if c in d.columns]
+    if "score_completude_core_%" in d.columns:
+        comp = d.groupby("_risk_group")["score_completude_core_%"].mean().reset_index()
+        comp = comp.rename(columns={"_risk_group": group_col, "score_completude_core_%": "Completude_%"})
+    elif key_cols:
+        comp_values = d.groupby("_risk_group")[key_cols].apply(lambda x: float(x.notna().mean().mean() * 100.0))
+        comp = comp_values.reset_index(name="Completude_%").rename(columns={"_risk_group": group_col})
+    else:
+        comp = pd.DataFrame({group_col: base[group_col], "Completude_%": np.nan})
+    base = base.merge(comp, on=group_col, how="left")
+
+    if "delai_onset_to_notif" in d.columns:
+        tmp = d[["_risk_group", "delai_onset_to_notif"]].copy()
+        tmp["delai_onset_to_notif"] = pd.to_numeric(tmp["delai_onset_to_notif"], errors="coerce")
+        tim = (
+            tmp[tmp["delai_onset_to_notif"].notna() & (tmp["delai_onset_to_notif"] >= 0)]
+            .groupby("_risk_group")["delai_onset_to_notif"]
+            .apply(lambda x: float((x <= threshold_days).mean() * 100.0))
+            .reset_index(name=f"Promptitude_<={threshold_days}j_%")
+            .rename(columns={"_risk_group": group_col})
+        )
+        base = base.merge(tim, on=group_col, how="left")
+    else:
+        base[f"Promptitude_<={threshold_days}j_%"] = np.nan
+
+    result_col = COL_TDRR if COL_TDRR in d.columns and d[COL_TDRR].notna().any() else ("Resultat_labo" if "Resultat_labo" in d.columns and d["Resultat_labo"].notna().any() else None)
+    if result_col:
+        tmp = d[["_risk_group", result_col]].copy()
+        res = _tdr_result_norm(tmp[result_col])
+        tmp["_valid"] = res.isin(TDR_POS_SET.union(TDR_NEG_SET))
+        tmp["_pos"] = res.isin(TDR_POS_SET)
+        pos = tmp.groupby("_risk_group", as_index=False).agg(
+            _pos_num=("_pos", "sum"),
+            _valid_den=("_valid", "sum"),
+        )
+        pos["Positivite_%"] = [
+            safe_pct(num, den) for num, den in zip(pos["_pos_num"], pos["_valid_den"])
+        ]
+        pos = pos.rename(columns={"_risk_group": group_col}).drop(columns=["_pos_num", "_valid_den"])
+        base = base.merge(pos, on=group_col, how="left")
+    else:
+        base["Positivite_%"] = np.nan
+
+    flags = qc_flags(d)
+    if not flags.empty and "row_id" in flags.columns:
+        row_groups = d.reset_index().rename(columns={"index": "row_id"})[["row_id", "_risk_group"]]
+        flag_counts = (
+            flags.merge(row_groups, on="row_id", how="left")
+            .dropna(subset=["_risk_group"])
+            .groupby("_risk_group", as_index=False)
+            .size()
+            .rename(columns={"_risk_group": group_col, "size": "QC_flags"})
+        )
+        base = base.merge(flag_counts, on=group_col, how="left")
+    else:
+        base["QC_flags"] = 0
+    base["QC_flags"] = pd.to_numeric(base["QC_flags"], errors="coerce").fillna(0)
+    base["QC_flags_par_100_cas"] = np.where(base["Cas"] > 0, base["QC_flags"] / base["Cas"] * 100.0, np.nan)
+
+    score_inputs = pd.DataFrame(index=base.index)
+    score_inputs["Volume"] = _score_minmax_0_100(base["Cas"])
+    score_inputs["Volume_recent"] = _score_minmax_0_100(base["Cas_recents"])
+    score_inputs["Tendance"] = _score_minmax_0_100(base["Ratio_tendance"])
+    score_inputs["CFR"] = _score_minmax_0_100(base["CFR_%"])
+    score_inputs["Qualite"] = _score_minmax_0_100(base["Completude_%"], inverse=True)
+    score_inputs["Promptitude"] = _score_minmax_0_100(base[f"Promptitude_<={threshold_days}j_%"], inverse=True)
+    score_inputs["Positivite"] = _score_minmax_0_100(base["Positivite_%"])
+    score_inputs["QC"] = _score_minmax_0_100(base["QC_flags_par_100_cas"])
+
+    weights = {
+        "Volume": 0.22,
+        "Volume_recent": 0.18,
+        "Tendance": 0.18,
+        "CFR": 0.14,
+        "Qualite": 0.10,
+        "Promptitude": 0.08,
+        "Positivite": 0.05,
+        "QC": 0.05,
+    }
+
+    def _weighted_score(row):
+        available = {k: v for k, v in weights.items() if pd.notna(row.get(k))}
+        if not available:
+            return np.nan
+        denom = sum(available.values())
+        return sum((available[k] / denom) * row[k] for k in available)
+
+    base["Score_risque"] = score_inputs.apply(_weighted_score, axis=1).round(1)
+    base["Priorite"] = pd.cut(
+        base["Score_risque"],
+        bins=[-np.inf, 30, 60, 80, np.inf],
+        labels=["Faible", "Moderee", "Elevee", "Tres elevee"],
+    ).astype("string")
+
+    return base.sort_values(["Score_risque", "Cas"], ascending=[False, False]).reset_index(drop=True)
+
 # =========================
 # HELPERS (Sitrep)
 # =========================
@@ -2693,8 +3028,16 @@ def _to_dt(s: pd.Series) -> pd.Series:
     if pd.api.types.is_datetime64_any_dtype(s):
         return s
 
-    # 2) tentative texte directe
-    dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    # 2) tentative texte directe. Les dates ISO YYYY-MM-DD doivent rester
+    # year-first, sinon dayfirst=True peut lire 2026-01-05 comme 1er mai.
+    raw_text = s.astype("string").str.strip()
+    iso_mask = raw_text.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:\D|$)", na=False)
+    dt = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+    if iso_mask.any():
+        dt.loc[iso_mask] = pd.to_datetime(raw_text.loc[iso_mask], errors="coerce", yearfirst=True)
+    rest_text = ~iso_mask
+    if rest_text.any():
+        dt.loc[rest_text] = pd.to_datetime(raw_text.loc[rest_text], errors="coerce", dayfirst=True)
 
     # si >60% converti -> c'était bien du texte
     if dt.notna().mean() > 0.6:
@@ -2724,7 +3067,20 @@ def _to_dt(s: pd.Series) -> pd.Series:
     # fallback final texte
     rest = out.isna()
     if rest.any():
-        out.loc[rest] = pd.to_datetime(s.astype(str), errors="coerce", dayfirst=True)
+        rest_raw = raw_text.loc[rest]
+        rest_iso = rest_raw.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:\D|$)", na=False)
+        if rest_iso.any():
+            out.loc[rest_raw.loc[rest_iso].index] = pd.to_datetime(
+                rest_raw.loc[rest_iso],
+                errors="coerce",
+                yearfirst=True,
+            )
+        if (~rest_iso).any():
+            out.loc[rest_raw.loc[~rest_iso].index] = pd.to_datetime(
+                rest_raw.loc[~rest_iso],
+                errors="coerce",
+                dayfirst=True,
+            )
 
     return out
 
