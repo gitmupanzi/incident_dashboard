@@ -693,7 +693,6 @@ if not IDSR_MODE:
         prov_sel = st.sidebar.multiselect(
             "Province (notification)",
             options=prov_options,
-            default=st.session_state["prov_sel"],
             key="prov_sel",
         )
 
@@ -711,7 +710,6 @@ if not IDSR_MODE:
         zs_sel = st.sidebar.multiselect(
             "Zone de santé (notification)",
             options=zs_options,
-            default=st.session_state["zs_sel"],
             key="zs_sel",
         )
 
@@ -729,7 +727,6 @@ if not IDSR_MODE:
         as_sel = st.sidebar.multiselect(
             "Aire de santé (notification)",
             options=as_options,
-            default=st.session_state["as_sel"],
             key="as_sel",
         )
 
@@ -750,7 +747,6 @@ if not IDSR_MODE:
         class_sel = st.sidebar.multiselect(
             "Classification finale",
             options=class_options,
-            default=st.session_state["class_sel"],
             key="class_sel",
         )
 
