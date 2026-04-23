@@ -10,6 +10,8 @@ from dashboard_app.app_loader import (
     read_postgresql_file,
 )
 from dashboard_app.tabs.overview_detail import render_overview_detail_tab
+from dashboard_app.overview import *
+from dashboard_app.domain import *
 from dashboard_app.tabs.surveillance import render_surveillance_tab
 from dashboard_app.tabs.profile import render_profile_tab
 from dashboard_app.tabs.quality import render_quality_tab
@@ -18,7 +20,8 @@ from dashboard_app.tabs.idsr import render_idsr_tab
 from dashboard_app.tabs.irep import render_irep_tab
 from dashboard_app.tabs.maps import render_maps_tab
 from dashboard_app.tabs.methodology import render_methodology_tab
-from dashboard_app.overview import format_range_label_for_display
+from dashboard_app.domain import     _resolve_map_filter_value
+
 
 inject_runtime_support(globals())
 
