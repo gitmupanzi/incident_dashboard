@@ -1,28 +1,24 @@
 """
-Dashboard épidémiologique Streamlit – fichier unique.
+Socle technique du dashboard épidémiologique Streamlit.
 
 Principes de maintenance:
-- Garder toute la logique dans un seul fichier .py
-- Séparer visuellement les blocs: constantes, standardisation, KPI, qualité, visualisations, UI
-- Privilégier les helpers réutilisables avant d'ajouter une logique spécifique dans un onglet
-- Éviter les dépendances implicites à l'état global quand un paramètre ou st.session_state suffit
+- Concentrer ici les helpers transverses réutilisés par plusieurs modules
+- Préserver des fonctions pures autant que possible pour faciliter les tests
+- Limiter les dépendances implicites à l'état global quand un paramètre suffit
 
 Ancres de recherche utiles dans l'éditeur:
 - SECTION: CONSTANTES
-- SECTION: STANDARDISATION MULTI-MALADIES
 - SECTION: INDICATEURS KPI
 - SECTION: QUALITE DES DONNEES
 - SECTION: VISUALISATIONS STREAMLIT/PLOTLY
-- SECTION: APP STREAMLIT
 """
 
 # =========================
 # Incident RDC – Dashboard (Streamlit UI) + VISUALISATIONS CUSTOM + CARTES FIX (Plotly + fuzzy join)
 # =========================
-# ✅ Version AUTONOME (1 seul fichier)
-# - Plus d'import depuis dataminsante.visualisation.visualisation_graphique
-# - Les fonctions "custom" sont intégrées directement dans ce script
-# - ✅ Tabs + paramètres + logique UI conservés exactement comme ta version
+# Héritage du refactor depuis la version monolithique :
+# - les fonctions "custom" ont été conservées dans le package applicatif
+# - la logique UI détaillée est désormais répartie entre plusieurs modules de tabs
 # =========================
 # SECTION INDEX
 # 1) Imports et constantes

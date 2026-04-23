@@ -71,11 +71,15 @@ Le dashboard propose plusieurs visualisations pour explorer les données de mani
 
 Le code applicatif est organisé autour du package [`dashboard_app`](./dashboard_app) :
 
-- `dashboard_app/core.py` : constantes globales, helpers communs et socle technique
+- `dashboard_app/core.py` : socle technique, graphiques et helpers transverses
 - `dashboard_app/domain.py` : logique métier, standardisation, KPI, qualité et cartes
 - `dashboard_app/overview.py` : synthèse, vues d’accueil et helpers transversaux
-- `dashboard_app/advanced.py` : chargement avancé, IDSR, IREP et calculs spécifiques
-- `incident_dashboard.py` : point d’entrée Streamlit
+- `dashboard_app/advanced.py` : calculs avancés, chargement Excel en cache et IREP
+- `dashboard_app/app_loader.py` : helpers de sources line list et lecture PostgreSQL
+- `dashboard_app/runtime_support.py` : contexte partagé pour les modules extraits
+- `dashboard_app/narratives.py` : briques narratives, lecture surveillance et SITREP
+- `dashboard_app/tabs/` : rendu des grands onglets Streamlit (`surveillance`, `profil`, `qualité`, `sitrep`, `idsr`, `irep`, `maps`, `methodology`)
+- `incident_dashboard.py` : orchestrateur Streamlit principal (sidebar, chargement, filtres, composition)
 
 ---
 
@@ -109,6 +113,12 @@ pip install -r requirements.txt
 streamlit run .\incident_dashboard.py
 ```
 
+## Tests
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 Une fois lancée, l’application permet de charger :
 
 - un fichier **Excel** ou **CSV** de type line list
@@ -136,4 +146,3 @@ Ce dashboard peut être utilisé pour :
 - l’analyse descriptive des cas
 - le contrôle qualité des données
 - la préparation de tableaux de bord et de restitutions opérationnelles
-
