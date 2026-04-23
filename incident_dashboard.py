@@ -11,6 +11,7 @@ from dashboard_app.app_loader import (
 )
 from dashboard_app.tabs.overview_detail import render_overview_detail_tab
 from dashboard_app.overview import *
+from dashboard_app.overview import format_range_label_for_display, split_geo_pair_label
 from dashboard_app.domain import *
 from dashboard_app.tabs.surveillance import render_surveillance_tab
 from dashboard_app.tabs.profile import render_profile_tab
@@ -496,11 +497,22 @@ if not IDSR_MODE:
             st.session_state["as_sel"] = ["Toutes"]
 
     if clicked_zone and COL_ZS in df.columns:
-        selected_zone = _resolve_map_filter_value(clicked_zone, df[COL_ZS].dropna().unique().tolist())
+        selected_prov = None
+        zone_label = clicked_zone
+        if COL_PROV in df.columns:
+            clicked_prov_label, clicked_zone_label = split_geo_pair_label(clicked_zone)
+            if clicked_zone_label:
+                zone_label = clicked_zone_label
+            if clicked_prov_label:
+                selected_prov = _resolve_map_filter_value(clicked_prov_label, df[COL_PROV].dropna().unique().tolist())
+
+        selected_zone = _resolve_map_filter_value(zone_label, df[COL_ZS].dropna().unique().tolist())
         if selected_zone:
             st.session_state["zs_sel"] = [selected_zone]
             st.session_state["as_sel"] = ["Toutes"]
-            if COL_PROV in df.columns:
+            if selected_prov:
+                st.session_state["prov_sel"] = [selected_prov]
+            elif COL_PROV in df.columns:
                 zone_key = _norm_key(selected_zone)
                 province_candidates = (
                     df.loc[

@@ -173,6 +173,8 @@ from dashboard_app.domain import (
 )
 from dashboard_app.domain import (
     _is_yes_series,
+    _norm_key,
+    _normalize_province_name_for_matching,
     _resolve_map_filter_value,
     _tdr_result_norm,
 )
@@ -781,6 +783,145 @@ def render_dashboard_kpis(payload: Dict[str, Any]) -> None:
     st.markdown(f"<div class='cousp-kpi-grid'>{cards_html}</div>", unsafe_allow_html=True)
 
 
+def build_geo_pair_label(province_value: Any, zone_value: Any) -> str:
+    """Construit un libellé lisible Province / Zone pour les cartes de ZS."""
+    province_txt = "" if province_value is None or pd.isna(province_value) else str(province_value).strip()
+    zone_txt = "" if zone_value is None or pd.isna(zone_value) else str(zone_value).strip()
+    if province_txt and zone_txt:
+        return f"{province_txt} / {zone_txt}"
+    return zone_txt or province_txt
+
+
+def build_geo_pair_key(province_value: Any, zone_value: Any) -> str:
+    """Construit une clé robuste Province + Zone pour éviter les collisions de noms."""
+    zone_txt = "" if zone_value is None or pd.isna(zone_value) else str(zone_value).strip()
+    if not zone_txt:
+        return ""
+
+    province_txt = "" if province_value is None or pd.isna(province_value) else str(province_value).strip()
+    if province_txt:
+        province_txt = _normalize_province_name_for_matching(province_txt)
+        return f"{_norm_key(province_txt)}||{_norm_key(zone_txt)}"
+    return _norm_key(zone_txt)
+
+
+def split_geo_pair_label(label_value: Any) -> tuple[Optional[str], Optional[str]]:
+    """Extrait Province et Zone depuis un libellé composite de carte."""
+    if label_value is None or pd.isna(label_value):
+        return None, None
+
+    text = str(label_value).strip()
+    if not text:
+        return None, None
+    if " / " not in text:
+        return None, text
+
+    province_txt, zone_txt = [part.strip() for part in text.split(" / ", 1)]
+    return (province_txt or None), (zone_txt or None)
+
+
+def _attach_zone_map_labels(gdf_geo: pd.DataFrame) -> pd.DataFrame:
+    """Ajoute province + zone au GeoDataFrame des zones de santé."""
+    gdf_zone = gdf_geo.copy()
+    if "_map_label" in gdf_zone.columns and "_map_join_key" in gdf_zone.columns:
+        return gdf_zone
+
+    zone_names = (
+        gdf_zone["name"].astype(str).str.strip()
+        if "name" in gdf_zone.columns
+        else pd.Series("", index=gdf_zone.index, dtype="string")
+    )
+    province_names = pd.Series([pd.NA] * len(gdf_zone), index=gdf_zone.index, dtype="object")
+
+    province_geo_path = Path("data/geometry_rdc_provinces.geojson")
+    if province_geo_path.exists() and gpd is not None and "geometry" in gdf_zone.columns:
+        try:
+            gdf_prov = gpd.read_file(province_geo_path)[["name", "geometry"]].copy()
+            try:
+                if gdf_zone.crs is not None and gdf_prov.crs is not None and str(gdf_zone.crs) != str(gdf_prov.crs):
+                    gdf_prov = gdf_prov.to_crs(gdf_zone.crs)
+            except Exception:
+                pass
+
+            province_shapes = [
+                (str(row["name"]).strip(), row.geometry)
+                for _, row in gdf_prov.iterrows()
+                if row.geometry is not None and not row.geometry.is_empty
+            ]
+            zone_points = gdf_zone.geometry.representative_point()
+            province_values: list[Optional[str]] = []
+            for point in zone_points:
+                province_match = None
+                if point is not None and not point.is_empty:
+                    for province_name, province_geom in province_shapes:
+                        try:
+                            if province_geom.contains(point) or point.within(province_geom) or province_geom.intersects(point):
+                                province_match = province_name
+                                break
+                        except Exception:
+                            continue
+                province_values.append(province_match)
+            province_names = pd.Series(province_values, index=gdf_zone.index, dtype="object")
+        except Exception:
+            province_names = pd.Series([pd.NA] * len(gdf_zone), index=gdf_zone.index, dtype="object")
+
+    gdf_zone["_map_province"] = province_names
+    gdf_zone["_map_label"] = [
+        build_geo_pair_label(province_value, zone_value)
+        for province_value, zone_value in zip(gdf_zone["_map_province"], zone_names)
+    ]
+    gdf_zone["_map_join_key"] = [
+        build_geo_pair_key(province_value, zone_value)
+        for province_value, zone_value in zip(gdf_zone["_map_province"], zone_names)
+    ]
+    return gdf_zone
+
+
+def _prepare_geo_matching_payload(
+    df_source: pd.DataFrame,
+    geo_path: str,
+    group_col: str,
+    value_col: str,
+    match_threshold: float,
+) -> tuple[pd.DataFrame, pd.DataFrame, float, pd.DataFrame, str, str]:
+    """Prépare la jointure carte/données avec une clé Province + Zone pour les ZS."""
+    gdf_geo = gpd.read_file(geo_path)
+    source_label_col = group_col
+    geo_label_col = "name"
+    geo_key_col = "name"
+    data_key_col = group_col
+    df_carte = df_source.copy()
+
+    if group_col == COL_ZS and COL_PROV in df_source.columns and df_source[COL_PROV].notna().any():
+        gdf_geo = _attach_zone_map_labels(gdf_geo)
+        geo_label_col = "_map_label"
+        geo_key_col = "_map_join_key"
+        source_label_col = "_map_label"
+
+        df_carte = df_source[[c for c in [COL_PROV, COL_ZS, value_col] if c in df_source.columns]].copy()
+        df_carte = df_carte[df_carte[COL_ZS].notna()].copy()
+        df_carte["_map_label"] = [
+            build_geo_pair_label(province_value, zone_value)
+            for province_value, zone_value in zip(df_carte.get(COL_PROV), df_carte.get(COL_ZS))
+        ]
+        df_carte["_map_join_key"] = [
+            build_geo_pair_key(province_value, zone_value)
+            for province_value, zone_value in zip(df_carte.get(COL_PROV), df_carte.get(COL_ZS))
+        ]
+        data_key_col = "_map_join_key"
+
+    gdf_join, df_map, match_rate = joindre_donnees_fuzzy_geo(
+        carte_gdf=gdf_geo,
+        df_donnees=df_carte,
+        colonne_cle_geo=geo_key_col,
+        colonne_cle_data=data_key_col,
+        colonne_valeurs=value_col,
+        seuil=match_threshold,
+    )
+    label_source = df_carte[[source_label_col]].dropna().copy() if source_label_col in df_carte.columns else pd.DataFrame()
+    return gdf_join, df_map, match_rate, label_source, source_label_col, geo_label_col
+
+
 def prepare_overview_map_data(
     df_: pd.DataFrame,
     level: str,
@@ -807,17 +948,16 @@ def prepare_overview_map_data(
         return None, None, "Variable géographique indisponible.", value_col, group_col, title
 
     try:
-        gdf_geo = gpd.read_file(geo_path)
         df_counts = df_[[group_col]].dropna().copy()
+        if level == "zone" and COL_PROV in df_.columns:
+            df_counts[COL_PROV] = df_.loc[df_counts.index, COL_PROV]
         df_counts[value_col] = 1
-        df_counts = df_counts.groupby(group_col, as_index=False)[value_col].sum()
-        gdf_join, df_match, match_rate = joindre_donnees_fuzzy_geo(
-            carte_gdf=gdf_geo,
-            df_donnees=df_counts,
-            colonne_cle_geo="name",
-            colonne_cle_data=group_col,
-            colonne_valeurs=value_col,
-            seuil=match_threshold,
+        gdf_join, df_match, match_rate, _, _, _ = _prepare_geo_matching_payload(
+            df_source=df_counts,
+            geo_path=geo_path,
+            group_col=group_col,
+            value_col=value_col,
+            match_threshold=match_threshold,
         )
         note = f"Taux de correspondance carte/données : {match_rate:.1%}"
         return gdf_join, df_match, note, value_col, group_col, title
@@ -837,13 +977,14 @@ def build_static_map_overview(
         return None, note
 
     try:
+        label_col = "_map_label" if "_map_label" in gdf_join.columns else "name"
         fig = carte_statique_matplotlib(
             gdf=gdf_join,
             colonne_valeurs=value_col,
             titre=title,
             annoter=annotation_mode != "aucun",
             mode_annotation=annotation_mode,
-            nom_zone="name",
+            nom_zone=label_col,
             fmt_valeurs="{:.0f}",
             seuil_affichage=annotation_threshold,
             cmap="YlOrRd",
@@ -970,18 +1111,16 @@ def _render_detailed_geo_level_map(
         st.info(f"Carte {level_label}: charge un GeoJSON {level_label} et assure-toi que la colonne requise est présente.")
         return
 
-    gdf_geo = gpd.read_file(geo_path)
     df_carte = df_f[[group_col]].dropna().copy()
+    if group_col == COL_ZS and COL_PROV in df_f.columns:
+        df_carte[COL_PROV] = df_f.loc[df_carte.index, COL_PROV]
     df_carte[value_col] = 1
-    df_carte = df_carte.groupby(group_col, as_index=False)[value_col].sum()
-
-    gdf_join, df_map, match_rate = joindre_donnees_fuzzy_geo(
-        carte_gdf=gdf_geo,
-        df_donnees=df_carte,
-        colonne_cle_geo="name",
-        colonne_cle_data=group_col,
-        colonne_valeurs=value_col,
-        seuil=match_threshold,
+    gdf_join, df_map, match_rate, label_source_df, label_source_col, geo_label_col = _prepare_geo_matching_payload(
+        df_source=df_carte,
+        geo_path=geo_path,
+        group_col=group_col,
+        value_col=value_col,
+        match_threshold=match_threshold,
     )
 
     st.caption(f"Taux de correspondance (données→carte) : {match_rate:.1%}")
@@ -992,8 +1131,9 @@ def _render_detailed_geo_level_map(
         gdf_map_ready = enrich_fuzzy_geo_map_labels(
             gdf_join=gdf_join,
             df_map=df_map,
-            df_source=df_f[[group_col]].dropna().copy(),
-            source_label_col=group_col,
+            df_source=label_source_df,
+            source_label_col=label_source_col,
+            geo_label_col=geo_label_col,
         )
         fig_map, gdf_map = build_interactive_geo_map(
             gdf=gdf_map_ready,
@@ -1020,25 +1160,34 @@ def _render_detailed_geo_level_map(
             )
             clicked_point = get_selected_map_point(selection_state)
             selected_label = get_clicked_map_label(clicked_point, gdf_map, label_col="_map_label")
-            selected_value = _resolve_map_filter_value(
-                selected_label,
-                df_f[group_col].dropna().unique().tolist(),
-            )
             current_filter = st.session_state.get(filter_state_key, ["Toutes"])
-            if selected_value and current_filter != [selected_value]:
-                st.session_state[clicked_state_key] = selected_value
-                st.rerun()
+            if group_col == COL_ZS and clicked_state_key == "map_clicked_zone":
+                province_label, zone_label = split_geo_pair_label(selected_label)
+                if zone_label:
+                    composite_label = build_geo_pair_label(province_label, zone_label)
+                    if st.session_state.get(clicked_state_key) != composite_label:
+                        st.session_state[clicked_state_key] = composite_label
+                        st.rerun()
+            else:
+                selected_value = _resolve_map_filter_value(
+                    selected_label,
+                    df_f[group_col].dropna().unique().tolist(),
+                )
+                if selected_value and current_filter != [selected_value]:
+                    st.session_state[clicked_state_key] = selected_value
+                    st.rerun()
             st.caption("Clique sur un point de la carte pour mettre à jour le filtre latéral.")
         else:
             st.error(f"Impossible de générer la carte {level_label}.")
     else:
+        label_col = geo_label_col if geo_label_col in gdf_join.columns else "name"
         fig = carte_statique_matplotlib(
             gdf=gdf_join,
             colonne_valeurs=value_col,
             titre=static_title,
             annoter=annoter_map,
             mode_annotation=annoter_map_mode,
-            nom_zone="name",
+            nom_zone=label_col,
             fmt_valeurs="{:.0f}",
             seuil_affichage=float(seuil_aff),
             cmap="Reds",
@@ -1236,16 +1385,15 @@ def _render_idsr_geo_level_map(
         st.info(f"Aucune donnée exploitable n'est disponible pour la carte {level_label}.")
         return
 
-    gdf_geo = gpd.read_file(geo_path)
-    df_carte = df_carte.groupby(group_col, as_index=False)[cases_col].sum()
+    if group_col == COL_ZS and COL_PROV in df_f.columns:
+        df_carte[COL_PROV] = df_f.loc[df_carte.index, COL_PROV]
 
-    gdf_join, df_map, match_rate = joindre_donnees_fuzzy_geo(
-        carte_gdf=gdf_geo,
-        df_donnees=df_carte,
-        colonne_cle_geo="name",
-        colonne_cle_data=group_col,
-        colonne_valeurs=cases_col,
-        seuil=match_threshold,
+    gdf_join, df_map, match_rate, label_source_df, label_source_col, geo_label_col = _prepare_geo_matching_payload(
+        df_source=df_carte,
+        geo_path=geo_path,
+        group_col=group_col,
+        value_col=cases_col,
+        match_threshold=match_threshold,
     )
 
     st.caption(f"Taux de correspondance (données→carte) : {match_rate:.1%}")
@@ -1256,8 +1404,9 @@ def _render_idsr_geo_level_map(
         gdf_map_ready = enrich_fuzzy_geo_map_labels(
             gdf_join=gdf_join,
             df_map=df_map,
-            df_source=df_f[[group_col]].dropna().copy(),
-            source_label_col=group_col,
+            df_source=label_source_df,
+            source_label_col=label_source_col,
+            geo_label_col=geo_label_col,
         )
         fig_map, gdf_map = build_interactive_geo_map(
             gdf=gdf_map_ready,
@@ -1284,27 +1433,43 @@ def _render_idsr_geo_level_map(
             )
             clicked_point = get_selected_map_point(selection_state)
             selected_label = get_clicked_map_label(clicked_point, gdf_map, label_col="_map_label")
-            selected_value = _resolve_map_filter_value(
-                selected_label,
-                df_f[group_col].dropna().unique().tolist(),
-            )
             current_filter = st.session_state.get(filter_state_key, [])
-            if selected_value and current_filter != [selected_value]:
-                st.session_state[filter_state_key] = [selected_value]
-                for clear_key in clear_state_keys:
-                    st.session_state[clear_key] = []
-                st.rerun()
+            if group_col == COL_ZS and COL_PROV in df_f.columns:
+                province_label, zone_label = split_geo_pair_label(selected_label)
+                selected_zone = _resolve_map_filter_value(
+                    zone_label,
+                    df_f[group_col].dropna().unique().tolist(),
+                ) if zone_label else None
+                selected_province = _resolve_map_filter_value(
+                    province_label,
+                    df_f[COL_PROV].dropna().unique().tolist(),
+                ) if province_label else None
+                if selected_zone and (current_filter != [selected_zone] or st.session_state.get("tab9_prov_sel", []) != ([selected_province] if selected_province else [])):
+                    st.session_state[filter_state_key] = [selected_zone]
+                    st.session_state["tab9_prov_sel"] = [selected_province] if selected_province else []
+                    st.rerun()
+            else:
+                selected_value = _resolve_map_filter_value(
+                    selected_label,
+                    df_f[group_col].dropna().unique().tolist(),
+                )
+                if selected_value and current_filter != [selected_value]:
+                    st.session_state[filter_state_key] = [selected_value]
+                    for clear_key in clear_state_keys:
+                        st.session_state[clear_key] = []
+                    st.rerun()
             st.caption("Clique sur une zone pour mettre à jour les filtres IDSR.")
         else:
             st.error(f"Impossible de générer la carte {level_label}.")
     else:
+        label_col = geo_label_col if geo_label_col in gdf_join.columns else "name"
         fig = carte_statique_matplotlib(
             gdf=gdf_join,
             colonne_valeurs=cases_col,
             titre=static_title,
             annoter=annoter_map,
             mode_annotation=annoter_map_mode,
-            nom_zone="name",
+            nom_zone=label_col,
             fmt_valeurs="{:.0f}",
             seuil_affichage=float(seuil_aff),
             cmap="Reds",

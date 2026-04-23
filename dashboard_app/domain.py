@@ -70,6 +70,7 @@ from dashboard_app.core import (
     plot_pyramide_symetrique,
     plt,
     prepare_idsr_numeric,
+    process,
     px,
     re,
     render_pivot_with_cfr,
@@ -80,6 +81,7 @@ from dashboard_app.core import (
     tempfile,
     unicodedata,
     verifier_presence_colonnes,
+    fuzz,
 )
 from dashboard_app.core import (
     _normalize_name,

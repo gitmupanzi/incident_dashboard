@@ -512,6 +512,77 @@ def _build_surveillance_summary_lines(
     return lines
 
 
+def _build_surveillance_action_lines(
+    df_scope: pd.DataFrame,
+    current_label: Optional[str] = None,
+) -> list[str]:
+    """Construit des points d'action courts pour appuyer la décision et la qualité."""
+    if df_scope is None or df_scope.empty:
+        return [
+            "Vérifier rapidement si l’absence de cas reflète la situation réelle, un retard de notification ou un filtre trop restrictif."
+        ]
+
+    actions: list[str] = []
+    total_cases, total_deaths, cfr = _surveillance_scope_kpis(df_scope)
+    label_txt = current_label or "la période en cours"
+
+    top_prov = _build_surveillance_top_table(df_scope, [COL_PROV], top_n=1)
+    if not top_prov.empty and total_cases > 0:
+        leader = top_prov.iloc[0]
+        leader_share = safe_pct(leader["Cas"], total_cases)
+        if pd.notna(leader_share):
+            actions.append(
+                f"Concentrer la supervision et les intrants de riposte sur {leader[COL_PROV]}, qui porte {leader_share:.1f}% des cas de {label_txt}."
+            )
+
+    if pd.notna(cfr):
+        if cfr >= 3.0:
+            actions.append(
+                f"Déclencher une revue rapide des décès, de la prise en charge et des références car la létalité observée atteint {format_metric_value(cfr, decimals=1)}% sur {label_txt}."
+            )
+        elif total_deaths > 0:
+            actions.append(
+                f"Maintenir une revue hebdomadaire des décès et des délais de prise en charge pour éviter une hausse de la létalité ({format_metric_value(cfr, decimals=1)}% sur {label_txt})."
+            )
+
+    if DATE_INV in df_scope.columns:
+        investigated = int(pd.to_datetime(df_scope[DATE_INV], errors="coerce").notna().sum())
+        if investigated < total_cases:
+            actions.append(
+                f"Compléter l’investigation de {format_metric_value(total_cases - investigated)} cas non investigués afin de fiabiliser les décisions opérationnelles."
+            )
+
+    result_col = None
+    if COL_TDRR in df_scope.columns and df_scope[COL_TDRR].notna().any():
+        result_col = COL_TDRR
+    elif "Resultat_labo" in df_scope.columns and df_scope["Resultat_labo"].notna().any():
+        result_col = "Resultat_labo"
+
+    if COL_TDR in df_scope.columns:
+        n_tdr = int(_is_yes_series(df_scope[COL_TDR]).sum())
+        if n_tdr <= 0:
+            actions.append(
+                "Sécuriser rapidement les TDR et le circuit de confirmation biologique dans les zones prioritaires, car aucun test n’est documenté sur ce périmètre."
+            )
+        elif result_col is not None:
+            result_norm = _tdr_result_norm(df_scope[result_col])
+            valid_mask = _is_yes_series(df_scope[COL_TDR]) & result_norm.isin(TDR_POS_SET.union(TDR_NEG_SET))
+            n_valid = int(valid_mask.sum())
+            n_pos = int((_is_yes_series(df_scope[COL_TDR]) & result_norm.isin(TDR_POS_SET)).sum())
+            positivity = safe_pct(n_pos, n_valid)
+            if pd.notna(positivity) and positivity >= 40.0:
+                actions.append(
+                    f"Renforcer la confirmation biologique et l’approvisionnement en intrants, la positivité observée atteignant {format_metric_value(positivity, decimals=1)}%."
+                )
+
+    if not actions:
+        actions.append(
+            "Poursuivre la surveillance active, maintenir la qualité de saisie et vérifier chaque semaine les signaux géographiques avant diffusion."
+        )
+
+    return actions[:4]
+
+
 def _render_surveillance_window(
     title: str,
     df_scope: pd.DataFrame,
@@ -558,6 +629,14 @@ def _render_surveillance_window(
     if summary_lines:
         st.markdown("**Résumé automatique**")
         st.markdown("\n".join([f"- {line}" for line in summary_lines]))
+
+    action_lines = _build_surveillance_action_lines(
+        df_scope,
+        current_label=narrative_context.get("current_label"),
+    )
+    if action_lines:
+        st.markdown("**Points d'action prioritaires**")
+        st.markdown("\n".join([f"- {line}" for line in action_lines]))
 
     g1, g2 = st.columns(2)
     with g1:

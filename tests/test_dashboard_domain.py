@@ -48,7 +48,12 @@ from dashboard_app.domain import (
     standardize_ll_core,
 )
 from dashboard_app.narratives import _build_scope_overview_text
-from dashboard_app.overview import format_range_label_for_display
+from dashboard_app.overview import (
+    build_geo_pair_key,
+    build_geo_pair_label,
+    format_range_label_for_display,
+    split_geo_pair_label,
+)
 from dashboard_app.tabs.idsr import _build_idsr_period_labels
 
 
@@ -307,6 +312,20 @@ class NarrativePeriodTest(unittest.TestCase):
         self.assertEqual(
             format_range_label_for_display("Période indisponible"),
             "Période indisponible",
+        )
+
+    def test_zone_map_helpers_use_province_plus_zone_key(self):
+        self.assertEqual(
+            build_geo_pair_label("Kinshasa", "Damas"),
+            "Kinshasa / Damas",
+        )
+        self.assertNotEqual(
+            build_geo_pair_key("Kinshasa", "Damas"),
+            build_geo_pair_key("Sud-Kivu", "Damas"),
+        )
+        self.assertEqual(
+            split_geo_pair_label("Kinshasa / Damas"),
+            ("Kinshasa", "Damas"),
         )
 
     def test_cumulative_surveillance_summary_prefers_iso_week_bounds(self):

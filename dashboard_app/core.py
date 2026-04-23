@@ -720,6 +720,8 @@ try:
     from rapidfuzz import process, fuzz
     HAS_RAPIDFUZZ = True
 except Exception:
+    process = None
+    fuzz = None
     HAS_RAPIDFUZZ = False
     
 # matplotlib pour les couleurs
