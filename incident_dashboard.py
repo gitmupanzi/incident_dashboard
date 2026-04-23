@@ -5865,16 +5865,121 @@ with tab_idsr:
                 diff_cas = (tot_cas_lastwk - cas_age_last) if ("cas_age_last" in locals() and pd.notna(tot_cas_lastwk) and pd.notna(cas_age_last)) else np.nan
                 diff_dec = (tot_dec_lastwk - dec_age_last) if ("dec_age_last" in locals() and pd.notna(tot_dec_lastwk) and pd.notna(dec_age_last)) else np.nan
 
+                disease_gap_table = pd.DataFrame()
+                if (
+                    not df_last_week.empty
+                    and (COL_MAL in df_last_week.columns)
+                    and age_case_cols
+                    and age_death_cols
+                    and ("Total_cas" in df_last_week.columns)
+                    and ("Total_deces" in df_last_week.columns)
+                ):
+                    disease_gap_table = df_last_week[[COL_MAL, "Total_cas", "Total_deces", *age_case_cols, *age_death_cols]].copy()
+                    disease_gap_table["Total_cas"] = pd.to_numeric(disease_gap_table["Total_cas"], errors="coerce")
+                    disease_gap_table["Total_deces"] = pd.to_numeric(disease_gap_table["Total_deces"], errors="coerce")
+                    disease_gap_table["Cas_tranches"] = disease_gap_table[age_case_cols].apply(pd.to_numeric, errors="coerce").sum(axis=1, min_count=1)
+                    disease_gap_table["Deces_tranches"] = disease_gap_table[age_death_cols].apply(pd.to_numeric, errors="coerce").sum(axis=1, min_count=1)
+
+                    disease_gap_table = (
+                        disease_gap_table.groupby(COL_MAL, as_index=False)
+                        .agg(
+                            Cas_totaux=("Total_cas", "sum"),
+                            Cas_tranches=("Cas_tranches", "sum"),
+                            Deces_totaux=("Total_deces", "sum"),
+                            Deces_tranches=("Deces_tranches", "sum"),
+                        )
+                    )
+                    disease_gap_table["Ecart_cas"] = disease_gap_table["Cas_totaux"] - disease_gap_table["Cas_tranches"]
+                    disease_gap_table["Ecart_deces"] = disease_gap_table["Deces_totaux"] - disease_gap_table["Deces_tranches"]
+                    disease_gap_table["Pct_ecart_cas"] = np.where(
+                        disease_gap_table["Cas_tranches"] != 0,
+                        (disease_gap_table["Ecart_cas"] / disease_gap_table["Cas_tranches"]) * 100.0,
+                        np.nan,
+                    )
+                    disease_gap_table["Pct_ecart_deces"] = np.where(
+                        disease_gap_table["Deces_tranches"] != 0,
+                        (disease_gap_table["Ecart_deces"] / disease_gap_table["Deces_tranches"]) * 100.0,
+                        np.nan,
+                    )
+                    disease_gap_table = disease_gap_table[
+                        (disease_gap_table["Ecart_cas"].fillna(0) != 0)
+                        | (disease_gap_table["Ecart_deces"].fillna(0) != 0)
+                    ].copy()
+
+                def _format_gap_diseases(_gap_df: pd.DataFrame, _diff_col: str, _pct_col: str, _limit: int = 8) -> str:
+                    if _gap_df.empty or (_diff_col not in _gap_df.columns):
+                        return ""
+
+                    _subset = _gap_df[_gap_df[_diff_col].fillna(0) != 0].copy()
+                    if _subset.empty:
+                        return ""
+
+                    _subset = _subset.sort_values(_diff_col, key=lambda s: s.abs(), ascending=False)
+                    _labels = []
+                    for _, _row in _subset.head(_limit).iterrows():
+                        _mal = str(_row.get(COL_MAL, "Maladie non renseignée")).strip() or "Maladie non renseignée"
+                        _diff = _row.get(_diff_col, np.nan)
+                        _pct = _row.get(_pct_col, np.nan)
+                        if pd.notna(_pct):
+                            _labels.append(f"{_mal} ({_diff:+,.1f}; {_pct:+.1f}%)")
+                        else:
+                            _labels.append(f"{_mal} ({_diff:+,.1f})")
+
+                    _remaining = len(_subset) - min(len(_subset), _limit)
+                    if _remaining > 0:
+                        _labels.append(f"+{_remaining} autre(s)")
+
+                    return ", ".join(_labels)
+
                 if pd.notna(diff_cas) and pd.notna(diff_dec):
                     if (diff_cas == 0) and (diff_dec == 0):
                         st.success("Aucun écart détecté : TOTALCAS/TOTALDECES correspond à la somme des tranches d’âge sur la semaine maximale.")
                     else:
                         pct_cas = (diff_cas / cas_age_last * 100.0) if ("cas_age_last" in locals() and pd.notna(cas_age_last) and cas_age_last != 0) else np.nan
                         pct_dec = (diff_dec / dec_age_last * 100.0) if ("dec_age_last" in locals() and pd.notna(dec_age_last) and dec_age_last != 0) else np.nan
-                        st.error(
+                        case_diseases = _format_gap_diseases(disease_gap_table, "Ecart_cas", "Pct_ecart_cas")
+                        death_diseases = _format_gap_diseases(disease_gap_table, "Ecart_deces", "Pct_ecart_deces")
+
+                        error_lines = [
                             "❌ Écart détecté (Totaux − Tranches) – semaine max : "
                             f"Cas={diff_cas:+,} ({pct_cas:.1f}%) | Décès={diff_dec:+,} ({pct_dec:.1f}%)"
-                        )
+                        ]
+                        if case_diseases:
+                            error_lines.append(f"Cas concernés : {case_diseases}")
+                        if death_diseases:
+                            error_lines.append(f"Décès concernés : {death_diseases}")
+                        st.error("\n".join(error_lines))
+
+                        if not disease_gap_table.empty:
+                            disease_gap_display = (
+                                disease_gap_table.rename(columns={
+                                    COL_MAL: "Maladie",
+                                    "Cas_totaux": "Cas totaux",
+                                    "Cas_tranches": "Cas tranches",
+                                    "Ecart_cas": "Écart cas",
+                                    "Pct_ecart_cas": "% écart cas",
+                                    "Deces_totaux": "Décès totaux",
+                                    "Deces_tranches": "Décès tranches",
+                                    "Ecart_deces": "Écart décès",
+                                    "Pct_ecart_deces": "% écart décès",
+                                })
+                                .sort_values(["Écart cas", "Écart décès"], key=lambda s: s.abs(), ascending=False)
+                            )
+                            st.dataframe(
+                                disease_gap_display,
+                                width="stretch",
+                                hide_index=True,
+                                column_config={
+                                    "% écart cas": st.column_config.NumberColumn(format="%.1f%%"),
+                                    "% écart décès": st.column_config.NumberColumn(format="%.1f%%"),
+                                    "Cas totaux": st.column_config.NumberColumn(format="%.0f"),
+                                    "Cas tranches": st.column_config.NumberColumn(format="%.0f"),
+                                    "Écart cas": st.column_config.NumberColumn(format="%.0f"),
+                                    "Décès totaux": st.column_config.NumberColumn(format="%.0f"),
+                                    "Décès tranches": st.column_config.NumberColumn(format="%.0f"),
+                                    "Écart décès": st.column_config.NumberColumn(format="%.0f"),
+                                },
+                            )
                 else:
                     st.info("Écart non calculable : variables manquantes ou données insuffisantes.")
 
