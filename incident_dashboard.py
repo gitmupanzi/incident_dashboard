@@ -11,7 +11,6 @@ from dashboard_app.app_loader import (
 )
 from dashboard_app.tabs.overview_detail import render_overview_detail_tab
 from dashboard_app.overview import *
-from dashboard_app.overview import format_range_label_for_display, split_geo_pair_label
 from dashboard_app.domain import *
 from dashboard_app.tabs.surveillance import render_surveillance_tab
 from dashboard_app.tabs.profile import render_profile_tab
@@ -22,6 +21,28 @@ from dashboard_app.tabs.irep import render_irep_tab
 from dashboard_app.tabs.maps import render_maps_tab
 from dashboard_app.tabs.methodology import render_methodology_tab
 from dashboard_app.domain import     _resolve_map_filter_value
+
+try:
+    from dashboard_app.overview import format_range_label_for_display, split_geo_pair_label
+except ImportError:
+    def format_range_label_for_display(value):
+        if value is None:
+            return "-"
+        text = str(value).strip()
+        if not text:
+            return "-"
+        return re.sub(r"\s*->\s*", " -> ", text).replace(" -> ", " → ")
+
+    def split_geo_pair_label(label_value):
+        if label_value is None:
+            return None, None
+        text = str(label_value).strip()
+        if not text:
+            return None, None
+        if " / " not in text:
+            return None, text
+        province_txt, zone_txt = [part.strip() for part in text.split(" / ", 1)]
+        return (province_txt or None), (zone_txt or None)
 
 
 inject_runtime_support(globals())
