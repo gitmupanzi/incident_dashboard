@@ -5133,6 +5133,161 @@ with tab_idsr:
             "Deces_tnn", "Deces_0_11mois", "Deces_12_59mois", "Deces_5_14ans", "Deces_15plus"
         ])
 
+        def _build_idsr_duplicate_week_label(_df: pd.DataFrame) -> pd.Series:
+            if "YW" in _df.columns:
+                _yw = _df["YW"].astype("string").str.strip()
+                if _yw.notna().any():
+                    return _yw
+
+            if "Date_debut_semaine_iso" in _df.columns:
+                _dt_iso = pd.to_datetime(_df["Date_debut_semaine_iso"], errors="coerce")
+                if _dt_iso.notna().any():
+                    return _dt_iso.dt.strftime("%Y-%m-%d").astype("string")
+
+            if "DEBUTSEM" in _df.columns:
+                _debutsem = _df["DEBUTSEM"]
+                if pd.api.types.is_numeric_dtype(_debutsem):
+                    _dt = pd.to_datetime(_debutsem, unit="D", origin="1899-12-30", errors="coerce")
+                else:
+                    _dt = pd.to_datetime(_debutsem, errors="coerce")
+                if _dt.notna().any():
+                    return _dt.dt.strftime("%Y-%m-%d").astype("string")
+
+            if ("Annee_epid" in _df.columns) or ("Num_semaine_epid" in _df.columns):
+                _year_src = _df["Annee_epid"] if "Annee_epid" in _df.columns else pd.Series(pd.NA, index=_df.index)
+                _week_src = _df["Num_semaine_epid"] if "Num_semaine_epid" in _df.columns else pd.Series(pd.NA, index=_df.index)
+                _year = pd.to_numeric(_year_src, errors="coerce").astype("Int64")
+                _week = pd.to_numeric(_week_src, errors="coerce").astype("Int64")
+                _year_s = _year.astype("string")
+                _week_s = _week.astype("string").str.zfill(2)
+
+                _label = pd.Series(pd.NA, index=_df.index, dtype="string")
+                _has_yw = _year.notna() & _week.notna()
+                _has_w = _week.notna()
+
+                _label.loc[_has_yw] = _year_s.loc[_has_yw] + "-W" + _week_s.loc[_has_yw]
+                _label.loc[(~_has_yw) & _has_w] = "W" + _week_s.loc[(~_has_yw) & _has_w]
+                if _label.notna().any():
+                    return _label
+
+            if "TIME_LAB" in _df.columns:
+                _time_lab = _df["TIME_LAB"].astype("string").str.strip()
+                if _time_lab.notna().any():
+                    return _time_lab
+
+            return pd.Series(pd.NA, index=_df.index, dtype="string")
+
+        def _prepare_idsr_duplicate_views(_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str], list[str]]:
+            _work = _df.copy()
+            _work["_dup_week"] = _build_idsr_duplicate_week_label(_work)
+
+            _dup_key_cols = [c for c in ["_dup_week", COL_PROV_ID, COL_ZS_ID, COL_MAL] if c in _work.columns]
+            if len(_dup_key_cols) < 4:
+                return _work, pd.DataFrame(), pd.DataFrame(), _dup_key_cols, []
+
+            for _c in _dup_key_cols:
+                _work[_c] = _work[_c].astype("string").str.replace(r"\s+", " ", regex=True).str.strip()
+
+            _work["_dup_key"] = _work[_dup_key_cols].fillna("").agg(" | ".join, axis=1)
+            _work["_dup_key_valid"] = _work[_dup_key_cols].notna().all(axis=1)
+            _work["_dup_key_valid"] = _work["_dup_key_valid"] & _work[_dup_key_cols].ne("").all(axis=1)
+
+            _metric_cols = [
+                c for c in [
+                    "Population",
+                    "Total_cas",
+                    "Total_deces",
+                    "Cas_tnn",
+                    "Cas_0_11mois",
+                    "Cas_12_59mois",
+                    "Cas_5_14ans",
+                    "Cas_15plus",
+                    "Deces_tnn",
+                    "Deces_0_11mois",
+                    "Deces_12_59mois",
+                    "Deces_5_14ans",
+                    "Deces_15plus",
+                    "Taux_letalite",
+                    "Taux_attaque",
+                ]
+                if c in _work.columns
+            ]
+
+            for _c in _metric_cols:
+                _work[_c] = pd.to_numeric(_work[_c], errors="coerce")
+
+            if _metric_cols:
+                _work["_dup_metric_signature"] = _work[_metric_cols].astype("string").fillna("").agg("|".join, axis=1)
+            else:
+                _work["_dup_metric_signature"] = "NA"
+
+            _subset_exact = _dup_key_cols + ["_dup_metric_signature"]
+            _work["duplicate_idsr_potential"] = (
+                _work["_dup_key_valid"]
+                & _work.duplicated(subset=_dup_key_cols, keep=False)
+            )
+            _work["duplicate_idsr_exact"] = (
+                _work["_dup_key_valid"]
+                & _work.duplicated(subset=_subset_exact, keep=False)
+            )
+
+            _detail = _work[_work["duplicate_idsr_potential"]].copy()
+            if _detail.empty:
+                return _work, _detail, pd.DataFrame(), _dup_key_cols, _metric_cols
+
+            _agg_kwargs = {
+                "Occurrences": ("_dup_key", "size"),
+                "Distinct_metric_rows": ("_dup_metric_signature", "nunique"),
+                "Exact_rows": ("duplicate_idsr_exact", "sum"),
+            }
+            if "UniqueKey" in _detail.columns:
+                _agg_kwargs["UniqueKey_nunique"] = ("UniqueKey", lambda s: int(s.dropna().nunique()))
+
+            _summary = (
+                _detail.groupby(["_dup_key", *_dup_key_cols], dropna=False, as_index=False)
+                .agg(**_agg_kwargs)
+            )
+            _summary["Type_doublon"] = np.where(
+                _summary["Distinct_metric_rows"] > 1,
+                "Contradictoire",
+                "Exact métier",
+            )
+
+            if _metric_cols:
+                def _list_changed_metrics(_sub: pd.DataFrame) -> str:
+                    _changed = []
+                    for _c in _metric_cols:
+                        _vals = _sub[_c]
+                        if _vals.drop_duplicates().shape[0] > 1:
+                            _changed.append(_c)
+                    if not _changed:
+                        return ""
+                    if len(_changed) > 6:
+                        return ", ".join(_changed[:6]) + f", +{len(_changed) - 6} autre(s)"
+                    return ", ".join(_changed)
+
+                _changed_metrics = (
+                    _detail.groupby("_dup_key", dropna=False)[_metric_cols]
+                    .apply(_list_changed_metrics)
+                    .reset_index(name="Variables_en_ecart")
+                )
+                _summary = _summary.merge(_changed_metrics, on="_dup_key", how="left")
+            else:
+                _summary["Variables_en_ecart"] = ""
+
+            _detail = _detail.merge(
+                _summary[["_dup_key", "Occurrences", "Distinct_metric_rows", "Type_doublon", "Variables_en_ecart"]],
+                on="_dup_key",
+                how="left",
+            )
+
+            _summary = _summary.sort_values(
+                ["Distinct_metric_rows", "Occurrences", "_dup_week"],
+                ascending=[False, False, True],
+            ).reset_index(drop=True)
+
+            return _work, _detail, _summary, _dup_key_cols, _metric_cols
+
         # Diagnostic rapide
         with st.expander("🧩 Diagnostic (temps & QC) – déplier", expanded=False):
             st.write({
@@ -5438,6 +5593,52 @@ with tab_idsr:
         elif week_filter_mode == "WNUM":
             df9["Num_semaine_epid"] = pd.to_numeric(df9["Num_semaine_epid"], errors="coerce")
             df9 = df9[df9["Num_semaine_epid"].between(w_min, w_max, inclusive="both")]
+
+        df9_duplicates_scope = df9.copy()
+        dup_scope_work, dup_scope_detail, dup_scope_summary, dup_scope_key_cols, _ = _prepare_idsr_duplicate_views(df9_duplicates_scope)
+
+        exclude_exact_idsr_dups = st.checkbox(
+            "Exclure les doublons exacts métier des analyses IDSR",
+            value=False,
+            key="tab9_exclude_exact_idsr_dups",
+            help="Supprime des KPI et graphiques les répétitions strictement identiques sur une même Semaine + Province + ZS + Maladie, tout en conservant les doublons contradictoires pour revue.",
+        )
+
+        removed_exact_rows = 0
+        contradictory_groups_retained = 0
+        if exclude_exact_idsr_dups and dup_scope_key_cols:
+            dup_base_work, _, _, dup_base_key_cols, _ = _prepare_idsr_duplicate_views(df9_base)
+            if dup_base_key_cols:
+                df9_base = dup_base_work.loc[
+                    ~(dup_base_work["_dup_key_valid"] & dup_base_work.duplicated(subset=dup_base_key_cols + ["_dup_metric_signature"], keep="first"))
+                ].copy()
+                df9_base = df9_base.drop(
+                    columns=[
+                        "_dup_week", "_dup_key", "_dup_key_valid", "_dup_metric_signature",
+                        "duplicate_idsr_potential", "duplicate_idsr_exact",
+                    ],
+                    errors="ignore",
+                )
+
+            df9 = dup_scope_work.loc[
+                ~(dup_scope_work["_dup_key_valid"] & dup_scope_work.duplicated(subset=dup_scope_key_cols + ["_dup_metric_signature"], keep="first"))
+            ].copy()
+            removed_exact_rows = len(dup_scope_work) - len(df9)
+            contradictory_groups_retained = int((dup_scope_summary.get("Type_doublon", pd.Series(dtype="object")) == "Contradictoire").sum())
+            df9 = df9.drop(
+                columns=[
+                    "_dup_week", "_dup_key", "_dup_key_valid", "_dup_metric_signature",
+                    "duplicate_idsr_potential", "duplicate_idsr_exact",
+                ],
+                errors="ignore",
+            )
+            if removed_exact_rows > 0:
+                st.info(
+                    f"Déduplication analytique appliquée : {removed_exact_rows:,} ligne(s) exacte(s) retirée(s) des analyses ; "
+                    f"{contradictory_groups_retained:,} groupe(s) contradictoire(s) restent visibles pour revue."
+                )
+        else:
+            df9 = df9.copy()
 
         st.caption(f"📌 Périmètre analytique filtré : {len(df9):,} lignes")
         # -------------------------------------------------------------
@@ -5991,6 +6192,249 @@ with tab_idsr:
                         st.write(df9["QC_Date_vs_Semaine"].value_counts(dropna=False))
                     else:
                         st.info("Le contrôle qualité temporel est indisponible : dates sources absentes.")
+
+                with st.expander("### Doublons potentiels IDSR", expanded=False):
+                    if len(dup_scope_key_cols) < 4:
+                        st.info("Recherche de doublons indisponible : colonnes clés semaine/province/ZS/maladie insuffisantes.")
+                    elif dup_scope_summary.empty:
+                        st.success("Aucun doublon potentiel détecté sur le périmètre IDSR filtré.")
+                    else:
+                        dup_contradictions = dup_scope_detail[dup_scope_detail["Type_doublon"] == "Contradictoire"].copy()
+                        k_dup1, k_dup2, k_dup3, k_dup4 = st.columns(4)
+                        k_dup1.metric("Lignes dupliquées", f"{len(dup_scope_detail):,}")
+                        k_dup2.metric("Groupes dupliqués", f"{len(dup_scope_summary):,}")
+                        k_dup3.metric(
+                            "Groupes contradictoires",
+                            f"{int((dup_scope_summary['Type_doublon'] == 'Contradictoire').sum()):,}",
+                        )
+                        k_dup4.metric(
+                            "Groupes exacts",
+                            f"{int((dup_scope_summary['Type_doublon'] == 'Exact métier').sum()):,}",
+                        )
+
+                        st.caption(
+                            "Clé utilisée : Semaine + Province + Zone de santé + Maladie. "
+                            "`Exact métier` = mêmes indicateurs agrégés; `Contradictoire` = mêmes clés mais valeurs différentes."
+                        )
+                        if exclude_exact_idsr_dups and removed_exact_rows > 0:
+                            st.caption(
+                                f"Les analyses affichées plus haut excluent déjà {removed_exact_rows:,} ligne(s) exact(e)s. "
+                                "Cette section continue d'afficher le diagnostic sur le périmètre filtré avant déduplication analytique."
+                            )
+
+                        dup_type_sel = st.radio(
+                            "Type de doublons à afficher",
+                            ["Tous", "Contradictoire", "Exact métier"],
+                            horizontal=True,
+                            key="tab9_dup_type_sel",
+                        )
+
+                        dup_summary_view = dup_scope_summary.copy()
+                        if dup_type_sel != "Tous":
+                            dup_summary_view = dup_summary_view[dup_summary_view["Type_doublon"] == dup_type_sel]
+
+                        dup_summary_display = dup_summary_view.rename(columns={
+                            "_dup_week": "Semaine",
+                            COL_PROV_ID: "Province",
+                            COL_ZS_ID: "Zone de santé",
+                            COL_MAL: "Maladie",
+                            "Type_doublon": "Type de doublon",
+                            "Distinct_metric_rows": "Versions métriques",
+                            "UniqueKey_nunique": "UniqueKey distincts",
+                            "Variables_en_ecart": "Variables en écart",
+                            "Exact_rows": "Lignes exactes",
+                        })
+                        dup_summary_export = dup_scope_summary.rename(columns={
+                            "_dup_week": "Semaine",
+                            COL_PROV_ID: "Province",
+                            COL_ZS_ID: "Zone de santé",
+                            COL_MAL: "Maladie",
+                            "Type_doublon": "Type de doublon",
+                            "Distinct_metric_rows": "Versions métriques",
+                            "UniqueKey_nunique": "UniqueKey distincts",
+                            "Variables_en_ecart": "Variables en écart",
+                            "Exact_rows": "Lignes exactes",
+                        })
+
+                        st.dataframe(
+                            dup_summary_display[
+                                [
+                                    c for c in [
+                                        "Semaine",
+                                        "Province",
+                                        "Zone de santé",
+                                        "Maladie",
+                                        "Occurrences",
+                                        "Lignes exactes",
+                                        "Type de doublon",
+                                        "Versions métriques",
+                                        "UniqueKey distincts",
+                                        "Variables en écart",
+                                    ]
+                                    if c in dup_summary_display.columns
+                                ]
+                            ],
+                            width="stretch",
+                            height=320,
+                            hide_index=True,
+                        )
+
+                        if not dup_contradictions.empty:
+                            st.markdown("**Lignes contradictoires à revoir en priorité**")
+                            contradiction_cols = [
+                                c for c in [
+                                    "_dup_week",
+                                    COL_PROV_ID,
+                                    COL_ZS_ID,
+                                    COL_MAL,
+                                    "Occurrences",
+                                    "Variables_en_ecart",
+                                    "Population",
+                                    "Total_cas",
+                                    "Total_deces",
+                                    "Cas_tnn",
+                                    "Cas_0_11mois",
+                                    "Cas_12_59mois",
+                                    "Cas_5_14ans",
+                                    "Cas_15plus",
+                                    "Deces_tnn",
+                                    "Deces_0_11mois",
+                                    "Deces_12_59mois",
+                                    "Deces_5_14ans",
+                                    "Deces_15plus",
+                                    "Taux_letalite",
+                                    "Taux_attaque",
+                                    "RecStatus",
+                                    "UniqueKey",
+                                ]
+                                if c in dup_contradictions.columns
+                            ]
+                            contradiction_display = dup_contradictions[contradiction_cols].rename(columns={
+                                "_dup_week": "Semaine",
+                                COL_PROV_ID: "Province",
+                                COL_ZS_ID: "Zone de santé",
+                                COL_MAL: "Maladie",
+                                "Variables_en_ecart": "Variables en écart",
+                            })
+                            st.dataframe(
+                                contradiction_display,
+                                width="stretch",
+                                height=260,
+                                hide_index=True,
+                            )
+
+                        show_dup_lines = st.checkbox(
+                            "Afficher toutes les lignes dupliquées",
+                            value=False,
+                            key="tab9_show_dup_lines",
+                        )
+                        if show_dup_lines:
+                            dup_detail_display = dup_scope_detail.rename(columns={
+                                "_dup_week": "Semaine",
+                                COL_PROV_ID: "Province",
+                                COL_ZS_ID: "Zone de santé",
+                                COL_MAL: "Maladie",
+                                "Type_doublon": "Type de doublon",
+                                "Variables_en_ecart": "Variables en écart",
+                                "Distinct_metric_rows": "Versions métriques",
+                            })
+                            st.dataframe(
+                                dup_detail_display[
+                                    [
+                                        c for c in [
+                                            "Semaine",
+                                            "Province",
+                                            "Zone de santé",
+                                            "Maladie",
+                                            "Type de doublon",
+                                            "Occurrences",
+                                            "Versions métriques",
+                                            "Variables en écart",
+                                            "Population",
+                                            "Total_cas",
+                                            "Total_deces",
+                                            "Cas_tnn",
+                                            "Cas_0_11mois",
+                                            "Cas_12_59mois",
+                                            "Cas_5_14ans",
+                                            "Cas_15plus",
+                                            "Deces_tnn",
+                                            "Deces_0_11mois",
+                                            "Deces_12_59mois",
+                                            "Deces_5_14ans",
+                                            "Deces_15plus",
+                                            "Taux_letalite",
+                                            "Taux_attaque",
+                                            "RecStatus",
+                                            "UniqueKey",
+                                        ]
+                                        if c in dup_detail_display.columns
+                                    ]
+                                ],
+                                width="stretch",
+                                height=360,
+                                hide_index=True,
+                            )
+
+                        dup_summary_csv = dup_summary_export.to_csv(index=False).encode("utf-8")
+                        dup_detail_csv = dup_scope_detail.rename(columns={
+                            "_dup_week": "Semaine",
+                            COL_PROV_ID: "Province",
+                            COL_ZS_ID: "Zone de santé",
+                            COL_MAL: "Maladie",
+                            "Type_doublon": "Type de doublon",
+                            "Variables_en_ecart": "Variables en écart",
+                            "Distinct_metric_rows": "Versions métriques",
+                        }).to_csv(index=False).encode("utf-8")
+
+                        dup_buffer = BytesIO()
+                        with pd.ExcelWriter(dup_buffer, engine="openpyxl") as writer:
+                            dup_summary_export.to_excel(writer, sheet_name="Doublons_resume", index=False)
+                            dup_scope_detail.rename(columns={
+                                "_dup_week": "Semaine",
+                                COL_PROV_ID: "Province",
+                                COL_ZS_ID: "Zone de santé",
+                                COL_MAL: "Maladie",
+                                "Type_doublon": "Type de doublon",
+                                "Variables_en_ecart": "Variables en écart",
+                                "Distinct_metric_rows": "Versions métriques",
+                            }).to_excel(writer, sheet_name="Doublons_detail", index=False)
+                            if not dup_contradictions.empty:
+                                dup_contradictions.rename(columns={
+                                    "_dup_week": "Semaine",
+                                    COL_PROV_ID: "Province",
+                                    COL_ZS_ID: "Zone de santé",
+                                    COL_MAL: "Maladie",
+                                    "Type_doublon": "Type de doublon",
+                                    "Variables_en_ecart": "Variables en écart",
+                                    "Distinct_metric_rows": "Versions métriques",
+                                }).to_excel(writer, sheet_name="Doublons_contrad", index=False)
+
+                        d1, d2, d3 = st.columns(3)
+                        with d1:
+                            st.download_button(
+                                "⬇️ Télécharger résumé doublons (CSV)",
+                                data=dup_summary_csv,
+                                file_name="idsr_doublons_resume.csv",
+                                mime="text/csv",
+                                key="tab9_dl_dup_summary_csv",
+                            )
+                        with d2:
+                            st.download_button(
+                                "⬇️ Télécharger détail doublons (CSV)",
+                                data=dup_detail_csv,
+                                file_name="idsr_doublons_detail.csv",
+                                mime="text/csv",
+                                key="tab9_dl_dup_detail_csv",
+                            )
+                        with d3:
+                            st.download_button(
+                                "⬇️ Télécharger pack doublons (Excel)",
+                                data=dup_buffer.getvalue(),
+                                file_name="idsr_doublons_pack.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="tab9_dl_dup_pack_xlsx",
+                            )
 
                 # -----------------------------------------------------------------
                 # 10) Signaux – Top en hausse (dernière semaine vs précédente)
