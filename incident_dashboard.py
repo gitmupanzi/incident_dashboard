@@ -18,6 +18,7 @@ from dashboard_app.tabs.idsr import render_idsr_tab
 from dashboard_app.tabs.irep import render_irep_tab
 from dashboard_app.tabs.maps import render_maps_tab
 from dashboard_app.tabs.methodology import render_methodology_tab
+from dashboard_app.overview import format_range_label_for_display
 
 inject_runtime_support(globals())
 
