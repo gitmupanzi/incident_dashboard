@@ -754,7 +754,7 @@ def render_overview_dashboard(
         st.write(f"Province la plus notifiée : **{payload.get('top_province', 'non disponible')}**")
         st.write(f"Zone de santé la plus notifiée : **{payload.get('top_zs', 'non disponible')}**")
         st.write(
-            f"Fenêtre couverte : **{payload.get('week_span', '-')}** avec **{format_metric_value(payload.get('cases', 0))}** cas analysés."
+            f"Fenêtre couverte : **{format_range_label_for_display(payload.get('week_span', '-'))}** avec **{format_metric_value(payload.get('cases', 0))}** cas analysés."
         )
 
     with c2:

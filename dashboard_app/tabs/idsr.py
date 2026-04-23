@@ -1,8 +1,44 @@
 """Render the weekly IDSR analytics tab."""
 
+from dashboard_app.overview import format_range_label_for_display
 from dashboard_app.runtime_support import inject_runtime_support
 
 inject_runtime_support(globals())
+
+
+def _build_idsr_period_labels(df_scope: pd.DataFrame) -> tuple[str, str]:
+    """Construit des libellés de période cohérents pour le résumé IDSR."""
+    period_label = compute_analysis_period_value(df_scope)
+    if not period_label or period_label == "-":
+        period_start = (
+            pd.to_datetime(df_scope.get("Date_debut_semaine_iso"), errors="coerce")
+            if "Date_debut_semaine_iso" in df_scope.columns
+            else pd.Series(dtype="datetime64[ns]")
+        )
+        if not period_start.empty and period_start.notna().any():
+            period_min = period_start.min()
+            period_max = period_start.max() + pd.Timedelta(days=6)
+            period_label = f"{period_min:%d/%m/%Y} -> {period_max:%d/%m/%Y}"
+        else:
+            period_label = "Période indisponible"
+
+    time_span = "Fenêtre hebdo indisponible"
+    if "TIME_KEY" in df_scope.columns and "TIME_LAB" in df_scope.columns:
+        week_ref = (
+            df_scope[["TIME_KEY", "TIME_LAB"]]
+            .copy()
+            .dropna(subset=["TIME_KEY", "TIME_LAB"])
+            .drop_duplicates()
+            .sort_values("TIME_KEY")
+        )
+        if not week_ref.empty:
+            time_span = f"{week_ref['TIME_LAB'].iloc[0]} -> {week_ref['TIME_LAB'].iloc[-1]}"
+    elif "TIME_LAB" in df_scope.columns:
+        time_values = df_scope["TIME_LAB"].dropna().astype(str).tolist()
+        if time_values:
+            time_span = f"{min(time_values)} -> {max(time_values)}"
+
+    return period_label, time_span
 
 
 def render_idsr_tab(ctx: dict) -> None:
@@ -1139,16 +1175,7 @@ def render_idsr_tab(ctx: dict) -> None:
             _n_prov = df9[COL_PROV_ID].nunique(dropna=True) if COL_PROV_ID in df9.columns else 0
             _n_zs = df9[COL_ZS_ID].nunique(dropna=True) if COL_ZS_ID in df9.columns else 0
 
-            _period_start = pd.to_datetime(df9.get("Date_debut_semaine_iso"), errors="coerce") if "Date_debut_semaine_iso" in df9.columns else pd.Series(dtype="datetime64[ns]")
-            if not _period_start.empty and _period_start.notna().any():
-                _period_min = _period_start.min()
-                _period_max = _period_start.max() + pd.Timedelta(days=6)
-                _period_label = f"{_period_min:%d/%m/%Y} -> {_period_max:%d/%m/%Y}"
-            else:
-                _period_label = "Période indisponible"
-
-            _time_values = df9["TIME_LAB"].dropna().astype(str).tolist() if "TIME_LAB" in df9.columns else []
-            _time_span = f"{min(_time_values)} -> {max(_time_values)}" if _time_values else "Fenêtre hebdo indisponible"
+            _period_label, _time_span = _build_idsr_period_labels(df9)
 
             st.markdown("### Résumé de la période")
             r1, r2, r3, r4, r5, r6 = st.columns(6)
@@ -1158,7 +1185,10 @@ def render_idsr_tab(ctx: dict) -> None:
             r4.metric("Maladies", f"{_n_mal:,}")
             r5.metric("Provinces", f"{_n_prov:,}")
             r6.metric("Zones de santé", f"{_n_zs:,}")
-            st.caption(f"Période couverte : **{_period_label}** | Fenêtre hebdo : **{_time_span}**")
+            st.caption(
+                f"Période couverte : **{format_range_label_for_display(_period_label)}** | "
+                f"Fenêtre hebdo : **{format_range_label_for_display(_time_span)}**"
+            )
             _scope_narrative = _build_idsr_scope_narrative(df9)
             if _scope_narrative:
                 render_reader_narrative("Lecture du périmètre", _scope_narrative)

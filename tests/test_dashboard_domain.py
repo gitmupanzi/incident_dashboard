@@ -47,6 +47,9 @@ from dashboard_app.domain import (
     standardize_df,
     standardize_ll_core,
 )
+from dashboard_app.narratives import _build_scope_overview_text
+from dashboard_app.overview import format_range_label_for_display
+from dashboard_app.tabs.idsr import _build_idsr_period_labels
 
 
 CORE_STANDARD_COLUMNS = [
@@ -289,6 +292,62 @@ class AdvancedAnalyticsTest(unittest.TestCase):
             float(risk.loc[risk[COL_ZS] == "ZS Forte", "Score_risque"].iloc[0]),
             float(risk.loc[risk[COL_ZS] == "ZS Stable", "Score_risque"].iloc[0]),
         )
+
+
+class NarrativePeriodTest(unittest.TestCase):
+    def test_display_range_formatter_uses_single_visual_convention(self):
+        self.assertEqual(
+            format_range_label_for_display("02/03/2026 -> 22/03/2026"),
+            "02/03/2026 → 22/03/2026",
+        )
+        self.assertEqual(
+            format_range_label_for_display("SE10-2026 à SE12-2026"),
+            "SE10-2026 → SE12-2026",
+        )
+        self.assertEqual(
+            format_range_label_for_display("Période indisponible"),
+            "Période indisponible",
+        )
+
+    def test_cumulative_surveillance_summary_prefers_iso_week_bounds(self):
+        df = pd.DataFrame(
+            {
+                COL_YEAR: [2026, 2026],
+                COL_WNUM: [10, 12],
+                DATE_NOTIF: ["2026-03-05", "2026-03-09"],
+                COL_PROV: ["Kinshasa", "Tshopo"],
+                COL_ZS: ["ZS A", "ZS B"],
+                "is_death": [0, 1],
+            }
+        )
+
+        latest_week_df = df[df[COL_WNUM] == 12].copy()
+        summary = _build_scope_overview_text(
+            df,
+            scope_kind="cumulative",
+            latest_week_df=latest_week_df,
+            latest_label="SE12-2026",
+        )
+
+        self.assertIsNotNone(summary)
+        self.assertIn("du 02/03/2026 au 22/03/2026", summary)
+        self.assertNotIn("du 05/03/2026 au 09/03/2026", summary)
+
+    def test_idsr_period_labels_follow_iso_week_bounds_and_sorted_window(self):
+        df = pd.DataFrame(
+            {
+                COL_YEAR: [2026, 2026, 2026],
+                COL_WNUM: [10, 12, 11],
+                "TIME_KEY": [202610, 202612, 202611],
+                "TIME_LAB": ["SE10-2026", "SE12-2026", "SE11-2026"],
+                "Date_debut_semaine_iso": ["2026-03-02", "2026-03-16", "2026-03-09"],
+            }
+        )
+
+        period_label, time_span = _build_idsr_period_labels(df)
+
+        self.assertEqual(period_label, "02/03/2026 -> 22/03/2026")
+        self.assertEqual(time_span, "SE10-2026 -> SE12-2026")
 
 
 class StandardSchemaContractTest(unittest.TestCase):

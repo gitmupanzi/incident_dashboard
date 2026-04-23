@@ -245,9 +245,13 @@ def build_global_summary_table(df_: pd.DataFrame) -> pd.DataFrame:
             rows.append((label, int(df_[col].dropna().nunique())))
     analysis_period = compute_analysis_period_value(df_)
     if analysis_period != "-":
-        rows.append(("Période analysée", analysis_period.replace(" -> ", " à ")))
+        analysis_period = format_range_label_for_display(analysis_period)
+    if analysis_period != "-":
+        rows.append(("Période analysée", analysis_period))
 
     week_coverage = _build_week_coverage_text(df_)
+    if week_coverage:
+        week_coverage = format_range_label_for_display(week_coverage)
     if week_coverage:
         rows.append(("Semaines épidémiologiques couvertes", week_coverage))
     return pd.DataFrame(rows, columns=["Indicateur", "Valeur"])
@@ -596,6 +600,24 @@ def compute_analysis_period_value(df_: pd.DataFrame) -> str:
     return "-"
 
 
+def format_range_label_for_display(value: Any) -> str:
+    """Uniformise les libellés compacts de période et de fenêtre à l'affichage."""
+    if value is None or pd.isna(value):
+        return "-"
+
+    text = str(value).strip()
+    if not text:
+        return "-"
+
+    text = re.sub(r"\s*->\s*", " → ", text)
+    endpoint_pattern = r"(?:\d{2}/\d{2}/\d{4}|SE\d{2}(?:-\d{4})?|W\d{2}|(?:\d{4}-W\d{2}))"
+    compact_match = re.match(fr"^({endpoint_pattern})\s+à\s+({endpoint_pattern})$", text)
+    if compact_match:
+        return f"{compact_match.group(1)} → {compact_match.group(2)}"
+
+    return text
+
+
 def build_weekly_overview_table(df_: pd.DataFrame) -> pd.DataFrame:
     """Construit la série hebdomadaire standard utilisée dans la page d'accueil."""
     week_col = resolve_week_column(df_)
@@ -698,6 +720,7 @@ def render_context_row(files_used: list[str], disease_key: str, df_: pd.DataFram
         period_value = compute_analysis_period_value(df_)
     if period_value == "-":
         period_value = payload.get("week_span", "-")
+    period_value = format_range_label_for_display(period_value)
 
     chips = [
         ("Source", source_value),
@@ -732,11 +755,12 @@ def build_dashboard_kpi_card_html(title: str, value: str, subtitle: str, theme: 
 
 def render_dashboard_kpis(payload: Dict[str, Any]) -> None:
     """Affiche la ligne horizontale des KPI principaux."""
+    payload = {**payload, "week_span": format_range_label_for_display(payload.get("week_span", "-"))}
     cards = [
         ("Total cas", format_metric_value(payload.get("cases", 0)), "Périmètre filtré", "blue", 1),
         ("Total décès", format_metric_value(payload.get("deaths", 0)), "Périmètre filtré", "navy", 1),
         ("CFR (%)", format_metric_value(payload.get("cfr"), decimals=2), "Létalité observée", "orange", 1),
-        ("Semaine min -> max", payload.get("week_span", "-"), "Fenêtre analytique", "blue", 2),
+        ("Semaine min → max", payload.get("week_span", "-"), "Fenêtre analytique", "blue", 2),
         (
             "Provinces épidémiques",
             f"{payload.get('reported_epid_provinces', 0)} / {payload.get('total_provinces_epid', 0)}",

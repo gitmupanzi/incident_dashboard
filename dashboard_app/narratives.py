@@ -1,5 +1,6 @@
 """Narrative helpers and surveillance/SITREP text builders."""
 
+from dashboard_app.overview import compute_analysis_period_value
 from dashboard_app.runtime_support import inject_runtime_support
 
 inject_runtime_support(globals())
@@ -140,7 +141,15 @@ def _surveillance_clean_text_series(series: pd.Series) -> pd.Series:
 
 
 def _surveillance_period_bounds(df_scope: pd.DataFrame) -> tuple[Optional[pd.Timestamp], Optional[pd.Timestamp], Optional[str]]:
-    """Déduit la meilleure période lisible à partir des dates disponibles."""
+    """Déduit la meilleure période lisible à partir de la fenêtre analytique active."""
+    period_value = compute_analysis_period_value(df_scope)
+    if period_value and period_value != "-" and "->" in period_value:
+        start_txt, end_txt = [part.strip() for part in period_value.split("->", 1)]
+        start_dt = pd.to_datetime(start_txt, errors="coerce", dayfirst=True)
+        end_dt = pd.to_datetime(end_txt, errors="coerce", dayfirst=True)
+        if pd.notna(start_dt) and pd.notna(end_dt):
+            return pd.Timestamp(start_dt), pd.Timestamp(end_dt), "analysis_period"
+
     for col in [DATE_NOTIF, DATE_ONSET, DATE_ADM, DATE_INV]:
         if col in df_scope.columns:
             dt = pd.to_datetime(df_scope[col], errors="coerce")
