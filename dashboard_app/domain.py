@@ -1032,6 +1032,25 @@ def inject_professional_dashboard_css() -> None:
         border-color: transparent;
     }
 
+    div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+        position: sticky;
+        top: 0.5rem;
+        z-index: 20;
+        padding: 0.35rem 0.4rem 0;
+        margin-bottom: 0.55rem;
+        background: linear-gradient(
+            180deg,
+            rgba(246, 249, 255, 0.98) 0%,
+            rgba(246, 249, 255, 0.94) 80%,
+            rgba(246, 249, 255, 0.00) 100%
+        );
+        backdrop-filter: blur(6px);
+    }
+
+    div[data-testid="stTabs"] [data-baseweb="tab-panel"] {
+        padding-top: 0.2rem;
+    }
+
     div[data-testid="stExpander"] {
         border: 1px solid var(--cousp-border);
         border-radius: 18px;
@@ -1128,7 +1147,7 @@ def inject_professional_dashboard_css() -> None:
     }
 
     .cousp-footer {
-        margin-top: 1.4rem;
+        margin-top: 2rem;
         padding: 1.15rem 1.35rem;
         border-radius: 22px;
         color: #ffffff;

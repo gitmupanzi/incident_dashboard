@@ -9,6 +9,26 @@ from dashboard_app.app_loader import (
     list_available_line_list_files,
     read_postgresql_file,
 )
+from dashboard_app.column_mapping import (
+    AUTO_APPLY_CONFIDENCE_THRESHOLD,
+    DEFAULT_CONFIDENCE_THRESHOLD,
+    DERIVED_COLUMNS,
+    SOURCE_COLUMNS,
+    STANDARD_COLUMNS,
+    add_derived_columns_after_mapping,
+    apply_auto_prefill_to_selection_state,
+    auto_map_columns,
+    build_auto_applied_mapping,
+    build_mapping_preview_table,
+    build_mapping_quality_report,
+    build_mapping_warnings,
+    dataframe_to_standardized_excel_bytes,
+    list_mapping_profiles,
+    load_mapping_profile,
+    rename_dataframe_to_standard,
+    save_mapping_profile,
+    validate_mapping,
+)
 from dashboard_app.tabs.overview_detail import render_overview_detail_tab
 from dashboard_app.overview import *
 from dashboard_app.domain import *
@@ -418,6 +438,278 @@ if not IDSR_MODE:
             "Le fichier a bien été téléversé, mais aucune analyse ne sera exécutée."
         )
         st.stop()
+
+    if disease_key == "autre":
+        mapping_placeholder = "-- Non associee --"
+        profile_placeholder = "-- Aucun profil --"
+        raw_column_options = list(raw.columns)
+        mapping_threshold = AUTO_APPLY_CONFIDENCE_THRESHOLD
+        mapping_cache_key = ("autre", _cache_key)
+        mapping_token = hashlib.md5(repr(mapping_cache_key).encode("utf-8")).hexdigest()[:12]
+        mapping_cache_state_key = "_ll_autre_mapping_cache_key"
+        mapping_state_key = "_ll_autre_mapping"
+        mapping_valid_state_key = "_ll_autre_mapping_validated"
+        profile_name_state_key = "_ll_autre_mapping_profile_name"
+        auto_mapping, auto_metadata = auto_map_columns(raw_column_options, threshold=mapping_threshold)
+        auto_prefill_mapping = build_auto_applied_mapping(
+            auto_metadata,
+            threshold=mapping_threshold,
+            include_derived=False,
+        )
+
+        if st.session_state.get(mapping_cache_state_key) != mapping_cache_key:
+            st.session_state[mapping_cache_state_key] = mapping_cache_key
+            st.session_state[mapping_state_key] = {}
+            st.session_state[mapping_valid_state_key] = False
+            st.session_state[profile_name_state_key] = ""
+            for standard_name in SOURCE_COLUMNS:
+                select_key = f"autre_map_{mapping_token}_{standard_name}"
+                st.session_state[select_key] = auto_prefill_mapping.get(standard_name, mapping_placeholder)
+            for standard_name in DERIVED_COLUMNS:
+                select_key = f"autre_map_{mapping_token}_{standard_name}"
+                st.session_state[select_key] = mapping_placeholder
+        else:
+            current_source_state = {
+                standard_name: st.session_state.get(f"autre_map_{mapping_token}_{standard_name}", mapping_placeholder)
+                for standard_name in SOURCE_COLUMNS
+            }
+            updated_source_state = apply_auto_prefill_to_selection_state(
+                current_source_state,
+                auto_prefill_mapping,
+                mapping_placeholder,
+            )
+            for standard_name, selected_value in updated_source_state.items():
+                st.session_state[f"autre_map_{mapping_token}_{standard_name}"] = selected_value
+
+        with st.expander("Correspondance des colonnes pour 'Autre'", expanded=True):
+            st.caption(
+                "Le dashboard propose une correspondance automatique des colonnes. "
+                "Valide ou corrige les associations avant de lancer l'analyse."
+            )
+            st.dataframe(
+                pd.DataFrame({"Colonnes detectees dans le fichier": [str(col) for col in raw_column_options]}),
+                width="stretch",
+                hide_index=True,
+            )
+            available_profiles = [profile_placeholder, *list_mapping_profiles()]
+            profile_col1, profile_col2 = st.columns([3, 1])
+            selected_profile = profile_col1.selectbox(
+                "Charger un profil de mapping",
+                options=available_profiles,
+                key=f"autre_mapping_profile_select_{mapping_token}",
+            )
+            load_profile_clicked = profile_col2.button(
+                "Charger",
+                key=f"autre_mapping_profile_load_{mapping_token}",
+            )
+            if load_profile_clicked and selected_profile != profile_placeholder:
+                loaded_profile = load_mapping_profile(selected_profile)
+                loaded_mapping = loaded_profile.get("mapping", {}) or {}
+                missing_source_columns = []
+                for standard_name in STANDARD_COLUMNS:
+                    select_key = f"autre_map_{mapping_token}_{standard_name}"
+                    profile_source = loaded_mapping.get(standard_name)
+                    if profile_source in raw_column_options:
+                        st.session_state[select_key] = profile_source
+                    else:
+                        if standard_name in SOURCE_COLUMNS:
+                            st.session_state[select_key] = auto_prefill_mapping.get(standard_name, mapping_placeholder)
+                        else:
+                            st.session_state[select_key] = mapping_placeholder
+                        if profile_source:
+                            missing_source_columns.append(f"{standard_name}: {profile_source}")
+                st.session_state[mapping_state_key] = {}
+                st.session_state[mapping_valid_state_key] = False
+                st.session_state[profile_name_state_key] = loaded_profile.get("profile_name", "")
+                if missing_source_columns:
+                    st.warning(
+                        "Certaines colonnes du profil charge ne sont pas presentes dans le fichier courant : "
+                        + "; ".join(missing_source_columns[:8])
+                    )
+                else:
+                    st.success("Profil de mapping charge. Verifie puis valide les associations.")
+
+            selectable_columns = [mapping_placeholder, *raw_column_options]
+            st.markdown("**Variables sources a associer**")
+            for standard_name, meta in SOURCE_COLUMNS.items():
+                select_key = f"autre_map_{mapping_token}_{standard_name}"
+                if select_key not in st.session_state:
+                    st.session_state[select_key] = auto_prefill_mapping.get(standard_name, mapping_placeholder)
+                suggestion_meta = auto_metadata.get(standard_name, {})
+                suggestion_label = (
+                    f"Suggestion: {suggestion_meta.get('source_column')} "
+                    f"({suggestion_meta.get('method')}, score={suggestion_meta.get('confidence')})"
+                    if suggestion_meta.get("source_column") is not None
+                    else "Aucune suggestion automatique"
+                )
+                st.selectbox(
+                    f"{standard_name}{' *' if meta.get('required') else ''}",
+                    options=selectable_columns,
+                    key=select_key,
+                    help=f"{meta.get('role', '')}. {suggestion_label}",
+                )
+
+            st.markdown("**Variables derivees ou de secours**")
+            st.caption(
+                "Ces colonnes peuvent etre mappees si elles existent deja dans le fichier, "
+                "mais elles sont aussi calculables automatiquement quand les colonnes sources sont disponibles."
+            )
+            for standard_name, meta in DERIVED_COLUMNS.items():
+                select_key = f"autre_map_{mapping_token}_{standard_name}"
+                if select_key not in st.session_state:
+                    st.session_state[select_key] = mapping_placeholder
+                suggestion_meta = auto_metadata.get(standard_name, {})
+                suggestion_label = (
+                    f"Suggestion: {suggestion_meta.get('source_column')} "
+                    f"({suggestion_meta.get('method')}, score={suggestion_meta.get('confidence')})"
+                    if suggestion_meta.get("source_column") is not None
+                    else "Calculable automatiquement"
+                )
+                st.selectbox(
+                    f"{standard_name} (optionnel)",
+                    options=selectable_columns,
+                    key=select_key,
+                    help=f"{meta.get('role', '')}. {suggestion_label}",
+                )
+
+            pending_mapping = {}
+            for standard_name in STANDARD_COLUMNS:
+                select_key = f"autre_map_{mapping_token}_{standard_name}"
+                selected_value = st.session_state.get(select_key, mapping_placeholder)
+                pending_mapping[standard_name] = None if selected_value == mapping_placeholder else selected_value
+
+            if (
+                st.session_state.get(mapping_valid_state_key)
+                and pending_mapping != st.session_state.get(mapping_state_key, {})
+            ):
+                st.session_state[mapping_valid_state_key] = False
+
+            preview_df = build_mapping_preview_table(
+                pending_mapping,
+                auto_metadata,
+                threshold=mapping_threshold,
+            )
+            st.markdown("**Apercu du mapping avant validation**")
+            st.dataframe(
+                preview_df[
+                    [
+                        "Variable standard",
+                        "Type de variable",
+                        "Colonne source proposée",
+                        "Méthode de détection",
+                        "Score de confiance",
+                        "Statut",
+                    ]
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+
+            for warning_msg in build_mapping_warnings(pending_mapping):
+                st.warning(warning_msg)
+
+            mapping_submitted = st.button(
+                "Valider la correspondance",
+                key=f"autre_mapping_validate_{mapping_token}",
+            )
+            validation_errors = []
+            if mapping_submitted:
+                is_valid_mapping, validation_errors = validate_mapping(pending_mapping)
+                st.session_state[mapping_state_key] = pending_mapping
+                st.session_state[mapping_valid_state_key] = is_valid_mapping
+                if validation_errors:
+                    for err in validation_errors:
+                        st.error(err)
+                else:
+                    st.success("Correspondance validee. L'analyse peut maintenant continuer.")
+            elif st.session_state.get(mapping_valid_state_key):
+                st.success("Correspondance deja validee pour le fichier courant.")
+
+            current_valid_mapping = st.session_state.get(mapping_state_key, {})
+            standardized_preview_df = None
+            derived_info = {}
+            quality_report = None
+            if st.session_state.get(mapping_valid_state_key) and current_valid_mapping:
+                standardized_preview_df = rename_dataframe_to_standard(
+                    raw,
+                    current_valid_mapping,
+                    keep_unmapped_columns=True,
+                )
+                standardized_preview_df, derived_info = add_derived_columns_after_mapping(
+                    standardized_preview_df,
+                    return_info=True,
+                )
+                derived_info["original_columns"] = raw_column_options
+                quality_report = build_mapping_quality_report(
+                    standardized_preview_df,
+                    current_valid_mapping,
+                    derived_info=derived_info,
+                )
+
+                st.markdown("**Rapport qualite apres mapping**")
+                st.write(f"Nombre de lignes : **{quality_report.get('Nombre de lignes', 0):,}**".replace(",", " "))
+                st.write(
+                    f"Colonnes reconnues : **{quality_report.get('Nombre de colonnes standards reconnues', 0)}**"
+                )
+                st.write(
+                    f"Colonnes non reconnues : **{quality_report.get('Nombre de colonnes non reconnues', 0)}**"
+                )
+                dates_valides = quality_report.get("Dates valides", {})
+                st.write(
+                    f"Dates valides : **{dates_valides.get('valid', 0)} / {dates_valides.get('total', 0)}**"
+                )
+                ages_valides = quality_report.get("Âges valides", {})
+                st.write(
+                    f"Âges valides : **{ages_valides.get('valid', 0)} / {ages_valides.get('total', 0)}**"
+                )
+                st.write(
+                    f"Semaines epidemiologiques calculees : **{quality_report.get('Semaines épidémiologiques calculées', 0)}**"
+                )
+                st.write(
+                    f"Tranches d'age calculees : **{quality_report.get('Tranches d’âge calculées', 0)}**"
+                )
+
+                profile_name = st.text_input(
+                    "Nom du profil de mapping a sauvegarder (optionnel)",
+                    key=profile_name_state_key,
+                    placeholder="autre_cholera_labo",
+                )
+                if st.button(
+                    "Sauvegarder ce profil",
+                    key=f"autre_mapping_save_{mapping_token}",
+                ):
+                    if not str(profile_name).strip():
+                        st.warning("Renseigne un nom de profil avant la sauvegarde.")
+                    else:
+                        save_path = save_mapping_profile(
+                            current_valid_mapping,
+                            profile_name=profile_name,
+                            metadata={
+                                "disease_key": disease_key,
+                                "source": "manual_validation",
+                                "columns_count": len(raw_column_options),
+                            },
+                        )
+                        st.success(f"Profil sauvegarde : {save_path.name}")
+
+                st.download_button(
+                    "Telecharger le fichier standardise",
+                    data=dataframe_to_standardized_excel_bytes(standardized_preview_df),
+                    file_name="liste_lineaire_standardisee.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"autre_mapping_download_{mapping_token}",
+                )
+
+        if not st.session_state.get(mapping_valid_state_key):
+            st.info("Valide la correspondance des colonnes pour poursuivre l'analyse de l'option 'Autre'.")
+            st.stop()
+
+        raw = rename_dataframe_to_standard(
+            raw,
+            st.session_state.get(mapping_state_key, pending_mapping),
+            keep_unmapped_columns=True,
+        )
+        raw = add_derived_columns_after_mapping(raw)
 
     # ✅ 1) Standardisation commune (Rougeole/Choléra/…)
     raw = standardize_ll_by_disease(raw, disease_key)
