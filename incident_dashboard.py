@@ -1,3 +1,5 @@
+import html
+
 from dashboard_app.core import *
 from dashboard_app.core import _normalize_metric_alias_columns
 
@@ -1925,13 +1927,44 @@ def _build_sitrep_action_lines(payload: dict[str, Any]) -> list[str]:
 # - Cartographie, SITREP, IDSR et IREP restent dédiés
 # =========================
 
-def render_reader_narrative(title: str, text: str, *, tone: str = "standard") -> None:
-    """Affiche un court narratif lisible par un public mixte et des epidemiologistes."""
+def render_reader_narrative(title: str, text: Any, *, tone: str = "standard") -> None:
+    """Affiche un narratif court ou structuré lisible par un public mixte."""
     accent = {
         "standard": "#1f6feb",
         "missing": "#b45309",
         "decision": "#047857",
     }.get(tone, "#1f6feb")
+
+    if isinstance(text, dict):
+        section_blocks: list[str] = []
+        for label, key in [
+            ("Constat", "constat"),
+            ("Interprétation", "interpretation"),
+            ("Action recommandée", "action"),
+        ]:
+            content = str(text.get(key, "")).strip()
+            if not content:
+                continue
+            safe_content = html.escape(content, quote=False).replace("\n", "<br>")
+            section_blocks.append(
+                f'<div style="margin-top: 0.35rem;"><strong>{label} :</strong> {safe_content}</div>'
+            )
+
+        if not section_blocks:
+            return
+
+        safe_title = html.escape(str(title), quote=False)
+        st.markdown(
+            f"""
+            <div class="cousp-detail-empty" style="border-left: 4px solid {accent};">
+                <strong>{safe_title}</strong>
+                {''.join(section_blocks)}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
     st.markdown(
         f"""
         <div class="cousp-detail-empty" style="border-left: 4px solid {accent};">
@@ -5288,6 +5321,299 @@ with tab_idsr:
 
             return _work, _detail, _summary, _dup_key_cols, _metric_cols
 
+        def _idsr_fmt_int(_value: Any) -> str:
+            if pd.isna(_value):
+                return "NA"
+            try:
+                return f"{int(round(float(_value))):,}"
+            except Exception:
+                return str(_value)
+
+        def _idsr_fmt_pct(_value: Any, decimals: int = 1) -> str:
+            if pd.isna(_value):
+                return "NA"
+            try:
+                return f"{float(_value):.{decimals}f}%"
+            except Exception:
+                return str(_value)
+
+        def _idsr_join_sentences(*_parts: Any) -> str:
+            return " ".join(
+                str(_part).strip()
+                for _part in _parts
+                if isinstance(_part, str) and str(_part).strip()
+            )
+
+        def _idsr_make_narrative(
+            constat: str = "",
+            interpretation: str = "",
+            action: str = "",
+        ) -> dict[str, str]:
+            _narrative: dict[str, str] = {}
+            if constat.strip():
+                _narrative["constat"] = constat.strip()
+            if interpretation.strip():
+                _narrative["interpretation"] = interpretation.strip()
+            if action.strip():
+                _narrative["action"] = action.strip()
+            return _narrative
+
+        def _build_idsr_scope_narrative(_df: pd.DataFrame) -> dict[str, str]:
+            if _df is None or _df.empty:
+                return {}
+
+            _cases = pd.to_numeric(_df.get("Total_cas"), errors="coerce").sum(skipna=True) if "Total_cas" in _df.columns else np.nan
+            _deaths = pd.to_numeric(_df.get("Total_deces"), errors="coerce").sum(skipna=True) if "Total_deces" in _df.columns else np.nan
+            _cfr = (float(_deaths) / float(_cases) * 100.0) if pd.notna(_cases) and _cases > 0 and pd.notna(_deaths) else np.nan
+            _n_mal = int(_df[COL_MAL].nunique(dropna=True)) if COL_MAL in _df.columns else 0
+            _n_prov = int(_df[COL_PROV_ID].nunique(dropna=True)) if COL_PROV_ID in _df.columns else 0
+            _n_zs = int(_df[COL_ZS_ID].nunique(dropna=True)) if COL_ZS_ID in _df.columns else 0
+
+            _constat = _idsr_join_sentences(
+                f"Au terme du filtrage appliqué, le périmètre analytique totalise {_idsr_fmt_int(_cases)} cas et {_idsr_fmt_int(_deaths)} décès, pour une létalité recalculée de {_idsr_fmt_pct(_cfr)}.",
+                f"La lecture agrégée porte sur {_idsr_fmt_int(_n_mal)} maladies, {_idsr_fmt_int(_n_prov)} provinces et {_idsr_fmt_int(_n_zs)} zones de santé.",
+            )
+            _interpretation_parts: list[str] = []
+
+            if (COL_MAL in _df.columns) and ("Total_cas" in _df.columns):
+                _top_mal = (
+                    _df.groupby(COL_MAL, as_index=False)
+                    .agg(Cas=("Total_cas", "sum"))
+                    .sort_values("Cas", ascending=False)
+                )
+                if not _top_mal.empty:
+                    _leader = _top_mal.iloc[0]
+                    _share = (float(_leader["Cas"]) / float(_cases) * 100.0) if pd.notna(_cases) and _cases > 0 else np.nan
+                    _interpretation_parts.append(
+                        f"La maladie prédominante est {str(_leader[COL_MAL])}, avec {_idsr_fmt_int(_leader['Cas'])} cas, soit {_idsr_fmt_pct(_share)} du volume observé."
+                    )
+
+            if (COL_PROV_ID in _df.columns) and ("Total_cas" in _df.columns):
+                _top_prov = (
+                    _df.groupby(COL_PROV_ID, as_index=False)
+                    .agg(Cas=("Total_cas", "sum"))
+                    .sort_values("Cas", ascending=False)
+                )
+                if not _top_prov.empty:
+                    _leader_p = _top_prov.iloc[0]
+                    _share_p = (float(_leader_p["Cas"]) / float(_cases) * 100.0) if pd.notna(_cases) and _cases > 0 else np.nan
+                    _interpretation_parts.append(
+                        f"La province la plus affectée est {str(_leader_p[COL_PROV_ID])}, avec {_idsr_fmt_int(_leader_p['Cas'])} cas ({_idsr_fmt_pct(_share_p)} du total)."
+                    )
+
+            _interpretation = _idsr_join_sentences(*_interpretation_parts)
+            _action = (
+                "Documenter ce périmètre filtré dans tout partage opérationnel et croiser sa lecture avec la qualité des dates, les doublons et la cohérence des agrégats avant diffusion."
+            )
+            return _idsr_make_narrative(_constat, _interpretation, _action)
+
+        def _build_idsr_latest_week_narrative(
+            _df_last_week: pd.DataFrame,
+            _week_label: Any,
+            _cases: Any,
+            _deaths: Any,
+            _cfr: Any,
+            _delta_cases: Any = None,
+            _delta_deaths: Any = None,
+            _diff_cases: Any = np.nan,
+            _diff_deaths: Any = np.nan,
+        ) -> dict[str, str]:
+            if _df_last_week is None or _df_last_week.empty:
+                return {}
+
+            _constat_parts = [
+                f"Pour la dernière semaine disponible ({_week_label}), le niveau agrégé observé est de {_idsr_fmt_int(_cases)} cas, {_idsr_fmt_int(_deaths)} décès et une létalité de {_idsr_fmt_pct(_cfr)}."
+            ]
+
+            if _delta_cases is not None and pd.notna(_delta_cases):
+                _trend = "en augmentation" if float(_delta_cases) > 0 else ("en diminution" if float(_delta_cases) < 0 else "stables")
+                _constat_parts.append(f"Par rapport à la semaine précédente, les cas sont {_trend} ({float(_delta_cases):+.1f}%).")
+
+            if _delta_deaths is not None and pd.notna(_delta_deaths):
+                _trend_d = "en augmentation" if float(_delta_deaths) > 0 else ("en diminution" if float(_delta_deaths) < 0 else "stables")
+                _constat_parts.append(f"L’évolution des décès est {_trend_d} ({float(_delta_deaths):+.1f}%).")
+
+            _interpretation_parts: list[str] = []
+
+            if (COL_MAL in _df_last_week.columns) and ("Total_cas" in _df_last_week.columns):
+                _top_mal = (
+                    _df_last_week.groupby(COL_MAL, as_index=False)
+                    .agg(Cas=("Total_cas", "sum"))
+                    .sort_values("Cas", ascending=False)
+                )
+                if not _top_mal.empty:
+                    _interpretation_parts.append(
+                        f"La maladie qui contribue le plus à la charge hebdomadaire est {str(_top_mal.iloc[0][COL_MAL])} avec {_idsr_fmt_int(_top_mal.iloc[0]['Cas'])} cas."
+                    )
+
+            if (COL_PROV_ID in _df_last_week.columns) and ("Total_cas" in _df_last_week.columns):
+                _top_prov = (
+                    _df_last_week.groupby(COL_PROV_ID, as_index=False)
+                    .agg(Cas=("Total_cas", "sum"))
+                    .sort_values("Cas", ascending=False)
+                )
+                if not _top_prov.empty:
+                    _interpretation_parts.append(
+                        f"La province la plus contributive sur cette semaine est {str(_top_prov.iloc[0][COL_PROV_ID])} avec {_idsr_fmt_int(_top_prov.iloc[0]['Cas'])} cas."
+                    )
+
+            if (pd.notna(_diff_cases) and float(_diff_cases) != 0) or (pd.notna(_diff_deaths) and float(_diff_deaths) != 0):
+                _interpretation_parts.append(
+                    "Le contrôle de cohérence met en évidence un écart entre les totaux notifiés et la somme des tranches d’âge ; cette semaine doit donc être interprétée avec prudence."
+                )
+                _action = (
+                    "Documenter en priorité l’écart entre totaux et tranches d’âge, puis valider les maladies citées dans le détail avant toute diffusion définitive."
+                )
+            else:
+                _action = (
+                    "Confirmer rapidement les provinces et maladies les plus contributives afin d’orienter la réponse hebdomadaire et le message de bulletin."
+                )
+
+            return _idsr_make_narrative(
+                _idsr_join_sentences(*_constat_parts),
+                _idsr_join_sentences(*_interpretation_parts),
+                _action,
+            )
+
+        def _build_idsr_date_quality_narrative(_counts: pd.Series) -> dict[str, str]:
+            if _counts is None or _counts.empty:
+                return {}
+            _total = int(_counts.sum())
+            _ok = int(_counts.get("✅ OK", 0))
+            _ko = int(_counts.get("❌ KO", 0))
+            _na = int(_counts.get("NA", 0))
+            _constat = (
+                f"Le contrôle de concordance entre date et semaine porte sur {_idsr_fmt_int(_total)} lignes : {_idsr_fmt_int(_ok)} sont cohérentes, {_idsr_fmt_int(_ko)} incohérentes et {_idsr_fmt_int(_na)} non évaluables."
+            )
+            if _ko > 0 and _total > 0:
+                _interpretation = (
+                    f"La proportion de lignes incohérentes est de {_idsr_fmt_pct((_ko / _total) * 100.0)} ; ces enregistrements peuvent fragiliser la lecture chronologique."
+                )
+                _action = (
+                    "Afficher les lignes KO, corriger la date source ou la semaine épidémiologique, puis relancer la lecture temporelle avant consolidation."
+                )
+            elif _na > 0:
+                _interpretation = (
+                    "Aucune incohérence n’est visible parmi les lignes évaluables, mais une partie des enregistrements reste non évaluable faute d’information temporelle exploitable."
+                )
+                _action = (
+                    "Compléter les champs de date ou de semaine manquants pour sécuriser la lecture des tendances et des cumuls."
+                )
+            else:
+                _interpretation = "La concordance date-semaine est satisfaisante sur le périmètre actuellement analysé."
+                _action = "Maintenir ce contrôle avant chaque diffusion hebdomadaire pour prévenir les décalages de calendrier."
+            return _idsr_make_narrative(_constat, _interpretation, _action)
+
+        def _build_idsr_duplicate_narrative(_summary: pd.DataFrame) -> dict[str, str]:
+            if _summary is None or _summary.empty:
+                return _idsr_make_narrative(
+                    "Aucun doublon métier n’a été détecté sur le périmètre filtré.",
+                    "Le jeu affiché paraît stable sur la clé Semaine + Province + Zone de santé + Maladie.",
+                    "Conserver ce contrôle avant les analyses comparatives et les exports afin de détecter rapidement toute réapparition.",
+                )
+
+            _n_groups = int(len(_summary))
+            _n_exact = int((_summary["Type_doublon"] == "Exact métier").sum()) if "Type_doublon" in _summary.columns else 0
+            _n_contrad = int((_summary["Type_doublon"] == "Contradictoire").sum()) if "Type_doublon" in _summary.columns else 0
+            _constat = _idsr_join_sentences(
+                f"{_idsr_fmt_int(_n_groups)} groupe(s) de doublons métier ont été identifiés dans le périmètre filtré.",
+                f"{_idsr_fmt_int(_n_exact)} groupe(s) correspondent à des répétitions exactes de même contenu." if _n_exact > 0 else "",
+                f"{_idsr_fmt_int(_n_contrad)} groupe(s) présentent des valeurs contradictoires pour une même clé métier." if _n_contrad > 0 else "",
+            )
+            _interpretation = _idsr_join_sentences(
+                "Les doublons exacts peuvent gonfler artificiellement les volumes agrégés." if _n_exact > 0 else "",
+                "Les doublons contradictoires signalent plutôt des versions concurrentes d’un même enregistrement et nécessitent une validation humaine." if _n_contrad > 0 else "",
+            )
+            _action = (
+                "Examiner en priorité les groupes contradictoires avant diffusion ; les doublons exacts peuvent être exclus des analyses sans masquer les anomalies métier."
+                if _n_contrad > 0
+                else "Vous pouvez exclure les doublons exacts des analyses, tout en conservant ce contrôle comme garde-fou avant export."
+            )
+            return _idsr_make_narrative(_constat, _interpretation, _action)
+
+        def _build_idsr_coherence_narrative(_qc_view: pd.DataFrame) -> dict[str, str]:
+            if _qc_view is None or _qc_view.empty or "QC_Global" not in _qc_view.columns:
+                return {}
+            _total = int(len(_qc_view))
+            _ko = int((_qc_view["QC_Global"] == "❌ KO").sum())
+            _ok = int((_qc_view["QC_Global"] == "✅ OK").sum())
+            _constat = (
+                f"Le contrôle de cohérence des agrégats couvre {_idsr_fmt_int(_total)} lignes : {_idsr_fmt_int(_ok)} sont cohérentes et {_idsr_fmt_int(_ko)} présentent au moins un écart."
+            )
+            if _ko > 0:
+                _interpretation = (
+                    f"La part de lignes incohérentes atteint {_idsr_fmt_pct((_ko / _total) * 100.0)} ; les totaux notifiés ne correspondent donc pas toujours aux sommes par tranche d’âge."
+                )
+                _action = (
+                    "Examiner les lignes KO et les maladies responsables des écarts avant de consolider les cas et décès dans un bulletin ou un export."
+                )
+            else:
+                _interpretation = "Les totaux notifiés concordent avec les sommes par tranche d’âge sur le périmètre analysé."
+                _action = "Maintenir ce contrôle comme étape standard avant publication afin de sécuriser la lecture des agrégats."
+            return _idsr_make_narrative(_constat, _interpretation, _action)
+
+        def _build_idsr_profile_narrative(_df: pd.DataFrame) -> dict[str, str]:
+            if _df is None or _df.empty:
+                return {}
+
+            _cases = pd.to_numeric(_df.get("Total_cas"), errors="coerce").sum(skipna=True) if "Total_cas" in _df.columns else np.nan
+            _constat_parts: list[str] = []
+
+            if (COL_MAL in _df.columns) and ("Total_cas" in _df.columns):
+                _by_mal = (
+                    _df.groupby(COL_MAL, as_index=False)
+                    .agg(Cas=("Total_cas", "sum"))
+                    .sort_values("Cas", ascending=False)
+                )
+                if not _by_mal.empty:
+                    _leader = _by_mal.iloc[0]
+                    _share = (float(_leader["Cas"]) / float(_cases) * 100.0) if pd.notna(_cases) and _cases > 0 else np.nan
+                    _constat_parts.append(
+                        f"Dans le profil global, {str(_leader[COL_MAL])} est la maladie la plus représentée, avec {_idsr_fmt_int(_leader['Cas'])} cas ({_idsr_fmt_pct(_share)} du total)."
+                    )
+
+            _age_map = {
+                "Cas_tnn": "<1 mois",
+                "Cas_0_11mois": "0–11 mois",
+                "Cas_12_59mois": "12–59 mois",
+                "Cas_5_14ans": "5–14 ans",
+                "Cas_15plus": "≥15 ans",
+            }
+            _age_rows = []
+            for _col, _label in _age_map.items():
+                if _col in _df.columns:
+                    _age_rows.append((_label, pd.to_numeric(_df[_col], errors="coerce").sum(skipna=True)))
+            if _age_rows:
+                _age_df = pd.DataFrame(_age_rows, columns=["Tranche", "Cas"]).sort_values("Cas", ascending=False)
+                if not _age_df.empty and pd.notna(_age_df.iloc[0]["Cas"]) and float(_age_df.iloc[0]["Cas"]) > 0:
+                    _constat_parts.append(
+                        f"La tranche d’âge la plus représentée est {_age_df.iloc[0]['Tranche']}, avec {_idsr_fmt_int(_age_df.iloc[0]['Cas'])} cas."
+                    )
+
+            if (COL_PROV_ID in _df.columns) and ("Total_cas" in _df.columns):
+                _by_prov = (
+                    _df.groupby(COL_PROV_ID, as_index=False)
+                    .agg(Cas=("Total_cas", "sum"))
+                    .sort_values("Cas", ascending=False)
+                )
+                if not _by_prov.empty:
+                    _constat_parts.append(
+                        f"Sur le plan géographique, {str(_by_prov.iloc[0][COL_PROV_ID])} concentre le volume le plus élevé, avec {_idsr_fmt_int(_by_prov.iloc[0]['Cas'])} cas."
+                    )
+
+            _constat = _idsr_join_sentences(*_constat_parts)
+            _interpretation = (
+                "Le profil observé suggère une concentration de la charge sur les groupes et territoires cités ci-dessus ; cette lecture doit être croisée avec la tendance hebdomadaire et la létalité."
+                if _constat
+                else ""
+            )
+            _action = (
+                "Orienter la revue épidémiologique, clinique et programmatique vers la maladie dominante, la tranche d’âge la plus touchée et les territoires les plus contributeurs."
+                if _constat
+                else ""
+            )
+            return _idsr_make_narrative(_constat, _interpretation, _action)
+
         # Diagnostic rapide
         with st.expander("🧩 Diagnostic (temps & QC) – déplier", expanded=False):
             st.write({
@@ -5297,31 +5623,6 @@ with tab_idsr:
                 ] if c in df_idsr.columns],
                 "qc_date_vs_semaine": df_idsr["QC_Date_vs_Semaine"].value_counts(dropna=False).to_dict()
             })
-
-        # ---------------------------------------------------------------------
-        # 6.b) QC actionnable : afficher & exporter les lignes KO (si existent)
-        # ---------------------------------------------------------------------
-        if "QC_Date_vs_Semaine" in df_idsr.columns:
-            df_qc_ko = df_idsr[df_idsr["QC_Date_vs_Semaine"] == "❌ KO"].copy()
-            if not df_qc_ko.empty:
-                with st.expander("🚩 Top lignes QC KO (Date vs Année-Semaine) – déplier", expanded=False):
-                    show_cols = [c for c in [
-                        "Maladie", "Province_notification", "Zone_de_sante_notification",
-                        "DEBUTSEM", "Date_debut_semaine",
-                        "Annee_epid", "Num_semaine_epid", "Semaine_epid", "YW",
-                        "QC_Date_vs_Semaine"
-                    ] if c in df_qc_ko.columns]
-                    st.dataframe(df_qc_ko[show_cols].head(20), width="stretch")
-
-                    csv_ko = df_qc_ko[show_cols].to_csv(index=False).encode("utf-8")
-                    st.download_button(
-                        "⬇️ Télécharger QC_KO.csv",
-                        data=csv_ko,
-                        file_name="QC_KO.csv",
-                        mime="text/csv",
-                        key="tab9_dl_qc_ko"
-                    )
-
 
         # ---------------------------------------------------------------------
         # 7) Filtres : maladie, province, ZS, semaines (mode normal ou secours)
@@ -5679,7 +5980,7 @@ with tab_idsr:
             _time_values = df9["TIME_LAB"].dropna().astype(str).tolist() if "TIME_LAB" in df9.columns else []
             _time_span = f"{min(_time_values)} -> {max(_time_values)}" if _time_values else "Fenêtre hebdo indisponible"
 
-            st.markdown("### Résumé de la période filtrée")
+            st.markdown("### Résumé de la période")
             r1, r2, r3, r4, r5, r6 = st.columns(6)
             r1.metric("Cas (total)", f"{int(_tot_cas):,}" if pd.notna(_tot_cas) else "NA")
             r2.metric("Décès (total)", f"{int(_tot_dec):,}" if pd.notna(_tot_dec) else "NA")
@@ -5688,89 +5989,25 @@ with tab_idsr:
             r5.metric("Provinces", f"{_n_prov:,}")
             r6.metric("Zones de santé", f"{_n_zs:,}")
             st.caption(f"Période couverte : **{_period_label}** | Fenêtre hebdo : **{_time_span}**")
+            _scope_narrative = _build_idsr_scope_narrative(df9)
+            if _scope_narrative:
+                render_reader_narrative("Lecture du périmètre", _scope_narrative)
 
 
         if df9.empty:
             st.info("Aucune donnée n’est disponible après application des filtres analytiques.")
         else:
             st.divider()
+            st.markdown("### Vue d’ensemble")
+            st.caption(
+                "Commencez par cette partie pour lire rapidement le volume, la géographie, la dernière semaine disponible "
+                "et les principaux signaux territoriaux."
+            )
 
-            with st.expander("🧭 Intensité géographique par maladie", expanded=False):
-                if (COL_MAL in df9.columns) and (COL_PROV_ID in df9.columns) and ("Total_cas" in df9.columns):
-                    heat_src = (
-                        df9.groupby([COL_MAL, COL_PROV_ID], as_index=False)
-                        .agg(Cas=("Total_cas", "sum"))
-                    )
-                    heat_src["Cas"] = pd.to_numeric(heat_src["Cas"], errors="coerce").fillna(0)
-                    heat_src = heat_src[heat_src["Cas"] > 0]
-
-                    if not heat_src.empty:
-                        h1, h2 = st.columns(2)
-                        with h1:
-                            top_prov_n = st.slider(
-                                "Top provinces à afficher",
-                                min_value=5,
-                                max_value=25,
-                                value=12,
-                                step=1,
-                                key="tab9_heatmap_top_prov",
-                            )
-                        with h2:
-                            top_mal_n = st.slider(
-                                "Top maladies à afficher",
-                                min_value=1,
-                                max_value=20,
-                                value=min(10, int(heat_src[COL_MAL].nunique())),
-                                step=1,
-                                key="tab9_heatmap_top_mal",
-                            )
-
-                        top_provs = (
-                            heat_src.groupby(COL_PROV_ID)["Cas"]
-                            .sum()
-                            .sort_values(ascending=False)
-                            .head(int(top_prov_n))
-                            .index.tolist()
-                        )
-                        top_mals = (
-                            heat_src.groupby(COL_MAL)["Cas"]
-                            .sum()
-                            .sort_values(ascending=False)
-                            .head(int(top_mal_n))
-                            .index.tolist()
-                        )
-                        heat_view = heat_src[
-                            heat_src[COL_PROV_ID].isin(top_provs) & heat_src[COL_MAL].isin(top_mals)
-                        ].copy()
-
-                        heat_tbl = heat_view.pivot_table(
-                            index=COL_MAL,
-                            columns=COL_PROV_ID,
-                            values="Cas",
-                            aggfunc="sum",
-                            fill_value=0,
-                            observed=False,
-                        )
-
-                        if not heat_tbl.empty:
-                            fig_heat = px.imshow(
-                                heat_tbl,
-                                aspect="auto",
-                                color_continuous_scale=["#eef4fb", "#2369be", "#103d82"],
-                                title="Cas agrégés par maladie et province",
-                                labels={"x": "Province", "y": "Maladie", "color": "Cas"},
-                            )
-                            fig_heat.update_layout(height=460)
-                            st.plotly_chart(fig_heat, width="stretch", key="idsr_heatmap_mal_prov")
-                            with st.expander("Tableau maladie × province", expanded=False):
-                                st.dataframe(heat_tbl.reset_index(), width="stretch", height=320, hide_index=True)
-                        else:
-                            st.info("La heatmap maladie × province est vide après application des filtres de volume.")
-                    else:
-                        st.info("Aucun volume exploitable n'est disponible pour construire la heatmap maladie × province.")
-                else:
-                    st.info("La heatmap maladie × province est indisponible : colonnes Maladie / Province / Total_cas absentes.")
-
+            st.caption(
+                "La lecture géographique est volontairement centralisée dans la cartographie ci-dessous et dans les classements territoriaux, "
+                "afin d’éviter les doublons entre plusieurs vues proches."
+            )
             st.divider()
             render_idsr_maps_section(
                 df_f=df9,
@@ -5924,7 +6161,7 @@ with tab_idsr:
                 d_dec = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change_metric_safe(last["Deces"], prev["Deces"]) if (last is not None and prev is not None) else None)
                 d_cfr = None if ("disable_deltas" in locals() and disable_deltas) else (pct_change_metric_safe(last["CFR_calc_%"], prev["CFR_calc_%"]) if (last is not None and prev is not None) else None)
 
-                st.markdown("### Situation épidémiologique — dernière semaine disponible")
+                st.markdown("### Dernière semaine disponible")
 
                 # Préparer la série "tranches d’âge" (Cas_* / Deces_*) pour comparer avec les totaux
                 age_case_cols = [c for c in ["Cas_tnn", "Cas_0_11mois", "Cas_12_59mois", "Cas_5_14ans", "Cas_15plus"] if c in df9.columns]
@@ -6065,6 +6302,19 @@ with tab_idsr:
                 # -----------------------------------------------------------------
                 diff_cas = (tot_cas_lastwk - cas_age_last) if ("cas_age_last" in locals() and pd.notna(tot_cas_lastwk) and pd.notna(cas_age_last)) else np.nan
                 diff_dec = (tot_dec_lastwk - dec_age_last) if ("dec_age_last" in locals() and pd.notna(tot_dec_lastwk) and pd.notna(dec_age_last)) else np.nan
+                _latest_narrative = _build_idsr_latest_week_narrative(
+                    df_last_week,
+                    last_lab_focus,
+                    tot_cas_lastwk,
+                    tot_dec_lastwk,
+                    cfr_tot_lastwk,
+                    d_cas_t,
+                    d_dec_t,
+                    diff_cas,
+                    diff_dec,
+                )
+                if _latest_narrative:
+                    render_reader_narrative("Lecture de la dernière semaine", _latest_narrative, tone="decision")
 
                 disease_gap_table = pd.DataFrame()
                 if (
@@ -6187,13 +6437,135 @@ with tab_idsr:
                 # Note: cette section est volontairement centrée sur la semaine max,
                 # même si l'utilisateur change semaine min.
                 st.divider()
-                with st.expander("### Qualité des dates (date vs semaine)", expanded=False):
+                with st.expander("### Alertes et classements", expanded=False):
+
+                    if (COL_PROV_ID in df9.columns) and (len(weekly_sorted) >= 2):
+                        last_t = weekly_sorted.iloc[-1]["TIME_LAB"]
+                        prev_t = weekly_sorted.iloc[-2]["TIME_LAB"]
+
+                        df_last = df9[df9["TIME_LAB"] == last_t]
+                        df_prev = df9[df9["TIME_LAB"] == prev_t]
+
+                        prov_last = df_last.groupby(COL_PROV_ID, as_index=False).agg(Cas=("Total_cas", "sum"))
+                        prov_prev = df_prev.groupby(COL_PROV_ID, as_index=False).agg(Cas_prev=("Total_cas", "sum"))
+
+                        prov_delta = prov_last.merge(prov_prev, on=COL_PROV_ID, how="outer").fillna(0)
+                        prov_delta["Delta_cas"] = prov_delta["Cas"] - prov_delta["Cas_prev"]
+                        prov_delta["Delta_%"] = np.where(
+                            prov_delta["Cas_prev"] > 0,
+                            (prov_delta["Delta_cas"] / prov_delta["Cas_prev"]) * 100,
+                            np.nan
+                        )
+
+                        min_cases = st.slider(
+                            "Seuil cas (dernière semaine) pour afficher",
+                            0, 1000, 5, step=5, key="tab9_min_cases_up"
+                        )
+                        prov_delta = prov_delta[prov_delta["Cas"] >= min_cases].sort_values("Delta_cas", ascending=False)
+
+                        with st.expander("📈 Provinces en hausse", expanded=False):
+                            n_up = st.slider("Nombre d’unités à afficher", 5, 50, 15, step=5, key="tab9_n_up_prov")
+                            st.dataframe(prov_delta.head(n_up), width="stretch", height=420, hide_index=True)
+                    else:
+                        st.info("Le classement des provinces en hausse est indisponible : variable Province absente ou historique insuffisant.")
+
+                    c3, c4 = st.columns(2)
+
+                    with c3:
+                        if COL_PROV_ID in df9.columns and "Total_cas" in df9.columns and "Total_deces" in df9.columns:
+                            top_prov = df9.groupby(COL_PROV_ID, as_index=False).agg(
+                                Cas=("Total_cas", "sum"),
+                                Deces=("Total_deces", "sum")
+                            )
+                            top_prov["CFR_%"] = np.where(top_prov["Cas"] > 0, (top_prov["Deces"] / top_prov["Cas"]) * 100, np.nan)
+                            top_prov = top_prov.sort_values("Cas", ascending=False)
+
+                            with st.expander("🏥 Provinces les plus touchées", expanded=False):
+                                n_prov = st.slider("Nombre de provinces à afficher", 10, 200, 20, step=10, key="tab9_n_top_prov")
+                                st.dataframe(top_prov.head(n_prov), width="stretch", height=420, hide_index=True)
+                        else:
+                            top_prov = None
+                            st.info("Le classement des provinces est indisponible : variables requises manquantes.")
+
+                    with c4:
+                        if (COL_PROV_ID in df9.columns) and (COL_ZS_ID in df9.columns) and ("Total_cas" in df9.columns) and ("Total_deces" in df9.columns):
+                            top_zs = df9.groupby([COL_PROV_ID, COL_ZS_ID], as_index=False).agg(
+                                Cas=("Total_cas", "sum"),
+                                Deces=("Total_deces", "sum")
+                            )
+                            top_zs["CFR_%"] = np.where(top_zs["Cas"] > 0, (top_zs["Deces"] / top_zs["Cas"]) * 100, np.nan)
+                            top_zs = top_zs.sort_values("Cas", ascending=False)
+
+                            with st.expander("🗺️ Zones de santé les plus touchées", expanded=False):
+                                n_zs = st.slider("Nombre de ZS à afficher", 10, 300, 20, step=10, key="tab9_n_top_zs")
+                                st.dataframe(top_zs.head(n_zs), width="stretch", height=420, hide_index=True)
+                        else:
+                            top_zs = None
+                            st.info("Le classement des zones de santé est indisponible : variables requises manquantes.")
+
+                st.markdown("### Qualité des données")
+                st.caption(
+                    "Cette partie aide à vérifier la cohérence temporelle, les doublons et les écarts entre totaux déclarés et tranches d’âge."
+                )
+                with st.expander("### Dates : concordance date-semaine", expanded=False):
                     if "QC_Date_vs_Semaine" in df9.columns:
-                        st.write(df9["QC_Date_vs_Semaine"].value_counts(dropna=False))
+                        qc_date_counts = df9["QC_Date_vs_Semaine"].value_counts(dropna=False)
+                        st.write(qc_date_counts)
+                        _date_narrative = _build_idsr_date_quality_narrative(qc_date_counts)
+                        if _date_narrative:
+                            render_reader_narrative("Lecture des dates", _date_narrative)
+
+                        qc_date_filter = st.radio(
+                            "Afficher les lignes",
+                            ["Tous", "✅ OK", "❌ KO", "NA"],
+                            horizontal=True,
+                            key="tab9_qc_date_filter",
+                        )
+
+                        qc_date_view = df9.copy()
+                        if qc_date_filter != "Tous":
+                            qc_date_view = qc_date_view[qc_date_view["QC_Date_vs_Semaine"] == qc_date_filter]
+
+                        qc_date_show_cols = [
+                            c for c in [
+                                "QC_Date_vs_Semaine",
+                                "TIME_LAB",
+                                "Date_debut_semaine_iso",
+                                "DEBUTSEM",
+                                "Date_debut_semaine",
+                                "Annee_epid",
+                                "Num_semaine_epid",
+                                "YW",
+                                COL_MAL,
+                                COL_PROV_ID,
+                                COL_ZS_ID,
+                                "Total_cas",
+                                "Total_deces",
+                            ]
+                            if c in qc_date_view.columns
+                        ]
+
+                        if qc_date_view.empty:
+                            st.caption("Aucune ligne ne correspond au filtre sélectionné.")
+                        else:
+                            st.caption(f"Lignes affichées : {len(qc_date_view):,}")
+                            st.dataframe(
+                                qc_date_view[qc_date_show_cols],
+                                width="stretch",
+                                height=280,
+                                hide_index=True,
+                            )
+                            st.download_button(
+                                "⬇️ Télécharger lignes QC date/semaine (CSV)",
+                                data=qc_date_view[qc_date_show_cols].to_csv(index=False).encode("utf-8"),
+                                file_name="idsr_qc_date_vs_semaine.csv",
+                                mime="text/csv",
+                                key="tab9_dl_qc_date_scope_csv",
+                            )
                     else:
                         st.info("Le contrôle qualité temporel est indisponible : dates sources absentes.")
 
-                with st.expander("### Doublons potentiels IDSR", expanded=False):
+                with st.expander("### Doublons possibles", expanded=False):
                     if len(dup_scope_key_cols) < 4:
                         st.info("Recherche de doublons indisponible : colonnes clés semaine/province/ZS/maladie insuffisantes.")
                     elif dup_scope_summary.empty:
@@ -6216,6 +6588,9 @@ with tab_idsr:
                             "Clé utilisée : Semaine + Province + Zone de santé + Maladie. "
                             "`Exact métier` = mêmes indicateurs agrégés; `Contradictoire` = mêmes clés mais valeurs différentes."
                         )
+                        _dup_narrative = _build_idsr_duplicate_narrative(dup_scope_summary)
+                        if _dup_narrative:
+                            render_reader_narrative("Lecture des doublons", _dup_narrative)
                         if exclude_exact_idsr_dups and removed_exact_rows > 0:
                             st.caption(
                                 f"Les analyses affichées plus haut excluent déjà {removed_exact_rows:,} ligne(s) exact(e)s. "
@@ -6436,82 +6811,10 @@ with tab_idsr:
                                 key="tab9_dl_dup_pack_xlsx",
                             )
 
-                # -----------------------------------------------------------------
-                # 10) Signaux – Top en hausse (dernière semaine vs précédente)
-                # -----------------------------------------------------------------
-                with st.expander("### Signaux – Top en hausse (dernière semaine vs semaine précédente)", expanded=False):
-
-                    if (COL_PROV_ID in df9.columns) and (len(weekly_sorted) >= 2):
-                        last_t = weekly_sorted.iloc[-1]["TIME_LAB"]
-                        prev_t = weekly_sorted.iloc[-2]["TIME_LAB"]
-
-                        df_last = df9[df9["TIME_LAB"] == last_t]
-                        df_prev = df9[df9["TIME_LAB"] == prev_t]
-
-                        prov_last = df_last.groupby(COL_PROV_ID, as_index=False).agg(Cas=("Total_cas", "sum"))
-                        prov_prev = df_prev.groupby(COL_PROV_ID, as_index=False).agg(Cas_prev=("Total_cas", "sum"))
-
-                        prov_delta = prov_last.merge(prov_prev, on=COL_PROV_ID, how="outer").fillna(0)
-                        prov_delta["Delta_cas"] = prov_delta["Cas"] - prov_delta["Cas_prev"]
-                        prov_delta["Delta_%"] = np.where(
-                            prov_delta["Cas_prev"] > 0,
-                            (prov_delta["Delta_cas"] / prov_delta["Cas_prev"]) * 100,
-                            np.nan
-                        )
-
-                        min_cases = st.slider(
-                            "Seuil cas (dernière semaine) pour afficher",
-                            0, 1000, 5, step=5, key="tab9_min_cases_up"
-                        )
-                        prov_delta = prov_delta[prov_delta["Cas"] >= min_cases].sort_values("Delta_cas", ascending=False)
-
-                        with st.expander("📈 Top provinces en hausse (dérouler)", expanded=False):
-                            n_up = st.slider("Nombre d’unités à afficher", 5, 50, 15, step=5, key="tab9_n_up_prov")
-                            st.dataframe(prov_delta.head(n_up), width="stretch", height=420, hide_index=True)
-                    else:
-                        st.info("Le classement des provinces en hausse est indisponible : variable Province absente ou historique insuffisant.")
-
-                    # -----------------------------------------------------------------
-                    # 11) Top provinces / ZS sur la période
-                    # -----------------------------------------------------------------
-                    c3, c4 = st.columns(2)
-
-                    with c3:
-                        if COL_PROV_ID in df9.columns and "Total_cas" in df9.columns and "Total_deces" in df9.columns:
-                            top_prov = df9.groupby(COL_PROV_ID, as_index=False).agg(
-                                Cas=("Total_cas", "sum"),
-                                Deces=("Total_deces", "sum")
-                            )
-                            top_prov["CFR_%"] = np.where(top_prov["Cas"] > 0, (top_prov["Deces"] / top_prov["Cas"]) * 100, np.nan)
-                            top_prov = top_prov.sort_values("Cas", ascending=False)
-
-                            with st.expander("🏥 Top provinces (dérouler)", expanded=False):
-                                n_prov = st.slider("Nombre de provinces à afficher", 10, 200, 20, step=10, key="tab9_n_top_prov")
-                                st.dataframe(top_prov.head(n_prov), width="stretch", height=420, hide_index=True)
-                        else:
-                            top_prov = None
-                            st.info("Le classement des provinces est indisponible : variables requises manquantes.")
-
-                    with c4:
-                        if (COL_PROV_ID in df9.columns) and (COL_ZS_ID in df9.columns) and ("Total_cas" in df9.columns) and ("Total_deces" in df9.columns):
-                            top_zs = df9.groupby([COL_PROV_ID, COL_ZS_ID], as_index=False).agg(
-                                Cas=("Total_cas", "sum"),
-                                Deces=("Total_deces", "sum")
-                            )
-                            top_zs["CFR_%"] = np.where(top_zs["Cas"] > 0, (top_zs["Deces"] / top_zs["Cas"]) * 100, np.nan)
-                            top_zs = top_zs.sort_values("Cas", ascending=False)
-
-                            with st.expander("🗺️ Top zones de santé (dérouler)", expanded=False):
-                                n_zs = st.slider("Nombre de ZS à afficher", 10, 300, 20, step=10, key="tab9_n_top_zs")
-                                st.dataframe(top_zs.head(n_zs), width="stretch", height=420, hide_index=True)
-                        else:
-                            top_zs = None
-                            st.info("Le classement des zones de santé est indisponible : variables requises manquantes.")
-
             # -----------------------------------------------------------------
             # 12) Contrôles cohérence totaux vs tranches d’âge
             # -----------------------------------------------------------------
-            with st.expander("### Contrôle cohérence des totaux (tranches d’âge vs Total)", expanded=False):
+            with st.expander("### Cohérence des totaux et des âges", expanded=False):
                 show_qc_tables = st.checkbox(
                     "Afficher les tableaux détaillés QC (peut être lourd)",
                     value=False,
@@ -6547,6 +6850,9 @@ with tab_idsr:
                     qc_view["QC_Global"] = np.where(qc_view["diff_deces"].fillna(0) == 0, "✅ OK", "❌ KO")
                 else:
                     qc_view["QC_Global"] = "NA"
+                _coherence_narrative = _build_idsr_coherence_narrative(qc_view)
+                if _coherence_narrative:
+                    render_reader_narrative("Lecture de la cohérence des totaux", _coherence_narrative)
 
                 # Colonnes QC à afficher
                 cols_show = [c for c in [
@@ -6591,7 +6897,7 @@ with tab_idsr:
                     return styles
 
                 # Filtres QC
-                st.markdown("#### Filtres de contrôle qualité")
+                st.markdown("#### Filtres")
                 f1, f2, f3, f4 = st.columns(4)
 
                 with f1:
@@ -6656,7 +6962,7 @@ with tab_idsr:
                 final_cols = qc_cols + cols_show
 
                 if show_qc_tables:
-                    with st.expander("🧾 Tableau QC (OK/KO) – cas & décès (dérouler)", expanded=False):
+                    with st.expander("🧾 Voir le détail des lignes OK/KO", expanded=False):
                         st.dataframe(
                         table_to_show[final_cols].style.apply(style_qc, axis=1),
                         width="stretch",
@@ -6664,11 +6970,20 @@ with tab_idsr:
                         hide_index=True
                     )
                 
+            st.markdown("### Analyses détaillées")
+            st.caption(
+                "Les rubriques suivantes approfondissent la lecture par âge, maladie et territoire. "
+                "Elles complètent la vue d’ensemble sans la remplacer."
+            )
+            _profile_narrative = _build_idsr_profile_narrative(df9)
+            if _profile_narrative:
+                render_reader_narrative("Lecture du profil épidémiologique", _profile_narrative)
+
             # ---------------------------------------------------------------------
             # 14) IDSR – Spécifications des sorties
             # ---------------------------------------------------------------------
             # 14.1) Histogramme des cas + courbe de létalité (CFR%)
-            with st.expander("📈 Histogramme des cas avec courbe de létalité (par semaine)", expanded=True):
+            with st.expander("📈 Évolution hebdomadaire des cas, décès et létalité", expanded=True):
                 if 'weekly_sorted' in locals() and isinstance(weekly_sorted, pd.DataFrame) and not weekly_sorted.empty:
                     _wk = weekly_sorted.copy()
                     # Libellé unique Année-Semaine (évite doublons W01/W02 quand plusieurs années)
@@ -6725,7 +7040,7 @@ with tab_idsr:
                     st.info("Aucune donnée hebdomadaire agrégée n’est disponible après filtrage.")
 
             # 14.2) Camembert par tranche d'âge + tableau associé
-            with st.expander("📈 Camembert – répartition des cas par tranche d’âge", expanded=True):
+            with st.expander("👶 Répartition des cas par âge", expanded=True):
                 if not df9.empty:
                     # Colonnes attendues (agrégé IDSR) : Cas_* et Deces_* par tranche
                     age_cases_map = {
@@ -6793,16 +7108,16 @@ with tab_idsr:
 
 
             # 14.2.b) Analyses descriptives IDSR inspirées des listes linéaires
-            with st.expander("👥 Profil descriptif IDSR", expanded=False):
+            with st.expander("👥 Détail par maladie, âge et semaine", expanded=False):
                 st.caption(
-                    "Ces analyses reprennent la logique descriptive des listes linéaires, mais en l’adaptant au format agrégé IDSR. "
-                    "Elles portent surtout sur la maladie, l’âge, le lieu et la distribution hebdomadaire."
+                    "Ces analyses détaillent la distribution par maladie, âge et semaine. "
+                    "Les approfondissements géographiques ont été recentrés dans la cartographie et les classements pour alléger la lecture."
                 )
 
                 # -------------------------------------------------------------
                 # A) Profil par maladie
                 # -------------------------------------------------------------
-                st.markdown("#### A. Répartition des cas par maladie")
+                st.markdown("#### A. Maladies les plus fréquentes")
                 if (COL_MAL in df9.columns) and ("Total_cas" in df9.columns):
                     df_mal_profile = (
                         df9.groupby(COL_MAL, as_index=False)
@@ -6844,7 +7159,7 @@ with tab_idsr:
                 # -------------------------------------------------------------
                 # B) Structure d'âge par maladie (équivalent profil population)
                 # -------------------------------------------------------------
-                st.markdown("#### B. Structure des cas par tranche d’âge selon la maladie")
+                st.markdown("#### B. Âge des cas selon la maladie")
                 age_case_cols = [c for c in ["Cas_tnn", "Cas_0_11mois", "Cas_12_59mois", "Cas_5_14ans", "Cas_15plus"] if c in df9.columns]
                 age_label_map = {
                     "Cas_tnn": "<1 mois",
@@ -6904,222 +7219,12 @@ with tab_idsr:
 
                 st.divider()
 
-                # -------------------------------------------------------------
-                # C) Pyramide d’âge IDSR (cas vs décès)
-                # -------------------------------------------------------------
-                st.markdown("#### C. Pyramide d’âge IDSR")
-                st.caption(
-                    "Dans l’IDSR agrégé, la pyramide classique par sexe n’est généralement pas disponible. "
-                    "La représentation ci-dessous compare donc les cas (à gauche) et les décès (à droite) "
-                    "par tranche d’âge, à partir des colonnes agrégées du fichier IDSR."
-                )
-
-                age_pairs_pyr = [
-                    ("Cas_tnn", "Deces_tnn", "<1 mois"),
-                    ("Cas_0_11mois", "Deces_0_11mois", "0–11 mois"),
-                    ("Cas_12_59mois", "Deces_12_59mois", "12–59 mois"),
-                    ("Cas_5_14ans", "Deces_5_14ans", "5–14 ans"),
-                    ("Cas_15plus", "Deces_15plus", "≥15 ans"),
-                ]
-
-                available_pairs_pyr = [
-                    (c_col, d_col, label)
-                    for c_col, d_col, label in age_pairs_pyr
-                    if (c_col in df9.columns) or (d_col in df9.columns)
-                ]
-
-                if available_pairs_pyr:
-                    rows_pyr = []
-                    for c_col, d_col, label in available_pairs_pyr:
-                        case_val = pd.to_numeric(df9[c_col], errors="coerce").fillna(0).sum() if c_col in df9.columns else 0
-                        death_val = pd.to_numeric(df9[d_col], errors="coerce").fillna(0).sum() if d_col in df9.columns else 0
-                        rows_pyr.append({
-                            "Tranche_age": label,
-                            "Cas": float(case_val),
-                            "Décès": float(death_val),
-                        })
-
-                    ordre_age_pyr = ["<1 mois", "0–11 mois", "12–59 mois", "5–14 ans", "≥15 ans"]
-                    pyr_display = pd.DataFrame(rows_pyr)
-
-                    if not pyr_display.empty:
-                        pyr_display["Tranche_age"] = pd.Categorical(
-                            pyr_display["Tranche_age"],
-                            categories=ordre_age_pyr,
-                            ordered=True,
-                        )
-                        pyr_display = (
-                            pyr_display.sort_values("Tranche_age")
-                            .drop_duplicates(subset=["Tranche_age"], keep="first")
-                            .reset_index(drop=True)
-                        )
-
-                    if (not pyr_display.empty) and (pyr_display[["Cas", "Décès"]].sum(axis=1) > 0).any():
-                        total_cases_age = float(pyr_display["Cas"].sum())
-                        total_deaths_age = float(pyr_display["Décès"].sum())
-                        total_cases_global = float(pd.to_numeric(df9.get("Total_cas"), errors="coerce").fillna(0).sum()) if "Total_cas" in df9.columns else np.nan
-                        total_deaths_global = float(pd.to_numeric(df9.get("Total_deces"), errors="coerce").fillna(0).sum()) if "Total_deces" in df9.columns else np.nan
-
-                        plot_df = pyr_display.copy()
-                        plot_df["Cas_plot"] = -plot_df["Cas"]
-                        plot_df["Décès_plot"] = plot_df["Décès"]
-
-                        fig_pyr_idsr = go.Figure()
-                        fig_pyr_idsr.add_trace(go.Bar(
-                            y=plot_df["Tranche_age"],
-                            x=plot_df["Cas_plot"],
-                            name="Cas",
-                            orientation="h",
-                            marker=dict(color="#E70B0B"),
-                            text=plot_df["Cas"].map(lambda v: f"{int(v):,}".replace(",", " ")),
-                            textposition="inside",
-                            insidetextanchor="middle",
-                            cliponaxis=False,
-                            hovertemplate="Tranche d'âge: %{y}<br>Cas: %{text}<extra></extra>",
-                        ))
-                        fig_pyr_idsr.add_trace(go.Bar(
-                            y=plot_df["Tranche_age"],
-                            x=plot_df["Décès_plot"],
-                            name="Décès",
-                            orientation="h",
-                            marker=dict(color="#4682B4"),
-                            text=plot_df["Décès"].map(lambda v: f"{int(v):,}".replace(",", " ")),
-                            textposition="inside",
-                            insidetextanchor="middle",
-                            cliponaxis=False,
-                            hovertemplate="Tranche d'âge: %{y}<br>Décès: %{text}<extra></extra>",
-                        ))
-
-                        max_cases = float(plot_df["Cas"].max()) if not plot_df["Cas"].empty else 0.0
-                        max_deaths = float(plot_df["Décès"].max()) if not plot_df["Décès"].empty else 0.0
-                        x_abs_max = max(max_cases, max_deaths)
-                        if x_abs_max <= 0:
-                            x_abs_max = 1.0
-
-                        fig_pyr_idsr.update_layout(
-                            barmode="relative",
-                            template="plotly_white",
-                            title="Pyramide d’âge IDSR (Cas vs Décès)",
-                            width=1100,
-                            height=480,
-                            margin=dict(t=70, b=50, l=80, r=40),
-                            legend=dict(orientation="h", y=1.08, x=0),
-                            xaxis=dict(
-                                title="Nombre",
-                                range=[-x_abs_max * 1.15, x_abs_max * 1.15],
-                                tickformat=",",
-                                tickvals=[-x_abs_max, -x_abs_max / 2, 0, x_abs_max / 2, x_abs_max],
-                                ticktext=[
-                                    f"{int(x_abs_max):,}".replace(",", " "),
-                                    f"{int(x_abs_max / 2):,}".replace(",", " "),
-                                    "0",
-                                    f"{int(x_abs_max / 2):,}".replace(",", " "),
-                                    f"{int(x_abs_max):,}".replace(",", " "),
-                                ],
-                                zeroline=True,
-                                zerolinewidth=2,
-                                zerolinecolor="LightGrey",
-                            ),
-                            yaxis=dict(
-                                title="Tranche d’âge",
-                                categoryorder="array",
-                                categoryarray=ordre_age_pyr[::-1],
-                            ),
-                        )
-
-                        c_p1, c_p2 = st.columns([1.15, 1])
-                        with c_p1:
-                            st.plotly_chart(fig_pyr_idsr, width="stretch", key="idsr_age_pyramid")
-
-                        with c_p2:
-                            pyr_display["Part_cas_%"] = np.where(
-                                total_cases_age > 0,
-                                (pyr_display["Cas"] / total_cases_age) * 100.0,
-                                np.nan,
-                            )
-                            pyr_display["Part_décès_%"] = np.where(
-                                total_deaths_age > 0,
-                                (pyr_display["Décès"] / total_deaths_age) * 100.0,
-                                np.nan,
-                            )
-                            st.dataframe(
-                                pyr_display.assign(**{
-                                    "Cas": pyr_display["Cas"].astype(int),
-                                    "Décès": pyr_display["Décès"].astype(int),
-                                    "Part_cas_%": pyr_display["Part_cas_%"].round(1),
-                                    "Part_décès_%": pyr_display["Part_décès_%"].round(1),
-                                }),
-                                width="stretch",
-                                height=380,
-                            )
-
-                            if np.isfinite(total_cases_global) and int(total_cases_age) != int(total_cases_global):
-                                st.warning(
-                                    f"Somme des cas par âge = {int(total_cases_age):,}".replace(",", " ")
-                                    + f", alors que Total_cas = {int(total_cases_global):,}".replace(",", " ")
-                                    + ". Cela indique un écart dans les données agrégées source."
-                                )
-                            if np.isfinite(total_deaths_global) and int(total_deaths_age) != int(total_deaths_global):
-                                st.warning(
-                                    f"Somme des décès par âge = {int(total_deaths_age):,}".replace(",", " ")
-                                    + f", alors que Total_deces = {int(total_deaths_global):,}".replace(",", " ")
-                                    + ". Cela indique un écart dans les données agrégées source."
-                                )
-                    else:
-                        st.info("Les colonnes d’âge existent mais ne contiennent pas de volume exploitable après filtrage.")
-                else:
-                    st.info("La pyramide d’âge IDSR est indisponible : colonnes Cas_* / Deces_* absentes.")
                 st.divider()
 
                 # -------------------------------------------------------------
-                # C) Répartition spatiale par maladie (équivalent personne/lieu)
+                # C) Profil hebdomadaire par maladie (équivalent dynamique par groupe)
                 # -------------------------------------------------------------
-                st.markdown("#### C. Répartition géographique des cas par maladie")
-                if (COL_MAL in df9.columns) and (COL_PROV_ID in df9.columns) and ("Total_cas" in df9.columns):
-                    geo_mal = (
-                        df9.groupby([COL_MAL, COL_PROV_ID], as_index=False)
-                        .agg(Cas=("Total_cas", "sum"), Deces=("Total_deces", "sum") if "Total_deces" in df9.columns else ("Total_cas", "size"))
-                    )
-                    if "Total_deces" not in df9.columns:
-                        geo_mal["Deces"] = 0
-                    geo_mal["CFR_%"] = np.where(geo_mal["Cas"] > 0, (geo_mal["Deces"] / geo_mal["Cas"]) * 100.0, np.nan)
-
-                    maladies_geo = geo_mal[COL_MAL].dropna().astype(str).unique().tolist()
-                    mal_geo_focus = st.selectbox(
-                        "Maladie à profiler géographiquement",
-                        options=maladies_geo,
-                        key="idsr_geo_focus_mal",
-                    )
-                    geo_focus = geo_mal[geo_mal[COL_MAL] == mal_geo_focus].sort_values("Cas", ascending=False)
-
-                    c_g1, c_g2 = st.columns([1.25, 1])
-                    with c_g1:
-                        fig_geo_focus = px.bar(
-                            geo_focus.head(15),
-                            x=COL_PROV_ID,
-                            y="Cas",
-                            title=f"Top provinces – {mal_geo_focus}",
-                            text="Cas",
-                        )
-                        fig_geo_focus.update_layout(template="plotly_white", xaxis_tickangle=-40, height=430)
-                        fig_geo_focus = apply_plotly_value_annotations(fig_geo_focus, annot_vals)
-                        st.plotly_chart(fig_geo_focus, width="stretch", key="idsr_geo_focus_bar")
-                    with c_g2:
-                        st.dataframe(
-                            geo_focus.assign(**{"CFR_%": geo_focus["CFR_%"].round(2)}),
-                            width="stretch",
-                            height=430,
-                            hide_index=True,
-                        )
-                else:
-                    st.info("La répartition géographique par maladie est indisponible : colonnes Province/Maladie/Total_cas absentes.")
-
-                st.divider()
-
-                # -------------------------------------------------------------
-                # D) Profil hebdomadaire par maladie (équivalent dynamique par groupe)
-                # -------------------------------------------------------------
-                st.markdown("#### D. Dynamique hebdomadaire par maladie")
+                st.markdown("#### C. Évolution hebdomadaire par maladie")
                 if (COL_MAL in df9.columns) and ("Total_cas" in df9.columns) and ("TIME_LAB" in df9.columns) and ("TIME_KEY" in df9.columns):
                     wk_mal = (
                         df9.groupby(["TIME_LAB", "TIME_KEY", COL_MAL], as_index=False)
@@ -7138,7 +7243,7 @@ with tab_idsr:
                         fig_wk_mal.update_layout(template="plotly_white", xaxis_tickangle=-45, height=460)
                         st.plotly_chart(fig_wk_mal, width="stretch", key="idsr_weekly_by_disease")
 
-                        with st.expander("Tableau hebdomadaire par maladie", expanded=False):
+                        with st.expander("Voir le tableau par maladie", expanded=False):
                             wk_mal_wide = wk_mal.pivot_table(
                                 index="TIME_LAB",
                                 columns=COL_MAL,
@@ -7153,8 +7258,13 @@ with tab_idsr:
                 else:
                     st.info("La dynamique hebdomadaire par maladie est indisponible : colonnes TIME_LAB/TIME_KEY/Maladie/Total_cas absentes.")
 
+            st.markdown("### Tableaux")
+            st.caption(
+                "Utilisez ces tableaux pour la lecture détaillée, les vérifications territoriales et les exports analytiques."
+            )
+
             # 14.3) Tableau d’évolution par province et semaine épidémiologique
-            with st.expander("Tableau croisé – évolution par province et semaine", expanded=False):
+            with st.expander("📋 Tableau par province et semaine", expanded=False):
 
                 # Objectif : Provinces en lignes, Année-Semaine en colonnes, sous-colonnes Cas/Décès/Létalité (%)
                 if (not df9.empty) and (COL_PROV_ID in df9.columns):
@@ -7213,7 +7323,7 @@ with tab_idsr:
                     st.info("Aucune donnée n’est disponible après filtrage pour produire le tableau province × semaine.")
 
             # 14.4) Tableau croisé – totaux mensuels (Province / ZS)
-            with st.expander("Tableau croisé – totaux mensuels (Province / ZS)", expanded=False):
+            with st.expander("📋 Tableau mensuel par province et zone de santé", expanded=False):
 
                 if df9.empty:
                     st.info("Aucune donnée n’est disponible après application des filtres analytiques.")
