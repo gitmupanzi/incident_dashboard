@@ -992,25 +992,25 @@ st.caption("Sélectionnez un onglet détaillé ci-dessous. Le contenu s'affiche 
 
 (
     tab_overview_detail,
-    tab_methodology,
     tab_surveillance,
     tab_profil,
     tab_qualite,
-    tab_maps,
     tab_sitrep,
-    tab_idsr,
     tab_irep,
+    tab_maps,
+    tab_methodology,
+    tab_idsr,
 ) = st.tabs(
     [
         "Vue d’ensemble",
+        "Surveillance",
+        "Profil",
+        "Qualité et export",
+        "SITREP",
+        "IREP",
+        "Cartographie",
         "Méthodologie",
-        "\U0001F4C8 Surveillance",
-        "\U0001F465 Profil",
-        "\U0001F5C2\ufe0f Qualité & export",
-        "\U0001F5FA\ufe0f Cartographie",
-        "\U0001F4DD SITREP",
-        "\U0001F4DA IDSR",
-        "\U0001F4CC IREP",
+        "IDSR",
     ]
 )
 
@@ -1032,9 +1032,6 @@ with tab_qualite:
 with tab_sitrep:
     render_sitrep_tab(build_runtime_context(**globals()))
 
-with tab_idsr:
-    render_idsr_tab(build_runtime_context(**globals()))
-
 with tab_irep:
     render_irep_tab(build_runtime_context(**globals()))
 
@@ -1043,5 +1040,8 @@ with tab_maps:
 
 with tab_methodology:
     render_methodology_tab(build_runtime_context(**globals()))
+
+with tab_idsr:
+    render_idsr_tab(build_runtime_context(**globals()))
 
 render_footer()

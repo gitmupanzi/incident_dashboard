@@ -44,7 +44,7 @@ def _build_idsr_period_labels(df_scope: pd.DataFrame) -> tuple[str, str]:
 def render_idsr_tab(ctx: dict) -> None:
     """Render the weekly IDSR analytics tab."""
     globals().update(ctx)
-    st.markdown("## IDSR — Surveillance agrégée hebdomadaire")
+    render_section_title(16, "IDSR — Surveillance agrégée hebdomadaire")
     render_tab_narrative("idsr")
 
     tab_help(

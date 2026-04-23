@@ -8,7 +8,7 @@ inject_runtime_support(globals())
 def render_irep_tab(ctx: dict) -> None:
     """Render the provincial IREP tab."""
     globals().update(ctx)
-    st.subheader("Indice provincial composite de risque épidémique (IREP)")
+    render_section_title(13, "Indice provincial composite de risque épidémique (IREP)")
     render_tab_narrative("irep")
     tab_help(
         "Lecture et interprétation",

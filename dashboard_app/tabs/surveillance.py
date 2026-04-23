@@ -27,7 +27,7 @@ def render_surveillance_tab(ctx: dict) -> None:
             expanded=False
         )
 
-        render_section_title(2, "Surveillance épidémiologique")
+        render_section_title(1, "Surveillance épidémiologique")
         render_tab_narrative("surveillance")
         st.caption(
             "Cette organisation permet une lecture progressive de la situation à partir de la plage de semaines active dans la barre latérale."
@@ -321,7 +321,7 @@ def render_surveillance_tab(ctx: dict) -> None:
     # Section suivante : promptitude. Les indicateurs de performance et de létalité déjà présentés plus haut ne sont pas répétés ici afin d’éviter les redondances.
 
     st.divider()
-    render_section_title(3, "Promptitude de notification, investigation et prise en charge")
+    render_section_title(2, "Promptitude de notification, investigation et prise en charge")
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")
     else:

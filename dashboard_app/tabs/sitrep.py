@@ -11,7 +11,7 @@ def render_sitrep_tab(ctx: dict) -> None:
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")
     else:
-        render_section_title(9, "Synthèse automatique de la situation épidémiologique (SITREP)")
+        render_section_title(7, "Synthèse automatique de la situation épidémiologique (SITREP)")
         render_tab_narrative("sitrep")
 
         tab_help(
@@ -468,7 +468,7 @@ def render_sitrep_tab(ctx: dict) -> None:
         k = sitrep_payload["kpi"]
 
         st.divider()
-        render_section_title(10, "Lecture rapide et message clé")
+        render_section_title(8, "Lecture rapide et message clé")
         st.caption(
             "Cette lecture reprend la semaine ciblée, sa comparaison avec la semaine précédente disponible et le cumul annuel, sans reprendre les analyses détaillées d’un autre onglet."
         )
@@ -524,7 +524,7 @@ def render_sitrep_tab(ctx: dict) -> None:
             st.markdown("\n".join([f"- {line}" for line in decision_focus]))
 
         st.divider()
-        render_section_title(11, "Foyers géographiques et dynamique")
+        render_section_title(9, "Foyers géographiques et dynamique")
         st.caption(
             "Le SITREP montre ici les foyers principaux et la dynamique utile à la décision. Les tableaux exhaustifs restent repliés pour éviter de surcharger la lecture."
         )
@@ -573,7 +573,7 @@ def render_sitrep_tab(ctx: dict) -> None:
                 )
 
         st.divider()
-        render_section_title(12, "Signaux utiles à la décision")
+        render_section_title(10, "Signaux utiles à la décision")
         st.caption(
             "Cette section ne reprend que les signaux directement utiles à l’action immédiate. Les analyses détaillées restent accessibles dans leurs onglets spécialisés."
         )
@@ -648,7 +648,7 @@ def render_sitrep_tab(ctx: dict) -> None:
                 st.caption("Aucune ZS ne dépasse le seuil critique défini.")
 
         st.divider()
-        render_section_title(13, "Articulation avec les autres onglets")
+        render_section_title(11, "Articulation avec les autres onglets")
         st.caption("Chaque onglet garde une fonction distincte pour éviter les doublons dans le tableau de bord.")
         st.markdown(
             "\n".join(
@@ -665,7 +665,7 @@ def render_sitrep_tab(ctx: dict) -> None:
         # 5) Exportation PDF
         # =========================================================
         st.divider()
-        render_section_title(14, "Exportation")
+        render_section_title(12, "Exportation")
 
         if "export_sitrep_pdf" in globals() and callable(export_sitrep_pdf):
             cexp1, cexp2 = st.columns([1, 1])
