@@ -119,6 +119,158 @@ def normalize_idsr_debutsem_column(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def normalize_idsr_column_names(df: pd.DataFrame) -> pd.DataFrame:
+    """Nettoie les en-têtes IDSR sans changer leur logique métier.
+
+    Utile lorsque Excel ajoute des espaces invisibles, retours à la ligne ou BOM :
+    ' DEBUTSEM ', 'DEBUTSEM\n' deviennent 'DEBUTSEM'.
+    """
+    df = df.copy()
+    cleaned_cols = []
+    for col in df.columns:
+        col_txt = str(col).replace("\ufeff", "").replace("\xa0", " ")
+        col_txt = re.sub(r"\s+", " ", col_txt).strip()
+        cleaned_cols.append(col_txt)
+    df.columns = cleaned_cols
+    return df
+
+
+def idsr_year_from_debutsem(values: pd.Series, mode: str = "iso") -> pd.Series:
+    """Retourne l'année exploitable depuis DEBUTSEM.
+
+    mode='iso' : année épidémiologique ISO. Exemple : lundi 29/12/2025 = 2026-W01.
+    mode='calendar' : année civile de la date.
+    """
+    src = pd.Series(values)
+    dt = parse_idsr_date_series(src)
+    if not dt.notna().any():
+        return pd.Series(pd.NA, index=src.index, dtype="Int64")
+
+    if mode == "calendar":
+        return pd.to_numeric(dt.dt.year, errors="coerce").astype("Int64")
+
+    return pd.to_numeric(dt.dt.isocalendar()["year"], errors="coerce").astype("Int64")
+
+
+def _extract_idsr_year_from_text(value: object) -> Optional[int]:
+    """Extrait une année probable depuis un nom de fichier ou un texte."""
+    if value is None or pd.isna(value):
+        return None
+
+    text = str(value)
+    years = []
+    for match in re.findall(r"(?<!\d)(19\d{2}|20\d{2}|21\d{2})(?!\d)", text):
+        try:
+            y = int(match)
+            if 1990 <= y <= 2100:
+                years.append(y)
+        except Exception:
+            continue
+
+    if years:
+        return years[-1]
+
+    return None
+
+
+def _idsr_iso_monday_from_year_week_safe(year: object, week: object) -> object:
+    """Retourne le lundi ISO d'une année/semaine, sans dépendre d'autres helpers du dashboard."""
+    try:
+        if pd.isna(year) or pd.isna(week):
+            return pd.NaT
+        y = int(float(year))
+        w = int(float(week))
+        if y < 1990 or y > 2100 or w < 1 or w > 53:
+            return pd.NaT
+        return pd.Timestamp.fromisocalendar(y, w, 1).normalize()
+    except Exception:
+        return pd.NaT
+
+
+def _rebuild_idsr_debutsem_from_year_week(df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
+    """
+    Reconstruit DEBUTSEM / Date_debut_semaine depuis Annee_epid + Num_semaine_epid.
+    Utile quand DEBUTSEM existe dans Excel mais n'est pas lisible par pandas/openpyxl
+    parce que la cellule contient une formule non recalculée.
+    """
+    if ("Annee_epid" not in df.columns) or ("Num_semaine_epid" not in df.columns):
+        return df, False
+
+    years = pd.to_numeric(df["Annee_epid"], errors="coerce")
+    weeks = pd.to_numeric(df["Num_semaine_epid"], errors="coerce")
+
+    if years.notna().sum() == 0 or weeks.notna().sum() == 0:
+        return df, False
+
+    rebuilt = pd.Series(
+        [_idsr_iso_monday_from_year_week_safe(y, w) for y, w in zip(years.tolist(), weeks.tolist())],
+        index=df.index,
+        dtype="datetime64[ns]",
+    )
+
+    if not rebuilt.notna().any():
+        return df, False
+
+    df = df.copy()
+
+    if "DEBUTSEM" in df.columns:
+        current = parse_idsr_date_series(df["DEBUTSEM"])
+        df["DEBUTSEM"] = current.combine_first(rebuilt)
+    else:
+        df["DEBUTSEM"] = rebuilt
+
+    if "Date_debut_semaine" in df.columns:
+        current_dt = parse_idsr_date_series(df["Date_debut_semaine"])
+        df["Date_debut_semaine"] = current_dt.combine_first(rebuilt)
+    else:
+        df["Date_debut_semaine"] = rebuilt
+
+    return df, True
+
+
+def _fill_idsr_year_when_debutsem_not_readable(
+    df: pd.DataFrame,
+    src: object = None,
+    *,
+    allow_current_year_fallback: bool = True,
+) -> tuple[pd.DataFrame, Optional[int], bool]:
+    """
+    Remplit Annee_epid si DEBUTSEM n'est pas exploitable mais que le fichier contient NUMSEM.
+    Priorité : année lisible dans DEBUTSEM -> année dans le nom du fichier -> année courante.
+    """
+    if "Annee_epid" not in df.columns:
+        df = df.copy()
+        df["Annee_epid"] = pd.NA
+
+    if not df["Annee_epid"].isna().all():
+        return df, None, False
+
+    if "Num_semaine_epid" not in df.columns:
+        return df, None, False
+
+    guessed_year = None
+
+    if "DEBUTSEM" in df.columns:
+        dt_from_debutsem = parse_idsr_date_series(df["DEBUTSEM"])
+        years_from_debutsem = dt_from_debutsem.dt.year.dropna().astype(int).unique().tolist()
+        if years_from_debutsem:
+            guessed_year = int(sorted(years_from_debutsem)[-1])
+
+    if guessed_year is None:
+        guessed_year = _extract_idsr_year_from_text(src)
+
+    used_current_year = False
+    if guessed_year is None and allow_current_year_fallback:
+        guessed_year = int(pd.Timestamp.today().year)
+        used_current_year = True
+
+    if guessed_year is not None:
+        df = df.copy()
+        df["Annee_epid"] = pd.Series([int(guessed_year)] * len(df), index=df.index, dtype="Int64")
+
+    return df, guessed_year, used_current_year
+
+
 def _build_idsr_period_labels(df_scope: pd.DataFrame) -> tuple[str, str]:
     """Construit des libellés de période cohérents pour le résumé IDSR."""
     period_label = compute_analysis_period_value(df_scope)
@@ -190,7 +342,7 @@ def render_idsr_tab(ctx: dict) -> None:
             df_idsr = load_excel_cached(up, sheet_name="IDS_RDC")
         except Exception:
             df_idsr = load_excel_cached(up)
-        src = "upload"
+        src = getattr(up, "name", "upload") or "upload"
     else:
         try:
             df_idsr = load_excel_cached(default_path, sheet_name="IDS_RDC")
@@ -217,6 +369,7 @@ def render_idsr_tab(ctx: dict) -> None:
         # 2) Harmonisation colonnes (BRUT vs COMPILÉ)
         # ---------------------------------------------------------------------
         df_idsr = df_idsr.copy()
+        df_idsr = normalize_idsr_column_names(df_idsr)
 
         rename_map = {
             # Identifiants
@@ -278,6 +431,10 @@ def render_idsr_tab(ctx: dict) -> None:
 
         df_idsr = df_idsr.rename(columns={k: v for k, v in rename_map.items() if k in df_idsr.columns})
         df_idsr = normalize_idsr_debutsem_column(df_idsr)
+
+        _idsr_year_guess_used = None
+        _idsr_year_current_fallback = False
+        _idsr_debutsem_rebuilt = False
         # ---------------------------------------------------------
         # ✅ Détecteur automatique BRUT vs COMPILÉ
         # ---------------------------------------------------------
@@ -298,7 +455,10 @@ def render_idsr_tab(ctx: dict) -> None:
                 "colonnes_temps": [
                     c for c in ["DEBUTSEM", "Date_debut_semaine", "Annee_epid", "Num_semaine_epid", "Semaine_epid", "YW"]
                     if c in df_idsr.columns
-                ]
+                ],
+                "debutsem_reconstruit": bool(_idsr_debutsem_rebuilt),
+                "annee_utilisee_si_debutsem_non_lisible": _idsr_year_guess_used,
+                "annee_courante_utilisee_par_defaut": bool(_idsr_year_current_fallback),
             })
 
 
@@ -339,11 +499,23 @@ def render_idsr_tab(ctx: dict) -> None:
             wk = df_idsr["Semaine_epid"].astype("string").str.extract(r"(\d{1,2})\s*$", expand=False)
             df_idsr["Num_semaine_epid"] = clean_week(wk)
 
-        # dernier recours: année depuis nom du fichier
+        # dernier recours: année depuis le nom du fichier puis, si nécessaire, reconstruction opérationnelle
         if df_idsr["Annee_epid"].isna().all():
             y_guess = parse_year_from_filename(src)
             if y_guess is not None:
-                df_idsr["Annee_epid"] = pd.Series([y_guess] * len(df_idsr), dtype="Int64")
+                df_idsr["Annee_epid"] = pd.Series([y_guess] * len(df_idsr), index=df_idsr.index, dtype="Int64")
+                _idsr_year_guess_used = int(y_guess)
+
+        # Si DEBUTSEM existe mais n'est pas lisible (formule Excel non recalculée, texte inattendu, etc.),
+        # on évite de perdre le filtre Année : on tente de remplir Annee_epid puis de reconstruire DEBUTSEM.
+        if df_idsr["Annee_epid"].isna().all() and ("DEBUTSEM" in df_idsr.columns):
+            df_idsr, _idsr_year_guess_used, _idsr_year_current_fallback = _fill_idsr_year_when_debutsem_not_readable(
+                df_idsr,
+                src=src,
+                allow_current_year_fallback=True,
+            )
+
+        df_idsr, _idsr_debutsem_rebuilt = _rebuild_idsr_debutsem_from_year_week(df_idsr)
 
         
         # -----------------------------------------------------------------
@@ -935,7 +1107,7 @@ def render_idsr_tab(ctx: dict) -> None:
         with st.expander("🧩 Diagnostic (temps & QC) – déplier", expanded=False):
             st.write({
                 "colonnes_temps": [c for c in [
-                    "Annee_epid", "Num_semaine_epid", "YW", "YW_KEY",
+                    "DEBUTSEM", "Date_debut_semaine", "Annee_epid", "Num_semaine_epid", "YW", "YW_KEY",
                     "TIME_LAB", "TIME_KEY", "Date_debut_semaine_iso", "QC_Date_vs_Semaine"
                 ] if c in df_idsr.columns],
                 "qc_date_vs_semaine": df_idsr["QC_Date_vs_Semaine"].value_counts(dropna=False).to_dict()
@@ -1012,21 +1184,42 @@ def render_idsr_tab(ctx: dict) -> None:
                     _year_pool = _year_pool[_year_pool[COL_ZS_ID].isin(zs_sel)]
 
                 _debutsem = _year_pool["DEBUTSEM"]
-                _debutsem_dt = parse_idsr_date_series(_debutsem)
+                _year_from_debutsem = idsr_year_from_debutsem(_debutsem, mode="iso")
 
-                years_available = sorted(_debutsem_dt.dt.year.dropna().astype(int).unique().tolist())
+                years_available = sorted(
+                    _year_from_debutsem.dropna().astype(int).unique().tolist()
+                )
+
+                if not years_available and "Annee_epid" in _year_pool.columns:
+                    years_available = sorted(
+                        pd.to_numeric(_year_pool["Annee_epid"], errors="coerce")
+                        .dropna()
+                        .astype(int)
+                        .unique()
+                        .tolist()
+                    )
 
                 if years_available:
                     years_selected = st.multiselect(
-                        "Année (DEBUTSEM)",
+                        "Année épid. (depuis DEBUTSEM)",
                         options=years_available,
                         default=years_available,
                         key="tab9_years_debutsem",
-                        help="Très utile en mode BRUT (WNUM) pour éviter de mélanger plusieurs années."
+                        help=(
+                            "Année ISO/épidémiologique reconstruite depuis DEBUTSEM. "
+                            "Exemple : lundi 29 décembre 2025 correspond à 2026-W01."
+                        )
                     )
                 else:
                     years_selected = []
-                    st.info("Aucune année exploitable trouvée dans DEBUTSEM.")
+                    raw_examples = (
+                        _debutsem.dropna().astype(str).head(3).tolist()
+                        if hasattr(_debutsem, "dropna") else []
+                    )
+                    st.warning(
+                        "DEBUTSEM est présent, mais aucune année n'a pu être reconstruite. "
+                        f"Exemples lus : {raw_examples}"
+                    )
             else:
                 years_selected = []
                 st.info("Colonne DEBUTSEM absente (filtre Année indisponible).")
@@ -1185,9 +1378,11 @@ def render_idsr_tab(ctx: dict) -> None:
         # Filtre Année (DEBUTSEM) si sélection disponible
         if years_selected and ("DEBUTSEM" in df9.columns):
             _debutsem = df9["DEBUTSEM"]
-            _debutsem_dt = parse_idsr_date_series(_debutsem)
-            _yrs = _debutsem_dt.dt.year
+            _yrs = idsr_year_from_debutsem(_debutsem, mode="iso")
+            if _yrs.isna().all() and "Annee_epid" in df9.columns:
+                _yrs = pd.to_numeric(df9["Annee_epid"], errors="coerce").astype("Int64")
             df9 = df9[_yrs.isin([int(y) for y in years_selected])]
+
         elif years_selected and ("Annee_epid" in df9.columns):
             # fallback si DEBUTSEM absent
             df9 = df9[pd.to_numeric(df9["Annee_epid"], errors="coerce").isin([int(y) for y in years_selected])]
