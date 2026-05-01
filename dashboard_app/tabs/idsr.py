@@ -168,6 +168,58 @@ def idsr_year_from_debutsem(values: pd.Series, mode: str = "iso") -> pd.Series:
     return pd.to_numeric(dt.dt.isocalendar()["year"], errors="coerce").astype("Int64")
 
 
+def _idsr_format_year_week_label(year: object, week: object) -> str:
+    """Formate une semaine pour l'affichage analytique : 2026-W17 si l'année est connue."""
+    try:
+        if pd.notna(year) and pd.notna(week):
+            return f"{int(float(year))}-W{int(float(week)):02d}"
+    except Exception:
+        pass
+    try:
+        if pd.notna(week):
+            return f"W{int(float(week)):02d}"
+    except Exception:
+        pass
+    return "NA"
+
+
+def _idsr_build_year_week_label_series(year_values: Any, week_values: Any) -> pd.Series:
+    """Construit des libellés année-semaine pour les sorties IDSR, avec fallback W##."""
+    week = pd.to_numeric(pd.Series(week_values), errors="coerce")
+    idx = week.index
+    if year_values is None:
+        year = pd.Series(np.nan, index=idx)
+    else:
+        year = pd.to_numeric(pd.Series(year_values, index=idx), errors="coerce")
+
+    label = pd.Series(pd.NA, index=idx, dtype="string")
+    has_year_week = year.notna() & week.notna()
+    has_week_only = (~has_year_week) & week.notna()
+
+    if has_year_week.any():
+        label.loc[has_year_week] = (
+            year.loc[has_year_week].astype("Int64").astype("string")
+            + "-W"
+            + week.loc[has_year_week].astype("Int64").astype("string").str.zfill(2)
+        )
+    if has_week_only.any():
+        label.loc[has_week_only] = (
+            "W" + week.loc[has_week_only].astype("Int64").astype("string").str.zfill(2)
+        )
+    return label
+
+
+def _idsr_build_year_week_key_series(year_values: Any, week_values: Any) -> pd.Series:
+    """Clé de tri cohérente avec les libellés année-semaine."""
+    week = pd.to_numeric(pd.Series(week_values), errors="coerce")
+    idx = week.index
+    if year_values is None:
+        year = pd.Series(np.nan, index=idx)
+    else:
+        year = pd.to_numeric(pd.Series(year_values, index=idx), errors="coerce")
+    return pd.to_numeric(np.where(year.notna() & week.notna(), year * 100 + week, week), errors="coerce")
+
+
 def render_idsr_reading_guide() -> None:
     """Affiche un plan de lecture simple pour éviter que l'utilisateur se perde dans l'onglet IDSR."""
     with st.expander("🧭 Guide de lecture de l’onglet IDSR", expanded=True):
@@ -207,13 +259,8 @@ def _idsr_week_label_for_completeness(df: pd.DataFrame) -> tuple[pd.Series, pd.S
     if "Num_semaine_epid" in df.columns:
         week_num = pd.to_numeric(df["Num_semaine_epid"], errors="coerce")
         year_num = pd.to_numeric(df.get("Annee_epid"), errors="coerce") if "Annee_epid" in df.columns else pd.Series(np.nan, index=idx)
-        years = year_num.dropna().astype(int).unique().tolist()
-        if len(years) > 1:
-            week_label = year_num.astype("Int64").astype("string") + "-W" + week_num.astype("Int64").astype("string").str.zfill(2)
-            week_key = (year_num * 100) + week_num
-        else:
-            week_label = week_num.astype("Int64").astype("string")
-            week_key = week_num
+        week_label = _idsr_build_year_week_label_series(year_num, week_num)
+        week_key = _idsr_build_year_week_key_series(year_num, week_num)
         return week_label.astype("string"), pd.to_numeric(week_key, errors="coerce")
 
     if "YW" in df.columns:
@@ -1233,27 +1280,18 @@ def render_idsr_tab(ctx: dict) -> None:
         # ---------------------------------------------------------------------
         # 5) Axe temps UNIQUE pour tri/plots (gère mode secours)
         # ---------------------------------------------------------------------
-        # TIME_KEY : tri stable (priorité YW_KEY sinon Num_semaine)
-        yw_key_num = pd.to_numeric(df_idsr.get("YW_KEY"), errors="coerce")
+        # TIME_KEY / TIME_LAB : tri et affichage analytique en Année-Semaine quand possible.
+        # Le filtre semaine BRUT reste volontairement sur le numéro de semaine uniquement (voir bloc filtre).
         wnum_num = pd.to_numeric(df_idsr.get("Num_semaine_epid"), errors="coerce")
+        year_num = pd.to_numeric(df_idsr.get("Annee_epid"), errors="coerce") if "Annee_epid" in df_idsr.columns else pd.Series(np.nan, index=df_idsr.index)
 
-        df_idsr["TIME_KEY"] = np.where(yw_key_num.notna(), yw_key_num, wnum_num)
+        df_idsr["TIME_LAB"] = _idsr_build_year_week_label_series(year_num, wnum_num)
+        df_idsr["TIME_KEY"] = _idsr_build_year_week_key_series(year_num, wnum_num)
 
-        # TIME_LAB : affichage (priorité YW sinon W##)
-        df_idsr["TIME_LAB"] = np.where(
-            df_idsr.get("YW", pd.Series([""] * len(df_idsr), index=df_idsr.index)).astype("string").str.contains(r"-W", na=False),
-            df_idsr["YW"].astype("string"),
-            "W" + wnum_num.astype("Int64").astype("string").str.zfill(2)
-        )
-
-        # ⚠️ Confort utilisateur (sans changer la logique) :
-        # - Si base BRUTE (ou année indisponible), afficher W## plutôt que YYYY-W##
-        _wlab = "W" + wnum_num.astype("Int64").astype("string").str.zfill(2)
-        if "is_brut" in locals() and is_brut:
-            df_idsr["TIME_LAB"] = _wlab
-        else:
-            if "Annee_epid" in df_idsr.columns and df_idsr["Annee_epid"].isna().all():
-                df_idsr["TIME_LAB"] = _wlab
+        _has_year_week = year_num.notna() & wnum_num.notna()
+        df_idsr["YW"] = pd.Series(pd.NA, index=df_idsr.index, dtype="string")
+        df_idsr.loc[_has_year_week, "YW"] = df_idsr.loc[_has_year_week, "TIME_LAB"].astype("string")
+        df_idsr["YW_KEY"] = pd.to_numeric(np.where(_has_year_week, year_num * 100 + wnum_num, np.nan), errors="coerce")
 
         # ---------------------------------------------------------------------
         # 6) Conversions numériques (variables d'analyse)
@@ -2288,7 +2326,12 @@ def render_idsr_tab(ctx: dict) -> None:
                             dec_prev = pd.to_numeric(df_prev_kpi.get("Total_deces"), errors="coerce").sum(skipna=True) if not df_prev_kpi.empty else np.nan
                             cfr_prev = (float(dec_prev) / float(cas_prev) * 100.0) if (pd.notna(cas_prev) and cas_prev > 0 and pd.notna(dec_prev)) else np.nan
 
-                            last = {"TIME_LAB": f"W{int(w_max):02d}", "Cas": cas_last, "Deces": dec_last, "CFR_calc_%": cfr_last}
+                            lab_last = (
+                                df_last_kpi["TIME_LAB"].iloc[0]
+                                if "TIME_LAB" in df_last_kpi.columns and not df_last_kpi.empty
+                                else _idsr_format_year_week_label(last_year, w_max)
+                            )
+                            last = {"TIME_LAB": lab_last, "Cas": cas_last, "Deces": dec_last, "CFR_calc_%": cfr_last}
                             prev = {"Cas": cas_prev, "Deces": dec_prev, "CFR_calc_%": cfr_prev} if not df_prev_kpi.empty else None
 
                 # Fallback: si on n'a rien trouvé, on garde l'ancien comportement
@@ -2373,7 +2416,11 @@ def render_idsr_tab(ctx: dict) -> None:
                                         prev_week_num = int(df_prev_week["Num_semaine_epid"].max())
                                         df_prev_week = df_prev_week[df_prev_week["Num_semaine_epid"] == prev_week_num]
 
-                                last_lab_focus = f"W{int(w_max):02d}"
+                                last_lab_focus = (
+                                    df_last_week["TIME_LAB"].iloc[0]
+                                    if "TIME_LAB" in df_last_week.columns and not df_last_week.empty
+                                    else _idsr_format_year_week_label(last_year, w_max)
+                                )
 
                     # Fallback si on n'a pas réussi à isoler la semaine max
                     if df_last_week.empty:
