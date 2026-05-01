@@ -1,9 +1,122 @@
 """Render the weekly IDSR analytics tab."""
 
+import re
+import unicodedata
+import warnings
+
 from dashboard_app.overview import format_range_label_for_display
 from dashboard_app.runtime_support import inject_runtime_support
 
 inject_runtime_support(globals())
+
+
+
+def _strip_accents_idsr(value: str) -> str:
+    """Retourne un texte en minuscules sans accents, utile pour lire les mois FR."""
+    return "".join(
+        ch for ch in unicodedata.normalize("NFD", str(value))
+        if unicodedata.category(ch) != "Mn"
+    ).lower().strip()
+
+
+def _parse_idsr_french_date_value(value: object) -> object:
+    """Parse une date française IDSR du type 'lundi 29 décembre 2025'."""
+    if pd.isna(value):
+        return pd.NaT
+
+    if isinstance(value, (pd.Timestamp,)):
+        return value.normalize()
+
+    text = _strip_accents_idsr(value)
+    text = re.sub(r"[,.;:/\\-]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    mois = {
+        "janvier": 1, "janv": 1,
+        "fevrier": 2, "fevr": 2, "fev": 2,
+        "mars": 3,
+        "avril": 4, "avr": 4,
+        "mai": 5,
+        "juin": 6,
+        "juillet": 7, "juil": 7,
+        "aout": 8,
+        "septembre": 9, "sept": 9,
+        "octobre": 10, "oct": 10,
+        "novembre": 11, "nov": 11,
+        "decembre": 12, "dec": 12,
+    }
+
+    match = re.search(
+        r"(?:^|\s)(?P<jour>\d{1,2})\s+(?P<mois>[a-z]+)\s+(?P<annee>\d{4})(?:\s|$)",
+        text,
+    )
+    if not match:
+        return pd.NaT
+
+    mois_num = mois.get(match.group("mois"))
+    if mois_num is None:
+        return pd.NaT
+
+    try:
+        return pd.Timestamp(
+            year=int(match.group("annee")),
+            month=mois_num,
+            day=int(match.group("jour")),
+        )
+    except Exception:
+        return pd.NaT
+
+
+def parse_idsr_date_series(values: pd.Series) -> pd.Series:
+    """Convertit une colonne date IDSR en vraie date pandas, y compris les mois français."""
+    src = pd.Series(values).copy()
+
+    if pd.api.types.is_datetime64_any_dtype(src):
+        return pd.to_datetime(src, errors="coerce").dt.normalize()
+
+    if pd.api.types.is_numeric_dtype(src):
+        return pd.to_datetime(src, unit="D", origin="1899-12-30", errors="coerce").dt.normalize()
+
+    parsed = pd.Series(pd.NaT, index=src.index, dtype="datetime64[ns]")
+
+    numeric_values = pd.to_numeric(src, errors="coerce")
+    serial_mask = numeric_values.between(20000, 80000)
+    if serial_mask.any():
+        parsed.loc[serial_mask] = pd.to_datetime(
+            numeric_values.loc[serial_mask],
+            unit="D",
+            origin="1899-12-30",
+            errors="coerce",
+        ).dt.normalize()
+
+    fr_mask = parsed.isna() & src.notna()
+    if fr_mask.any():
+        parsed.loc[fr_mask] = src.loc[fr_mask].map(_parse_idsr_french_date_value)
+
+    standard_mask = parsed.isna() & src.notna()
+    if standard_mask.any():
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            parsed.loc[standard_mask] = pd.to_datetime(
+                src.loc[standard_mask],
+                errors="coerce",
+                dayfirst=True,
+            ).dt.normalize()
+
+    return pd.to_datetime(parsed, errors="coerce").dt.normalize()
+
+
+def normalize_idsr_debutsem_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Crée/alimente Date_debut_semaine à partir de DEBUTSEM et convertit DEBUTSEM en vraie date."""
+    if "DEBUTSEM" not in df.columns:
+        return df
+
+    parsed = parse_idsr_date_series(df["DEBUTSEM"])
+    if parsed.notna().any():
+        df = df.copy()
+        df["DEBUTSEM"] = parsed
+        df["Date_debut_semaine"] = parsed
+    return df
 
 
 def _build_idsr_period_labels(df_scope: pd.DataFrame) -> tuple[str, str]:
@@ -127,7 +240,7 @@ def render_idsr_tab(ctx: dict) -> None:
             # Temps
             "NUMSEM": "Num_semaine_epid",
             "Semaine": "Num_semaine_epid",
-            # DEBUTSEM reste inchangé
+            # DEBUTSEM est converti automatiquement en vraie date juste après le renommage
 
             # Maladie
             "MALADIE": "Maladie",
@@ -164,6 +277,7 @@ def render_idsr_tab(ctx: dict) -> None:
         }
 
         df_idsr = df_idsr.rename(columns={k: v for k, v in rename_map.items() if k in df_idsr.columns})
+        df_idsr = normalize_idsr_debutsem_column(df_idsr)
         # ---------------------------------------------------------
         # ✅ Détecteur automatique BRUT vs COMPILÉ
         # ---------------------------------------------------------
@@ -242,9 +356,9 @@ def render_idsr_tab(ctx: dict) -> None:
         ):
             _dt_src = None
             if "Date_debut_semaine" in df_idsr.columns:
-                _dt_src = pd.to_datetime(df_idsr["Date_debut_semaine"], errors="coerce")
+                _dt_src = parse_idsr_date_series(df_idsr["Date_debut_semaine"])
             elif "DEBUTSEM" in df_idsr.columns:
-                _dt_src = pd.to_datetime(df_idsr["DEBUTSEM"], errors="coerce")
+                _dt_src = parse_idsr_date_series(df_idsr["DEBUTSEM"])
 
             if _dt_src is not None and _dt_src.notna().any():
                 _iso = _dt_src.dt.isocalendar()
@@ -275,10 +389,10 @@ def render_idsr_tab(ctx: dict) -> None:
         # IMPORTANT : comparaison faite en numpy float64 (évite pd.NA bool ambigu)
         # ---------------------------------------------------------------------
         if "Date_debut_semaine" in df_idsr.columns:
-            src_dt = pd.to_datetime(df_idsr["Date_debut_semaine"], errors="coerce")
+            src_dt = parse_idsr_date_series(df_idsr["Date_debut_semaine"])
         elif "DEBUTSEM" in df_idsr.columns:
-            src_dt = pd.to_datetime(df_idsr["DEBUTSEM"], errors="coerce")
-            df_idsr["Date_debut_semaine"] = df_idsr["DEBUTSEM"]  # copie visible
+            src_dt = parse_idsr_date_series(df_idsr["DEBUTSEM"])
+            df_idsr["Date_debut_semaine"] = src_dt  # copie visible en vraie date
         else:
             src_dt = pd.Series(pd.NaT, index=df_idsr.index)
 
@@ -385,10 +499,7 @@ def render_idsr_tab(ctx: dict) -> None:
 
             if "DEBUTSEM" in _df.columns:
                 _debutsem = _df["DEBUTSEM"]
-                if pd.api.types.is_numeric_dtype(_debutsem):
-                    _dt = pd.to_datetime(_debutsem, unit="D", origin="1899-12-30", errors="coerce")
-                else:
-                    _dt = pd.to_datetime(_debutsem, errors="coerce")
+                _dt = parse_idsr_date_series(_debutsem)
                 if _dt.notna().any():
                     return _dt.dt.strftime("%Y-%m-%d").astype("string")
 
@@ -901,10 +1012,7 @@ def render_idsr_tab(ctx: dict) -> None:
                     _year_pool = _year_pool[_year_pool[COL_ZS_ID].isin(zs_sel)]
 
                 _debutsem = _year_pool["DEBUTSEM"]
-                if pd.api.types.is_numeric_dtype(_debutsem):
-                    _debutsem_dt = pd.to_datetime(_debutsem, unit="D", origin="1899-12-30", errors="coerce")
-                else:
-                    _debutsem_dt = pd.to_datetime(_debutsem, errors="coerce")
+                _debutsem_dt = parse_idsr_date_series(_debutsem)
 
                 years_available = sorted(_debutsem_dt.dt.year.dropna().astype(int).unique().tolist())
 
@@ -1077,10 +1185,7 @@ def render_idsr_tab(ctx: dict) -> None:
         # Filtre Année (DEBUTSEM) si sélection disponible
         if years_selected and ("DEBUTSEM" in df9.columns):
             _debutsem = df9["DEBUTSEM"]
-            if pd.api.types.is_numeric_dtype(_debutsem):
-                _debutsem_dt = pd.to_datetime(_debutsem, unit="D", origin="1899-12-30", errors="coerce")
-            else:
-                _debutsem_dt = pd.to_datetime(_debutsem, errors="coerce")
+            _debutsem_dt = parse_idsr_date_series(_debutsem)
             _yrs = _debutsem_dt.dt.year
             df9 = df9[_yrs.isin([int(y) for y in years_selected])]
         elif years_selected and ("Annee_epid" in df9.columns):
@@ -2540,18 +2645,14 @@ def render_idsr_tab(ctx: dict) -> None:
 
                         # Sinon Date_debut_semaine si dispo
                         if "Date_debut_semaine" in _df.columns:
-                            s = pd.to_datetime(_df["Date_debut_semaine"], errors="coerce")
+                            s = parse_idsr_date_series(_df["Date_debut_semaine"])
                             if s.notna().any():
                                 return s
 
                         # Sinon DEBUTSEM (Excel serial ou date)
                         if "DEBUTSEM" in _df.columns:
                             _debutsem = _df["DEBUTSEM"]
-                            if pd.api.types.is_numeric_dtype(_debutsem):
-                                # Excel serial -> date
-                                s = pd.to_datetime(_debutsem, unit="D", origin="1899-12-30", errors="coerce")
-                            else:
-                                s = pd.to_datetime(_debutsem, errors="coerce")
+                            s = parse_idsr_date_series(_debutsem)
                             if s.notna().any():
                                 return s
 
