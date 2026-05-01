@@ -5,6 +5,46 @@ from dashboard_app.runtime_support import inject_runtime_support
 inject_runtime_support(globals())
 
 
+def _surv_clean_numeric_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """Nettoie les colonnes numériques avant calculs/graphes Plotly."""
+    out = df.copy()
+    for col in cols:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+            out.loc[~np.isfinite(out[col]), col] = np.nan
+    return out
+
+
+def _surv_prepare_delay_scope(df: pd.DataFrame, delay_cols: list[str]) -> pd.DataFrame:
+    """Prépare les délais pour les indicateurs et graphiques de promptitude."""
+    out = _surv_clean_numeric_columns(df, delay_cols)
+    for col in delay_cols:
+        if col in out.columns:
+            # Les délais négatifs sont considérés comme incohérents et exclus des calculs.
+            out.loc[out[col] < 0, col] = np.nan
+    return out
+
+
+def _surv_plotly_frame(df: pd.DataFrame, numeric_cols: list[str] | None = None) -> pd.DataFrame:
+    """Retourne un DataFrame compatible Plotly JSON (pd.NA/NaT -> None)."""
+    out = df.copy()
+    for col in numeric_cols or []:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+            out.loc[~np.isfinite(out[col]), col] = np.nan
+    return out.astype(object).where(pd.notna(out), None)
+
+
+def _surv_metric_pct(value: Any) -> str:
+    """Formate un pourcentage de manière sûre pour st.metric."""
+    try:
+        if value is None or pd.isna(value):
+            return "-"
+        return f"{float(value):.1f}"
+    except Exception:
+        return "-"
+
+
 def render_surveillance_tab(ctx: dict) -> None:
     """Render the surveillance analytics tab."""
     globals().update(ctx)
@@ -152,10 +192,10 @@ def render_surveillance_tab(ctx: dict) -> None:
                         taille_fig=(1500, 700),
                     )
                     if fig_multi_prov is not None:
-                        st.plotly_chart(
+                        st_plot(
                             fig_multi_prov,
-                            width="stretch",
                             key="surveillance_multi_curve_province",
+                            height=700,
                         )
                         st.caption(
                             "Astuce : clique sur une province dans la légende pour masquer ou afficher sa courbe. "
@@ -168,7 +208,7 @@ def render_surveillance_tab(ctx: dict) -> None:
 
             if "_surv_label" in df_surv_scope.columns and df_surv_scope["_surv_label"].notna().any():
                 st.divider()
-                st.markdown("### Alertes automatiques et clusters recents")
+                st.markdown("### Alertes automatiques et clusters récents")
                 alert_group_options = [
                     c for c in [COL_PROV, COL_ZS, COL_AS]
                     if c in df_surv_scope.columns and df_surv_scope[c].notna().any()
@@ -288,12 +328,12 @@ def render_surveillance_tab(ctx: dict) -> None:
                                 y="_geo_label",
                                 orientation="h",
                                 color="ratio_baseline",
-                                title="Groupes en alerte sur la derniere semaine",
+                                title="Groupes en alerte sur la dernière semaine",
                                 color_continuous_scale=["#fde68a", "#b91c1c"],
                             )
                             fig_alert.update_layout(coloraxis_colorbar_title="Ratio")
                             fig_alert = apply_plotly_value_annotations(fig_alert, annot_vals)
-                            st.plotly_chart(fig_alert, width="stretch", key="surv_alert_latest_chart")
+                            st_plot(fig_alert, key="surv_alert_latest_chart")
 
                     cluster_cols = alert_group_cols
                     cluster_tbl = build_spatiotemporal_cluster_table(
@@ -306,7 +346,7 @@ def render_surveillance_tab(ctx: dict) -> None:
                         growth_ratio=float(alert_ratio),
                     )
                     if not cluster_tbl.empty:
-                        with st.expander("Clusters spatio-temporels recents", expanded=False):
+                        with st.expander("Clusters spatio-temporels récents", expanded=False):
                             st.caption(
                                 "Ce tableau compare les deux dernières semaines à la fenêtre précédente. "
                                 "Il aide à repérer des foyers récents à vérifier avec les équipes locales."
@@ -350,9 +390,7 @@ def render_surveillance_tab(ctx: dict) -> None:
         if not delais_cols:
             render_absence_narrative("delays")
         else:
-            df_del = df_f.copy()
-            for c in delais_cols:
-                df_del.loc[df_del[c] < 0, c] = np.nan
+            df_del = _surv_prepare_delay_scope(df_f, delais_cols)
 
             delay_summary_std = build_standard_delay_summary(df_del)
             available_delay_pairs = list_available_standard_delays(df_del)
@@ -367,10 +405,10 @@ def render_surveillance_tab(ctx: dict) -> None:
             c1, c2, c3, c4 = st.columns(4)
             with c1:
                 p1, n1 = pct_under_threshold(df_del.get("delai_onset_to_adm"), seuil_jours)
-                st.metric("Admission ≤ seuil (%)", "-" if np.isnan(p1) else f"{p1:.1f}", help=f"n = {n1}")
+                st.metric("Admission ≤ seuil (%)", _surv_metric_pct(p1), help=f"n = {n1}")
             with c2:
                 p2, n2 = pct_under_threshold(df_del.get("delai_onset_to_prel"), seuil_jours)
-                st.metric("Prélèvement ≤ seuil (%)", "-" if np.isnan(p2) else f"{p2:.1f}", help=f"n = {n2}")
+                st.metric("Prélèvement ≤ seuil (%)", _surv_metric_pct(p2), help=f"n = {n2}")
             with c3:
                 st.metric("Délais admission documentés", format_metric_value(n1))
             with c4:
@@ -417,20 +455,34 @@ def render_surveillance_tab(ctx: dict) -> None:
 
             with st.expander("Distribution détaillée des délais observés (graphique)", expanded=False):
                 if use_custom_viz and HAS_CUSTOM_VIZ:
+                    plot_delay_cols = list(delais_cols)
+                    if COL_PROV in df_del.columns:
+                        plot_delay_cols.append(COL_PROV)
+                    df_delay_plot = _surv_plotly_frame(df_del[plot_delay_cols], numeric_cols=delais_cols)
                     fig = plot_boxplot_delais_plotly(
-                        df=df_del,
+                        df=df_delay_plot,
                         colonnes_delais=delais_cols,
-                        col_groupe=COL_PROV if COL_PROV in df_del.columns else None,
+                        col_groupe=COL_PROV if COL_PROV in df_delay_plot.columns else None,
                         titre=" ",
                         taille_fig=(1500, 600),
                         rotation=45
                     )
                     st_plot(fig, key="boxplot_delais_custom")
                 else:
-                    long = df_del.melt(value_vars=delais_cols, var_name="Type_delai", value_name="Jours").dropna()
-                    fig = px.box(long, x="Type_delai", y="Jours", points="outliers", title="Boxplot des délais (global)")
-                    fig = apply_plotly_value_annotations(fig, annot_vals)
-                    st.plotly_chart(fig, width="stretch")
+                    long = (
+                        df_del.melt(value_vars=delais_cols, var_name="Type_delai", value_name="Jours")
+                        .copy()
+                    )
+                    long["Jours"] = pd.to_numeric(long["Jours"], errors="coerce")
+                    long.loc[~np.isfinite(long["Jours"]), "Jours"] = np.nan
+                    long = long.dropna(subset=["Type_delai", "Jours"])
+                    if long.empty:
+                        render_absence_narrative("delays")
+                    else:
+                        long = _surv_plotly_frame(long, numeric_cols=["Jours"])
+                        fig = px.box(long, x="Type_delai", y="Jours", points="outliers", title="Boxplot des délais (global)")
+                        fig = apply_plotly_value_annotations(fig, annot_vals)
+                        st_plot(fig, key="boxplot_delais_standard")
 
             if available_delay_pairs:
                 st.divider()
@@ -493,7 +545,8 @@ def render_surveillance_tab(ctx: dict) -> None:
                         with t1:
                             st.dataframe(delay_group_view, width="stretch", height=420, hide_index=True)
                         with t2:
-                            plot_df = delay_group_view.sort_values(sort_col, ascending=True, na_position="last")
+                            plot_df = delay_group_view.sort_values(sort_col, ascending=True, na_position="last").copy()
+                            plot_df = _surv_plotly_frame(plot_df, numeric_cols=[sort_col])
                             fig_delay_focus = px.bar(
                                 plot_df,
                                 x=sort_col,
@@ -510,7 +563,7 @@ def render_surveillance_tab(ctx: dict) -> None:
                                 yaxis_title=delay_group_focus,
                             )
                             fig_delay_focus = apply_plotly_value_annotations(fig_delay_focus, annot_vals)
-                            st.plotly_chart(fig_delay_focus, width="stretch", key="timeliness_delay_focus_chart")
+                            st_plot(fig_delay_focus, key="timeliness_delay_focus_chart")
                     else:
                         render_absence_narrative("delays")
                 else:

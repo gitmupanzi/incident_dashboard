@@ -209,6 +209,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
 
             "Div_Prov": "Province_notification",
             "Zone_Sante": "Zone_de_sante_notification",
+            "ZoneSante": "Zone_de_sante_notification",
             "Aire_Sante": "Aire_de_sante_notification",
 
             # =========================
@@ -637,6 +638,59 @@ def _apply_compact_bar_spacing(fig: Optional[go.Figure], bargap: float = 0.0, ba
     return fig
 
 
+
+def _json_safe_plotly_value(value):
+    """Convertit les valeurs pandas/numpy non sérialisables en valeurs JSON compatibles Plotly/Streamlit."""
+    try:
+        if value is pd.NA or value is pd.NaT:
+            return None
+    except Exception:
+        pass
+
+    if isinstance(value, dict):
+        return {k: _json_safe_plotly_value(v) for k, v in value.items()}
+
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_plotly_value(v) for v in value]
+
+    if isinstance(value, (pd.Series, pd.Index)):
+        return [_json_safe_plotly_value(v) for v in value.tolist()]
+
+    if isinstance(value, np.ndarray):
+        return [_json_safe_plotly_value(v) for v in value.tolist()]
+
+    if isinstance(value, np.generic):
+        return _json_safe_plotly_value(value.item())
+
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        return value.to_pydatetime()
+
+    if isinstance(value, datetime):
+        return value
+
+    if isinstance(value, date):
+        return value
+
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    return value
+
+
+def sanitize_plotly_figure_for_streamlit(fig: Optional[go.Figure]) -> Optional[go.Figure]:
+    """Nettoie une figure Plotly avant st.plotly_chart pour éviter les erreurs NAType/orjson."""
+    if fig is None:
+        return fig
+    try:
+        return go.Figure(_json_safe_plotly_value(fig.to_plotly_json()))
+    except Exception:
+        return fig
+
 # =========================
 # SECTION: VISUALISATIONS STREAMLIT/PLOTLY
 # =========================
@@ -673,6 +727,7 @@ def st_plot(fig, key=None, height=None, stretch=True, annotate_values: Optional[
 
     fig = _apply_compact_bar_spacing(fig, bargap=0.0, bargroupgap=0.0)
     fig = apply_plotly_value_annotations(fig, bool(annotate_values))
+    fig = sanitize_plotly_figure_for_streamlit(fig)
 
     kwargs = {}
 
@@ -3260,6 +3315,7 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
         "Province_notif": "Province_notification",
         "Zone_Sante": "Zone_de_sante_notification",
         "zone_sante": "Zone_de_sante_notification",
+        "ZoneSante": "Zone_de_sante_notification",
         "Aire_Sante": "Aire_de_sante_notification",
         "aire_sante": "Aire_de_sante_notification",
         "Age_Cas": "Age",
