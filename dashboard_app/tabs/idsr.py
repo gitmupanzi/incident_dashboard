@@ -4,6 +4,11 @@ import re
 import unicodedata
 import warnings
 
+from dashboard_app.app_loader import (
+    get_line_list_bundle_caption,
+    guess_preferred_included_file,
+    list_available_line_list_files,
+)
 from dashboard_app.overview import format_range_label_for_display
 from dashboard_app.runtime_support import inject_runtime_support
 
@@ -1014,6 +1019,27 @@ def _build_idsr_period_labels(df_scope: pd.DataFrame) -> tuple[str, str]:
     return period_label, time_span
 
 
+def _load_idsr_workbook(file_source: object) -> pd.DataFrame:
+    """Charge un fichier IDSR en priorisant les feuilles usuelles."""
+    last_exc = None
+    for preferred_sheet in ("IDS_RDC", "IDSR", "idsr"):
+        try:
+            df_loaded = load_excel_cached(file_source, sheet_name=preferred_sheet)
+            if isinstance(df_loaded, pd.DataFrame) and not df_loaded.empty:
+                return df_loaded
+        except Exception as exc:
+            last_exc = exc
+
+    try:
+        return load_excel_cached(file_source)
+    except Exception as exc:
+        last_exc = exc
+
+    if last_exc is not None:
+        raise last_exc
+    return pd.DataFrame()
+
+
 def render_idsr_tab(ctx: dict) -> None:
     """Render the weekly IDSR analytics tab."""
     globals().update(ctx)
@@ -1039,29 +1065,66 @@ def render_idsr_tab(ctx: dict) -> None:
     # -------------------------------------------------------------------------
     # 1) Chargement fichier IDSR
     # -------------------------------------------------------------------------
-    st.caption("Téléverser un fichier IDSR agrégé (.xlsx) depuis cet onglet.")
-    up = st.file_uploader("Fichier IDSR agrégé", type=["xlsx"], key="idsr_upl")
+    source_options = {
+        "Téléverser un fichier": "upload",
+        "Charger un fichier inclus": "local",
+    }
+    source_label = st.selectbox(
+        "Source de données IDSR",
+        options=list(source_options.keys()),
+        index=0,
+        key="idsr_source_mode",
+    )
+    idsr_source_mode = source_options[source_label]
 
-    default_path = "rdc_compilation_IDS_RDC_SE01_SE03_25_01_2026_00_07_33.xlsx"
+    df_idsr = pd.DataFrame()
+    src = None
 
-    if up is not None:
-        # priorité à la feuille IDS_RDC; sinon première feuille
-        try:
-            df_idsr = load_excel_cached(up, sheet_name="IDS_RDC")
-        except Exception:
-            df_idsr = load_excel_cached(up)
-        src = getattr(up, "name", "upload") or "upload"
-    else:
-        try:
-            df_idsr = load_excel_cached(default_path, sheet_name="IDS_RDC")
-            src = default_path
-        except Exception:
+    if idsr_source_mode == "upload":
+        st.caption("Téléverser un fichier IDSR agrégé (.xlsx) depuis cet onglet.")
+        up = st.file_uploader("Fichier IDSR agrégé", type=["xlsx", "xls"], key="idsr_upl")
+        if up is not None:
             try:
-                df_idsr = load_excel_cached(default_path)
-                src = default_path
-            except Exception:
-                df_idsr = pd.DataFrame()
-                src = None
+                df_idsr = _load_idsr_workbook(up)
+                src = getattr(up, "name", "upload") or "upload"
+            except Exception as exc:
+                st.error(f"Impossible de lire le fichier IDSR téléversé : {exc}")
+    else:
+        available_idsr_files = [
+            path for path in list_available_line_list_files()
+            if path.suffix.lower() in {".xlsx", ".xls"}
+        ]
+        if available_idsr_files:
+            preferred_local_path = guess_preferred_included_file(
+                available_idsr_files,
+                disease_key="idsr",
+                default_sheet="IDS_RDC",
+            )
+            available_local_names = [path.name for path in available_idsr_files]
+            if st.session_state.get("idsr_local_file") not in available_local_names:
+                st.session_state["idsr_local_file"] = (
+                    preferred_local_path.name if preferred_local_path is not None else available_local_names[0]
+                )
+
+            selected_local_name = st.selectbox(
+                "Fichier IDSR disponible",
+                options=available_local_names,
+                key="idsr_local_file",
+            )
+            selected_local_path = next(
+                (path for path in available_idsr_files if path.name == selected_local_name),
+                None,
+            )
+            st.caption(get_line_list_bundle_caption())
+
+            if selected_local_path is not None:
+                try:
+                    df_idsr = _load_idsr_workbook(selected_local_path)
+                    src = selected_local_path.name
+                except Exception as exc:
+                    st.error(f"Impossible de lire le fichier IDSR local : {exc}")
+        else:
+            st.info("Aucun fichier Excel IDSR n'est disponible dans `line_list/`.")
 
     if df_idsr.empty:
         render_reader_narrative(
