@@ -47,6 +47,11 @@ SOURCE_COLUMNS: dict[str, dict[str, Any]] = {
     "Date_reception_labo": {"role": "Date de reception au laboratoire", "required": False, "level": "optional"},
     "Date_issue": {"role": "Date d'issue, de deces ou de sortie", "required": False, "level": "optional"},
     "Nom_complet": {"role": "Nom complet ou identifiant du cas", "required": False, "level": "optional"},
+    "N_labo": {"role": "Numero ou identifiant laboratoire", "required": False, "level": "optional"},
+    "Nom_laboratoire": {"role": "Nom du laboratoire", "required": False, "level": "optional"},
+    "Type_de_prelevement": {"role": "Type de prelevement ou specimen", "required": False, "level": "optional"},
+    "Nombre_dose_recues": {"role": "Nombre de doses vaccinales recues", "required": False, "level": "optional"},
+    "Date_derniere_vaccination": {"role": "Date de la derniere vaccination connue", "required": False, "level": "optional"},
 }
 
 DERIVED_COLUMNS: dict[str, dict[str, Any]] = {
@@ -212,6 +217,10 @@ COLUMN_VARIANTS: dict[str, list[str]] = {
         "sample_collected",
         "prelevement_investigation",
         "prelevement_realise_au_moment_de_investigation",
+        "prelevement_sang",
+        "prelevement_urine",
+        "prelevement_respiratoire",
+        "autre_prelevement",
     ],
     "TDR_realise": [
         "tdr",
@@ -231,6 +240,10 @@ COLUMN_VARIANTS: dict[str, list[str]] = {
         "pcr_result",
         "quel_est_le_resultats",
         "resultat_final_opx",
+        "resultat_igm",
+        "resultat_igm_rubeole",
+        "resultat_pcr_labo_national",
+        "resultat_machd_labo_national",
     ],
     "Hospitalisation": [
         "hospitalisation",
@@ -249,12 +262,18 @@ COLUMN_VARIANTS: dict[str, list[str]] = {
         "date_reception_resultat",
         "date_analyse",
         "date_result",
+        "date_envoi_resultat",
+        "date_partage_resultat_pcr",
+        "date_partage_resultat_tdr_surveillance_epi",
+        "date_partage_resultat_machd_surveillance_epi",
+        "date_resultat_igm_labo_national",
     ],
     "Date_reception_labo": [
         "date_reception_labo",
         "date_de_reception",
         "date_reception_echantillon",
         "date_reception",
+        "date_reception_echantillon_labo",
     ],
     "Date_issue": [
         "date_issue",
@@ -269,6 +288,39 @@ COLUMN_VARIANTS: dict[str, list[str]] = {
         "nom_cas",
         "patient_name",
         "nom complet",
+    ],
+    "N_labo": [
+        "n_labo",
+        "numero_labo",
+        "num_labo",
+        "lab_id",
+        "identifiant_labo",
+    ],
+    "Nom_laboratoire": [
+        "nom_laboratoire",
+        "laboratoire",
+        "lab_name",
+        "nom labo",
+    ],
+    "Type_de_prelevement": [
+        "type_de_prelevement",
+        "type_prelevement",
+        "specimen_type",
+        "sample_type",
+        "nature_prelevement",
+    ],
+    "Nombre_dose_recues": [
+        "nombre_dose_recues",
+        "nombre_doses_vaccin",
+        "nombre_dose",
+        "doses_recues",
+        "nb_doses",
+    ],
+    "Date_derniere_vaccination": [
+        "date_derniere_vaccination",
+        "date_derniere_dose",
+        "last_vaccination_date",
+        "date_vaccination",
     ],
     "Tranche_age": [
         "tranche_age",

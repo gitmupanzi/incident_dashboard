@@ -272,6 +272,61 @@ def render_profile_tab(ctx: dict) -> None:
                     }
                 )
                 st_dataframe_safe(prov_kpi, height=420)
+
+            lab_detail_cols = [
+                c for c in [
+                    "TDR_Resultat",
+                    "Resultat_labo",
+                    "Type_de_prelevement",
+                    "Nom_laboratoire",
+                    "Etat_echantillon",
+                    "Nombre_dose_recues",
+                ]
+                if c in df_f.columns and df_f[c].notna().any()
+            ]
+            lab_date_cols = [
+                c for c in ["Date_prelevement", "Date_reception_labo", "Date_resultat", "Date_derniere_vaccination"]
+                if c in df_f.columns
+            ]
+
+            if lab_detail_cols or lab_date_cols:
+                st.markdown("**Profil détaillé des variables laboratoire et vaccination**")
+
+                if lab_date_cols:
+                    availability_rows = []
+                    for col in lab_date_cols:
+                        non_null = int(df_f[col].notna().sum())
+                        availability_rows.append(
+                            {
+                                "Variable": col,
+                                "Renseigné": non_null,
+                                "%": round(non_null / max(len(df_f), 1) * 100.0, 1),
+                            }
+                        )
+                    st_dataframe_safe(pd.DataFrame(availability_rows), height=220)
+
+                if lab_detail_cols:
+                    lab_profile_col = st.selectbox(
+                        "Variable laboratoire / vaccination à décrire",
+                        options=lab_detail_cols,
+                        index=0,
+                        key="profile_lab_detail_col",
+                    )
+                    lab_profile_tbl = build_frequency_table(df_f, lab_profile_col, top_n=20)
+                    if not lab_profile_tbl.empty:
+                        d1, d2 = st.columns([1, 1.25])
+                        with d1:
+                            st_dataframe_safe(lab_profile_tbl, height=320)
+                        with d2:
+                            fig_lab_detail = px.bar(
+                                lab_profile_tbl.sort_values("n", ascending=False),
+                                x=lab_profile_col,
+                                y="n",
+                                title=f"Répartition de {lab_profile_col}",
+                            )
+                            fig_lab_detail.update_layout(xaxis_tickangle=-45)
+                            fig_lab_detail = apply_plotly_value_annotations(fig_lab_detail, annot_vals)
+                            st.plotly_chart(fig_lab_detail, width="stretch", key="profile_lab_detail_chart")
         else:
             render_absence_narrative("profile")
 
@@ -284,7 +339,7 @@ def render_profile_tab(ctx: dict) -> None:
 
         strat_age_col = pick_age_col(df_f)
         strat_candidates = []
-        for c in [COL_SEX, strat_age_col, COL_PROV, COL_ZS, COL_AS, COL_CLASS]:
+        for c in [COL_SEX, strat_age_col, COL_PROV, COL_ZS, COL_AS, COL_CLASS, "Type_de_prelevement", "Nom_laboratoire"]:
             if c and c in df_f.columns and df_f[c].notna().any() and c not in strat_candidates:
                 strat_candidates.append(c)
 
@@ -381,7 +436,26 @@ def render_profile_tab(ctx: dict) -> None:
         st.divider()
         st.subheader("6. Tableaux descriptifs des variables catégorielles")
         st.caption("Les analyses de délais sont centralisées dans l’onglet Surveillance afin d’éviter leur répétition ici.")
-        default_cat_candidates = [COL_SEX, COL_PROV, COL_ZS, COL_AS, COL_AGEG2, COL_AGEG, COL_ISSUE, COL_PREL, COL_TDR, COL_TDRR, COL_HOSP, COL_DEHY, COL_CLASS]
+        default_cat_candidates = [
+            COL_SEX,
+            COL_PROV,
+            COL_ZS,
+            COL_AS,
+            COL_AGEG2,
+            COL_AGEG,
+            COL_ISSUE,
+            COL_PREL,
+            COL_TDR,
+            COL_TDRR,
+            COL_HOSP,
+            COL_DEHY,
+            COL_CLASS,
+            "Resultat_labo",
+            "Type_de_prelevement",
+            "Nom_laboratoire",
+            "Etat_echantillon",
+            "Nombre_dose_recues",
+        ]
         cat_candidates = [c for c in default_cat_candidates if c in df_f.columns]
         extra_candidates = [c for c in df_f.columns if (not is_numeric_dtype(df_f[c])) and c not in cat_candidates]
         cat_options = cat_candidates + extra_candidates[:20]

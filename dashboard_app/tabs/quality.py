@@ -929,7 +929,10 @@ def render_quality_tab(ctx: dict) -> None:
                 cols_show = [c for c in [
                     "Nom_complet", COL_PROV, COL_ZS, COL_AS, COL_SEX, COL_AGE, COL_UNIT,
                     "YW", COL_WNUM, DATE_ONSET, DATE_ADM, DATE_PREL,
-                    COL_PREL, COL_TDR, COL_TDRR, COL_HOSP, COL_ISSUE, COL_CLASS
+                    DATE_RECEP, DATE_RES,
+                    COL_PREL, COL_TDR, COL_TDRR, "Resultat_labo", "Type_de_prelevement", "Nom_laboratoire", "N_labo",
+                    "Nombre_dose_recues", "Date_derniere_vaccination",
+                    COL_HOSP, COL_ISSUE, COL_CLASS
                 ] if c in df_f.columns]
         
                 detail = flags.merge(df_f.reset_index().rename(columns={"index": "row_id"}), on="row_id", how="left")
@@ -944,13 +947,28 @@ def render_quality_tab(ctx: dict) -> None:
         # 2) Complétude des champs clés
         # ==========================================================
         with st.expander("🔎 Complétude des champs clés", expanded=False):
-        
-            champs_cles = [
+            st.caption(
+                "Le score standard reste centré sur les champs attendus d'une line list de surveillance. "
+                "Quand une composante labo dense est détectée, un complément spécifique est affiché séparément."
+            )
+
+            champs_cles_base = [
                 COL_PROV, COL_ZS, COL_AS, "YW", COL_WNUM,
                 COL_SEX, COL_AGE, COL_UNIT, DATE_ONSET,
-                COL_PREL, COL_TDR, COL_TDRR, COL_HOSP,
+                COL_PREL, COL_TDR, COL_TDRR,
+                COL_HOSP,
                 COL_ISSUE, COL_CLASS
             ]
+            champs_cles = list(champs_cles_base)
+
+            lab_signal_cols = [
+                c for c in [DATE_PREL, DATE_RECEP, DATE_RES, "Resultat_labo", "N_labo", "Nom_laboratoire"]
+                if c in df_f.columns and pd.Series(df_f[c]).notna().mean() >= 0.15
+            ]
+            if len(lab_signal_cols) >= 2:
+                for c in [DATE_PREL, DATE_RECEP, DATE_RES, "Resultat_labo"]:
+                    if c in df_f.columns and c not in champs_cles:
+                        champs_cles.append(c)
         
             group_choices = [c for c in [COL_PROV, COL_ZS, "YW", COL_WNUM] if c in df_f.columns]
             group_for_comp = st.selectbox("Analyser la complétude par", group_choices, index=0 if group_choices else 0)
@@ -975,6 +993,16 @@ def render_quality_tab(ctx: dict) -> None:
                 figc.update_layout(xaxis_tickangle=-45, yaxis=dict(range=[0, 100]))
                 figc = apply_plotly_value_annotations(figc, annot_vals)
                 st.plotly_chart(figc, width="stretch")
+
+                lab_complement_cols = [
+                    c for c in ["Type_de_prelevement", "Nom_laboratoire", "N_labo", "Nombre_dose_recues", "Date_derniere_vaccination"]
+                    if c in df_f.columns and pd.Series(df_f[c]).notna().any()
+                ]
+                if lab_complement_cols and len(lab_signal_cols) >= 2:
+                    st.markdown("**Complétude complémentaire des champs labo/vaccination**")
+                    comp_lab = completeness_table(df_f, lab_complement_cols, by=group_for_comp)
+                    if not comp_lab.empty:
+                        st_dataframe_safe(comp_lab, height=320)
         
         
         # ==========================================================

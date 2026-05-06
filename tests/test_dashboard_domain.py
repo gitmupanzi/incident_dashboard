@@ -45,6 +45,7 @@ from dashboard_app.domain import (
     compute_indicators,
     is_death,
     standardize_df,
+    standardize_ll_by_disease,
     standardize_ll_core,
 )
 from dashboard_app.narratives import _build_scope_overview_text
@@ -137,6 +138,45 @@ class StandardizationTest(unittest.TestCase):
         self.assertAlmostEqual(float(out.loc[0, "Age_en_ans"]), 0.5, places=3)
         self.assertAlmostEqual(float(out.loc[1, "Age_en_ans"]), 14 / 365.25, places=3)
         self.assertEqual(out.loc[0, "Semaine_epid"], "2026-W02")
+
+    def test_standardize_ll_by_disease_enriches_rougeole_lab_fields(self):
+        raw = pd.DataFrame(
+            {
+                "Date_debut_symptomes": ["2026-01-03", "2026-01-04", "2026-01-05"],
+                "Province_notification": ["Kinshasa", "Kinshasa", "Sud Kivu"],
+                "Zone_de_sante_notification": ["ZS A", "ZS B", "ZS C"],
+                "Sexe": ["Masculin", "Feminin", "Masculin"],
+                "Age": [4, 7, 2],
+                "Unite_age": ["annees", "annees", "annees"],
+                "Prelevement_sang": [1, 1, 1],
+                "Date_prelevement": ["2026-01-04", "2026-01-05", "2026-01-06"],
+                "Date_reception_echantillon_labo": ["2026-01-06", "2026-01-07", "2026-01-08"],
+                "Date_envoi_resultat": ["2026-01-10", "2026-01-11", None],
+                "Resultat_igm": [1, 2, 5],
+                "Nombre_doses_vaccin": [2, 1, 99],
+                "Nom_laboratoire": ["INRB", "INRB", "INRB"],
+                "N_labo": ["LAB001", "LAB002", "LAB003"],
+                "Date_derniere_vaccination": ["2025-12-01", None, "2025-11-15"],
+            }
+        )
+
+        core_df = standardize_ll_by_disease(raw, "rougeole")
+
+        self.assertEqual(core_df.loc[0, COL_PREL], "Oui")
+        self.assertEqual(core_df.loc[0, "Type_de_prelevement"], "Sang")
+        self.assertEqual(core_df.loc[0, "Resultat_labo"], "positif")
+        self.assertEqual(core_df.loc[1, COL_TDRR], "negatif")
+        self.assertEqual(core_df.loc[2, COL_TDRR], "en attente")
+        self.assertEqual(core_df.loc[0, DATE_RECEP].strftime("%Y-%m-%d"), "2026-01-06")
+        self.assertEqual(core_df.loc[0, DATE_RES].strftime("%Y-%m-%d"), "2026-01-10")
+        self.assertEqual(core_df.loc[0, "Nombre_dose_recues"], 2)
+        self.assertEqual(core_df.loc[0, "Nom_laboratoire"], "INRB")
+        self.assertEqual(core_df.loc[0, "N_labo"], "LAB001")
+        self.assertEqual(core_df.loc[0, "Date_derniere_vaccination"], "2025-12-01")
+
+        analytic_df = standardize_df(core_df)
+        self.assertTrue(bool(analytic_df.loc[0, "is_tdr_pos"]))
+        self.assertFalse(bool(analytic_df.loc[1, "is_tdr_pos"]))
 
 
 class IndicatorTest(unittest.TestCase):

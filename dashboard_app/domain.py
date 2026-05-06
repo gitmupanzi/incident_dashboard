@@ -185,15 +185,41 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
         "default_sheet": "LL_Rougeole_Rubeole",
         "rename_map": {
             "Evolution": "Issue",
-            "Echantillon_preleve": "Prelevement"            
+            "Echantillon_preleve": "Prelevement",
+            "Date_reception_echantillon_labo": "Date_reception_labo",
+            "Date_envoi_resultat": "Date_resultat",
+            "Date_partage_resultat_pcr": "Date_resultat",
+            "Date_partage_resultat_tdr_surveillance_epi": "Date_resultat",
+            "Date_partage_resultat_machd_surveillance_epi": "Date_resultat",
+            "Nombre_doses_vaccin": "Nombre_dose_recues",
         },
         "onset_candidates": ["Date_debut_maladie", "Date_debut_symptomes"],
         "notif_candidates": ["Date_notification"],
         "adm_candidates": ["Date_admission_au_CT", "Date_admission"],
-        "prel_candidates": ["Date_prelevement", "Date_prelevement_clean"],
+        "prel_candidates": [
+            "Date_prelevement",
+            "Date_prelevement_clean",
+            "Date_prelevement_urine",
+            "Date_prelevement_respiratoire",
+            "Date_autre_prelevement",
+        ],
         "issue_candidates": ["Date_issue"],
-        "result_candidates": ["Date_resultat", "Date_reception_resultat"],
-        "receipt_candidates": ["Date_reception_labo", "Date_reception_echantillon", "Date_acheminement"],
+        "result_candidates": [
+            "Date_resultat",
+            "Date_reception_resultat",
+            "Date_envoi_resultat",
+            "Date_partage_resultat_pcr",
+            "Date_partage_resultat_tdr_surveillance_epi",
+            "Date_partage_resultat_machd_surveillance_epi",
+            "Date_resultat_igm_labo_national",
+            "Date_resultat_isolement_viral_regional",
+        ],
+        "receipt_candidates": [
+            "Date_reception_labo",
+            "Date_reception_echantillon",
+            "Date_reception_echantillon_labo",
+            "Date_acheminement",
+        ],
         "class_candidates": ["Classification_finale", "Status_cas"],
     },
     "mpox": {
@@ -450,10 +476,12 @@ def _rename_columns_by_alias_map(df: pd.DataFrame, alias_map: Dict[str, str]) ->
 
     real_cols_norm = {_normalize_name(c): c for c in df.columns}
     rename_dict: Dict[str, str] = {}
+    reserved_targets = set(df.columns)
     for src, dst in alias_map.items():
         real_src = real_cols_norm.get(_normalize_name(src))
-        if (real_src is not None) and (dst not in df.columns):
+        if (real_src is not None) and (dst not in reserved_targets):
             rename_dict[real_src] = dst
+            reserved_targets.add(dst)
 
     return df.rename(columns=rename_dict) if rename_dict else df
 
@@ -472,6 +500,10 @@ def standardize_ll_by_disease(df: pd.DataFrame, disease_key: str) -> pd.DataFram
 
     # 2) Core
     df = standardize_ll_core(df)
+
+    # 2a) Post-traitement spécifique Rougeole labo
+    if disease_key == "rougeole":
+        df = _enrich_rougeole_lab_columns(df)
 
     # 2b) Post-traitement spécifique Mpox
     if disease_key == "mpox":
@@ -1375,10 +1407,18 @@ def clean_str(s: pd.Series) -> pd.Series:
 def norm_yesno(x):
     if x is None or pd.isna(x):
         return None
+    try:
+        numeric_x = float(x)
+        if numeric_x == 1.0:
+            return "Oui"
+        if numeric_x == 0.0:
+            return "Non"
+    except Exception:
+        pass
     s = str(x).strip().lower()
-    if s in ["oui", "o", "y", "yes", "1", "true", "vrai"]:
+    if s in ["oui", "o", "y", "yes", "1", "1.0", "true", "vrai"]:
         return "Oui"
-    if s in ["non", "n", "no", "0", "false", "faux"]:
+    if s in ["non", "n", "no", "0", "0.0", "false", "faux"]:
         return "Non"
     return str(x).strip()
 
@@ -1464,8 +1504,157 @@ TDR_NEG_SET = {"negatif", "négatif", "negative", "neg", "-", "tdr negatif", "td
 def _is_yes_series(s: pd.Series) -> pd.Series:
     return _norm_txt_series(s).isin(YES_SET)
 
+def _normalize_lab_result_value(value) -> object:
+    if value is None or pd.isna(value):
+        return pd.NA
+
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none"}:
+        return pd.NA
+
+    norm = _strip_accents(text).lower().strip()
+    norm = re.sub(r"[_\-]+", " ", norm)
+    norm = re.sub(r"\s+", " ", norm)
+
+    code = None
+    if re.fullmatch(r"[1-5](?:\.0+)?", norm):
+        code = norm[0]
+    else:
+        m = re.match(r"^([1-5])\b", norm)
+        if m:
+            code = m.group(1)
+
+    if "posit" in norm or code == "1":
+        return "positif"
+    if "negat" in norm or code == "2":
+        return "negatif"
+    if any(token in norm for token in ["pending", "attente", "en cours"]) or code == "5":
+        return "en attente"
+    if any(token in norm for token in ["not tested", "non teste", "non realise", "not done"]) or code == "4":
+        return "non teste"
+    if any(token in norm for token in ["indet", "equivo", "douteux", "inconclu"]) or code == "3":
+        return "indetermine"
+
+    return norm
+
 def _tdr_result_norm(s: pd.Series) -> pd.Series:
-    return _norm_txt_series(s)
+    return s.apply(_normalize_lab_result_value).astype("string")
+
+def _coalesce_series_list(series_list: List[pd.Series], index) -> pd.Series:
+    out = pd.Series(pd.NA, index=index, dtype="string")
+    for series in series_list:
+        if series is None:
+            continue
+        s = pd.Series(series, index=index).astype("string")
+        out = out.combine_first(s)
+    return out
+
+def _build_specimen_type_from_columns(df: pd.DataFrame) -> pd.Series:
+    specimen_cols = [
+        ("Prelevement_sang", "Sang"),
+        ("Prelevement_urine", "Urine"),
+        ("Prelevement_respiratoire", "Respiratoire"),
+    ]
+    available = [col for col, _ in specimen_cols if col in df.columns]
+    if not available and "Autre_prelevement" not in df.columns and "Precision_autre_prelevement" not in df.columns:
+        return pd.Series(pd.NA, index=df.index, dtype="string")
+
+    def _row_value(row: pd.Series):
+        labels: List[str] = []
+        for col, label in specimen_cols:
+            if col in row.index and norm_yesno(row[col]) == "Oui":
+                labels.append(label)
+
+        other_raw = row.get("Precision_autre_prelevement")
+        other_precision = "" if other_raw is None or pd.isna(other_raw) else str(other_raw).strip()
+        other_yes = "Autre_prelevement" in row.index and norm_yesno(row.get("Autre_prelevement")) == "Oui"
+        if other_yes or other_precision:
+            labels.append(f"Autre ({other_precision})" if other_precision else "Autre")
+
+        if not labels:
+            return pd.NA
+        return " + ".join(labels)
+
+    return df.apply(_row_value, axis=1).astype("string")
+
+def _enrich_rougeole_lab_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    if "Nombre_doses_vaccin" in df.columns and "Nombre_dose_recues" not in df.columns:
+        df["Nombre_dose_recues"] = df["Nombre_doses_vaccin"]
+
+    if "Type_de_prelevement" not in df.columns:
+        df["Type_de_prelevement"] = pd.Series(pd.NA, index=df.index, dtype="string")
+    specimen_type = _build_specimen_type_from_columns(df)
+    df["Type_de_prelevement"] = df["Type_de_prelevement"].astype("string").combine_first(specimen_type)
+
+    result_candidates = []
+    for col in [
+        "TDR_Resultat",
+        "Resultat_pcr_labo_national",
+        "Resultat_machd_labo_national",
+        "Resultat_igm",
+        "Resultat_igm_rubeole",
+        "Resultat_igm_rougeole_fievre_jaune_regional",
+    ]:
+        if col in df.columns:
+            result_candidates.append(_tdr_result_norm(df[col]))
+
+    lab_result = _coalesce_series_list(result_candidates, df.index)
+
+    if "Resultat_labo" not in df.columns:
+        df["Resultat_labo"] = pd.Series(pd.NA, index=df.index, dtype="string")
+    df["Resultat_labo"] = df["Resultat_labo"].astype("string").combine_first(lab_result)
+
+    if "TDR_Resultat" not in df.columns:
+        df["TDR_Resultat"] = pd.Series(pd.NA, index=df.index, dtype="string")
+    df["TDR_Resultat"] = _tdr_result_norm(df["TDR_Resultat"]).combine_first(lab_result)
+
+    if "TDR_realise" not in df.columns:
+        df["TDR_realise"] = pd.Series(pd.NA, index=df.index, dtype="string")
+    tdr_realise = df["TDR_realise"].apply(norm_yesno).astype("string")
+    result_done = df["Resultat_labo"].isin(["positif", "negatif", "indetermine"])
+    result_not_done = df["Resultat_labo"].isin(["en attente", "non teste"])
+    tdr_realise.loc[result_done & tdr_realise.isna()] = "Oui"
+    tdr_realise.loc[result_not_done & tdr_realise.isna()] = "Non"
+    df["TDR_realise"] = tdr_realise
+
+    if "Prelevement" not in df.columns:
+        df["Prelevement"] = pd.Series(pd.NA, index=df.index, dtype="string")
+    prelevement = df["Prelevement"].apply(norm_yesno).astype("string")
+    lab_evidence_masks = []
+    for col in [
+        "Prelevement_sang",
+        "Prelevement_urine",
+        "Prelevement_respiratoire",
+        "Autre_prelevement",
+    ]:
+        if col in df.columns:
+            lab_evidence_masks.append(df[col].apply(norm_yesno).eq("Oui"))
+    for col in [
+        "Date_prelevement",
+        "Date_prelevement_urine",
+        "Date_prelevement_respiratoire",
+        "Date_autre_prelevement",
+        "Date_reception_echantillon_labo",
+        "Date_envoi_resultat",
+        "Date_partage_resultat_pcr",
+        "Date_partage_resultat_tdr_surveillance_epi",
+        "Date_partage_resultat_machd_surveillance_epi",
+        "Resultat_igm",
+        "Resultat_igm_rubeole",
+        "Resultat_pcr_labo_national",
+        "Resultat_machd_labo_national",
+    ]:
+        if col in df.columns:
+            lab_evidence_masks.append(df[col].notna())
+
+    if lab_evidence_masks:
+        prelevement_evidence = pd.concat(lab_evidence_masks, axis=1).any(axis=1)
+        prelevement.loc[prelevement_evidence & prelevement.isna()] = "Oui"
+    df["Prelevement"] = prelevement
+
+    return df
 
 # =========================
 # SECTION: INDICATEURS KPI
@@ -2163,7 +2352,7 @@ def build_recommended_fields_matrix(df: pd.DataFrame) -> pd.DataFrame:
         "Personne": [COL_SEX, "Age_en_ans", "Tranche_age"],
         "Temps": [DATE_ONSET, DATE_CONS, DATE_NOTIF, DATE_INV, DATE_ADM, DATE_PREL, DATE_RES, DATE_ISSUE],
         "Issue": [COL_ISSUE, DATE_ISSUE, "Date_sortie_au_CT"],
-        "Labo": [COL_PREL, COL_TDR, COL_TDRR, "Resultat_labo", "Type_de_prelevement"],
+        "Labo": [COL_PREL, COL_TDR, COL_TDRR, "Resultat_labo", "Type_de_prelevement", "Nom_laboratoire", "Etat_echantillon"],
         "Vaccination": ["Statut_vaccinal", "Vaccin_precedemment", "Nombre_dose", "Nombre_dose_recues", "Date_derniere_vaccination"],
         "Lien épid / cluster": ["Lien_epid_avec_un_cas", "Cas_source_id", "Facteur_exposition", "Type_de_lien"],
     }
@@ -3344,6 +3533,8 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
         "age_unit": "Unite_age",
         "unite": "Unite_age",
         "unite_d_age": "Unite_age",
+        "age_annee": "Age",
+        "age_mois": "Age",
         "age_years": "Age_en_ans",
         "age_annees": "Age_en_ans",
 
@@ -3357,6 +3548,12 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
 
         # Labo / prelevement
         "echantillon_preleve": "Prelevement",
+        "type_prelevement": "Type_de_prelevement",
+        "nombre_doses_vaccin": "Nombre_dose_recues",
+        "laboratoire": "Nom_laboratoire",
+        "lab_name": "Nom_laboratoire",
+        "numero_labo": "N_labo",
+        "num_labo": "N_labo",
     }
     df = _rename_columns_by_alias_map(df, rename_map)
 
@@ -3376,6 +3573,24 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
     # --- Dates
     df["Date_notification"] = _to_dt(df["Date_notification"])
     df["Date_debut_maladie"] = _to_dt(df["Date_debut_maladie"])
+
+    # --- Age brut: fallback utile pour certaines line lists labo
+    age_numeric = pd.to_numeric(df["Age"], errors="coerce")
+    unit_text = df["Unite_age"].astype("string").str.strip()
+    unit_missing = unit_text.isna() | unit_text.eq("")
+    if "Age_annee" in df.columns:
+        age_annee = pd.to_numeric(df["Age_annee"], errors="coerce")
+        mask = age_numeric.isna() & age_annee.notna()
+        df.loc[mask, "Age"] = age_annee.loc[mask]
+        df.loc[mask & unit_missing, "Unite_age"] = "ans"
+        age_numeric = pd.to_numeric(df["Age"], errors="coerce")
+        unit_text = df["Unite_age"].astype("string").str.strip()
+        unit_missing = unit_text.isna() | unit_text.eq("")
+    if "Age_mois" in df.columns:
+        age_mois = pd.to_numeric(df["Age_mois"], errors="coerce")
+        mask = age_numeric.isna() & age_mois.notna()
+        df.loc[mask, "Age"] = age_mois.loc[mask]
+        df.loc[mask & unit_missing, "Unite_age"] = "mois"
 
     # --- Année/Semaine ISO: si manquantes, calculer depuis la meilleure date
     need_year = df["Annee_epid"].isna().all()

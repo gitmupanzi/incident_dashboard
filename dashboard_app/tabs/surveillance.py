@@ -45,6 +45,16 @@ def _surv_metric_pct(value: Any) -> str:
         return "-"
 
 
+def _surv_threshold_metric(series: Any, threshold: float) -> tuple[float, int]:
+    """Calcule un indicateur <= seuil sans échouer si la série est absente."""
+    if series is None:
+        return np.nan, 0
+    try:
+        return pct_under_threshold(series, threshold)
+    except Exception:
+        return np.nan, 0
+
+
 def _surv_join_list(values: list[str], max_items: int = 10) -> str:
     """Assemble une liste courte et lisible pour les tableaux linéaires."""
     cleaned = [str(v).strip() for v in values if str(v).strip()]
@@ -750,6 +760,74 @@ def render_surveillance_tab(ctx: dict) -> None:
                             st.dataframe(cluster_tbl.head(100), width="stretch", height=420, hide_index=True)
                     else:
                         render_absence_narrative("alerts")
+
+                    weekly_lab_tbl = build_weekly_lab_summary(df_surv_scope)
+                    if not weekly_lab_tbl.empty:
+                        with st.expander("Suivi hebdomadaire des indicateurs laboratoire", expanded=False):
+                            st.caption(
+                                "Ce suivi temporel standard résume, par semaine, le volume de tests interprétables, "
+                                "les tests positifs et la positivité observée dans la fenêtre active."
+                            )
+                            l1, l2, l3 = st.columns(3)
+                            l1.metric(
+                                "Semaines avec suivi labo",
+                                format_metric_value(len(weekly_lab_tbl)),
+                            )
+                            l2.metric(
+                                "Tests valides cumulés",
+                                format_metric_value(pd.to_numeric(weekly_lab_tbl["Tests valides"], errors="coerce").sum()),
+                            )
+                            latest_pos = pd.to_numeric(
+                                weekly_lab_tbl["Positivité (%)"],
+                                errors="coerce",
+                            ).dropna()
+                            l3.metric(
+                                "Positivité récente (%)",
+                                "-" if latest_pos.empty else f"{float(latest_pos.iloc[-1]):.1f}",
+                            )
+
+                            fig_lab_trend = go.Figure()
+                            fig_lab_trend.add_trace(
+                                go.Bar(
+                                    x=weekly_lab_tbl["Semaine"],
+                                    y=weekly_lab_tbl["Tests valides"],
+                                    name="Tests valides",
+                                    marker_color="#4f81bd",
+                                )
+                            )
+                            fig_lab_trend.add_trace(
+                                go.Bar(
+                                    x=weekly_lab_tbl["Semaine"],
+                                    y=weekly_lab_tbl["Tests positifs"],
+                                    name="Tests positifs",
+                                    marker_color="#d97b16",
+                                )
+                            )
+                            fig_lab_trend.add_trace(
+                                go.Scatter(
+                                    x=weekly_lab_tbl["Semaine"],
+                                    y=weekly_lab_tbl["Positivité (%)"],
+                                    name="Positivité (%)",
+                                    mode="lines+markers",
+                                    line=dict(color="#b9353f", width=3),
+                                    marker=dict(size=8),
+                                    yaxis="y2",
+                                )
+                            )
+                            fig_lab_trend.update_layout(
+                                title=" ",
+                                barmode="group",
+                                xaxis_title="Semaine épidémiologique",
+                                yaxis_title="Nombre de tests",
+                                yaxis2=dict(
+                                    title="Positivité (%)",
+                                    overlaying="y",
+                                    side="right",
+                                    rangemode="tozero",
+                                ),
+                            )
+                            st_plot(fig_lab_trend, key="surv_weekly_lab_combo", annotate_values=False)
+                            st_dataframe_safe(weekly_lab_tbl, height=320)
                 else:
                     render_absence_narrative("geo")
         else:
@@ -781,7 +859,10 @@ def render_surveillance_tab(ctx: dict) -> None:
         
         st.subheader("Analyse de la promptitude des principales étapes du parcours du cas et de la notification")
         
-        delais_cols = [c for c in ["delai_onset_to_adm", "delai_onset_to_prel"] if c in df_f.columns]
+        delais_cols = [
+            c for c in ["delai_onset_to_adm", "delai_onset_to_prel", "delai_prel_to_result"]
+            if c in df_f.columns
+        ]
         
         if not delais_cols:
             render_absence_narrative("delays")
@@ -798,17 +879,23 @@ def render_surveillance_tab(ctx: dict) -> None:
                 "Les indicateurs et classements ci-dessous sont plus utiles pour l’action immédiate que la distribution graphique brute."
             )
 
-            c1, c2, c3, c4 = st.columns(4)
+            p1, n1 = _surv_threshold_metric(df_del["delai_onset_to_adm"] if "delai_onset_to_adm" in df_del.columns else None, seuil_jours)
+            p2, n2 = _surv_threshold_metric(df_del["delai_onset_to_prel"] if "delai_onset_to_prel" in df_del.columns else None, seuil_jours)
+            p3, n3 = _surv_threshold_metric(df_del["delai_prel_to_result"] if "delai_prel_to_result" in df_del.columns else None, seuil_jours)
+
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
             with c1:
-                p1, n1 = pct_under_threshold(df_del.get("delai_onset_to_adm"), seuil_jours)
                 st.metric("Admission ≤ seuil (%)", _surv_metric_pct(p1), help=f"n = {n1}")
             with c2:
-                p2, n2 = pct_under_threshold(df_del.get("delai_onset_to_prel"), seuil_jours)
                 st.metric("Prélèvement ≤ seuil (%)", _surv_metric_pct(p2), help=f"n = {n2}")
             with c3:
                 st.metric("Délais admission documentés", format_metric_value(n1))
             with c4:
                 st.metric("Délais prélèvement documentés", format_metric_value(n2))
+            with c5:
+                st.metric("Résultat ≤ seuil (%)", _surv_metric_pct(p3), help=f"n = {n3}")
+            with c6:
+                st.metric("Délais résultat documentés", format_metric_value(n3))
 
             if not delay_summary_std.empty:
                 st.markdown("**Résumé standard des délais disponibles**")
@@ -821,6 +908,8 @@ def render_surveillance_tab(ctx: dict) -> None:
                     ranking_specs.append(("delai_onset_to_adm", "Début maladie → admission"))
                 if "delai_onset_to_prel" in delais_cols:
                     ranking_specs.append(("delai_onset_to_prel", "Début maladie → prélèvement"))
+                if "delai_prel_to_result" in delais_cols:
+                    ranking_specs.append(("delai_prel_to_result", "Prélèvement → résultat"))
 
                 if ranking_specs:
                     rank_cols = st.columns(len(ranking_specs))
@@ -891,7 +980,7 @@ def render_surveillance_tab(ctx: dict) -> None:
                 )
 
                 group_candidates = []
-                for c in [COL_PROV, COL_ZS, pick_age_col(df_del), COL_SEX, COL_CLASS]:
+                for c in [COL_PROV, COL_ZS, pick_age_col(df_del), COL_SEX, COL_CLASS, "Type_de_prelevement", "Nom_laboratoire"]:
                     if c and c in df_del.columns and df_del[c].notna().any() and c not in group_candidates:
                         group_candidates.append(c)
 
