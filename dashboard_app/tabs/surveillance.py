@@ -45,6 +45,359 @@ def _surv_metric_pct(value: Any) -> str:
         return "-"
 
 
+def _surv_join_list(values: list[str], max_items: int = 10) -> str:
+    """Assemble une liste courte et lisible pour les tableaux linéaires."""
+    cleaned = [str(v).strip() for v in values if str(v).strip()]
+    if not cleaned:
+        return "-"
+    if len(cleaned) <= int(max_items):
+        return ", ".join(cleaned)
+    return ", ".join(cleaned[: int(max_items)]) + f", +{len(cleaned) - int(max_items)} autre(s)"
+
+
+def _surv_alpha_sort_key(value: object) -> str:
+    """Retourne une clé de tri alphabétique robuste pour les libellés géographiques."""
+    return str(value).strip().casefold()
+
+
+def _build_surveillance_completeness_matrices(
+    df: pd.DataFrame,
+    province_col: str,
+    zs_col: str,
+    *,
+    expected_mode: str = "union",
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.DataFrame]:
+    """Construit les matrices de complétude surveillance province × semaine."""
+    if df is None or df.empty or province_col not in df.columns or zs_col not in df.columns:
+        return pd.DataFrame(), pd.DataFrame(), pd.Series(dtype="float64"), pd.DataFrame()
+
+    work, _reference = _prepare_surveillance_period_scope(df)
+    if work.empty or "_surv_label" not in work.columns or "_surv_order" not in work.columns:
+        return pd.DataFrame(), pd.DataFrame(), pd.Series(dtype="float64"), pd.DataFrame()
+
+    work = work.copy()
+    work["_surv_province"] = work[province_col].astype("string").str.replace(r"\s+", " ", regex=True).str.strip()
+    work["_surv_zs"] = work[zs_col].astype("string").str.replace(r"\s+", " ", regex=True).str.strip()
+    work = work.dropna(subset=["_surv_province", "_surv_zs", "_surv_label", "_surv_order"])
+    work = work[
+        (work["_surv_province"] != "")
+        & (work["_surv_zs"] != "")
+        & (work["_surv_label"].astype(str).str.strip() != "")
+    ]
+    if work.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.Series(dtype="float64"), pd.DataFrame()
+
+    unique_reporting = work[["_surv_province", "_surv_zs", "_surv_label", "_surv_order"]].drop_duplicates()
+    week_ref = (
+        unique_reporting[["_surv_label", "_surv_order"]]
+        .drop_duplicates()
+        .sort_values("_surv_order")
+    )
+    week_labels = week_ref["_surv_label"].astype(str).tolist()
+
+    counts = (
+        unique_reporting
+        .groupby(["_surv_province", "_surv_label"], as_index=False)
+        .agg(Nombre_ZS=("_surv_zs", "nunique"))
+    )
+    count_pivot = (
+        counts
+        .pivot_table(
+            index="_surv_province",
+            columns="_surv_label",
+            values="Nombre_ZS",
+            aggfunc="sum",
+            fill_value=0,
+            observed=False,
+        )
+        .astype(int)
+    )
+    province_order = sorted(count_pivot.index.astype(str).tolist(), key=_surv_alpha_sort_key)
+    count_pivot = count_pivot.reindex(index=province_order, columns=week_labels, fill_value=0)
+
+    if expected_mode == "max_week":
+        expected = count_pivot.max(axis=1).replace(0, np.nan)
+    else:
+        expected = (
+            unique_reporting
+            .groupby("_surv_province")["_surv_zs"]
+            .nunique()
+            .reindex(count_pivot.index)
+            .replace(0, np.nan)
+        )
+
+    rel_pivot = count_pivot.div(expected, axis=0).clip(lower=0, upper=1).fillna(0)
+    summary = pd.DataFrame({
+        "Province": count_pivot.index.astype(str),
+        "ZS attendues": expected.fillna(0).astype(int).values,
+        "Semaines analysées": int(len(count_pivot.columns)),
+        "Moyenne ZS rapportantes": count_pivot.mean(axis=1).round(1).values,
+        "Complétude moyenne (%)": (rel_pivot.mean(axis=1) * 100).round(1).values,
+        "Minimum ZS rapportantes": count_pivot.min(axis=1).astype(int).values,
+        "Semaine la plus faible": count_pivot.idxmin(axis=1).astype(str).values,
+        "Dernière semaine": str(count_pivot.columns[-1]) if len(count_pivot.columns) else "",
+        "ZS dernière semaine": count_pivot.iloc[:, -1].astype(int).values if len(count_pivot.columns) else 0,
+        "Complétude dernière semaine (%)": (rel_pivot.iloc[:, -1] * 100).round(1).values if len(rel_pivot.columns) else 0,
+    })
+    return count_pivot, rel_pivot, expected, summary
+
+
+def _make_surveillance_completeness_heatmap(count_pivot: pd.DataFrame, rel_pivot: pd.DataFrame) -> object:
+    """Construit la figure Plotly du tableau de complétude surveillance."""
+    if count_pivot is None or count_pivot.empty or rel_pivot is None or rel_pivot.empty:
+        return None
+
+    y_labels = [str(x).upper() for x in count_pivot.index.tolist()]
+    x_labels = [str(x) for x in count_pivot.columns.tolist()]
+    z_values = rel_pivot.to_numpy(dtype=float)
+    text_values = count_pivot.astype(int).astype(str).to_numpy()
+
+    hover = []
+    for prov_idx, prov in enumerate(y_labels):
+        row = []
+        for week_idx, week in enumerate(x_labels):
+            row.append(
+                f"Province: {prov}<br>"
+                f"Semaine: {week}<br>"
+                f"ZS rapportantes: {int(count_pivot.iloc[prov_idx, week_idx])}<br>"
+                f"Complétude relative: {float(rel_pivot.iloc[prov_idx, week_idx]) * 100:.1f}%"
+            )
+        hover.append(row)
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z_values,
+            x=x_labels,
+            y=y_labels,
+            text=text_values,
+            texttemplate="%{text}",
+            textfont={"size": 11, "color": "black"},
+            customdata=hover,
+            hovertemplate="%{customdata}<extra></extra>",
+            zmin=0,
+            zmax=1,
+            colorscale=[
+                [0.00, "#ff0000"],
+                [0.25, "#ff9900"],
+                [0.50, "#ffff00"],
+                [0.75, "#99ff00"],
+                [1.00, "#00ee00"],
+            ],
+            colorbar={"title": "Complétude<br>(relative)", "tickformat": ".0%"},
+        )
+    )
+    height = min(max(480, 26 * len(y_labels) + 180), 1050)
+    fig.update_layout(
+        title="Tableau de complétude de la surveillance (nombre de ZS par province)",
+        xaxis_title="Semaines épidémiologiques de notification",
+        yaxis_title="Divisions provinciales de la santé (DPS)",
+        height=height,
+        margin=dict(l=120, r=80, t=80, b=70),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    fig.update_xaxes(type="category", tickangle=0, showgrid=True, gridcolor="rgba(0,0,0,0.10)")
+    fig.update_yaxes(
+        type="category",
+        autorange="reversed",
+        categoryorder="array",
+        categoryarray=y_labels,
+        showgrid=True,
+        gridcolor="rgba(0,0,0,0.10)",
+    )
+    return fig
+
+
+def _render_surveillance_completeness_section(
+    df_scope: pd.DataFrame,
+    province_col: str,
+    zs_col: str,
+) -> None:
+    """Affiche un tableau de complétude surveillance sous forme de listes linéaires."""
+    with st.expander("Tableau de complétude de la surveillance", expanded=False):
+        st.markdown("### Tableau de complétude de la surveillance")
+        st.caption(
+            "Lecture : les listes ci-dessous résument, par province et par semaine, le nombre de zones de santé "
+            "ayant rapporté au moins un cas dans la fenêtre de surveillance active."
+        )
+
+        if df_scope is None or df_scope.empty:
+            st.info("Aucune donnée disponible pour calculer la complétude de la surveillance.")
+            return
+
+        missing = [c for c in [province_col, zs_col] if c not in df_scope.columns]
+        if missing:
+            st.info("Complétude surveillance indisponible : colonne(s) manquante(s) : " + ", ".join(missing) + ".")
+            return
+
+        c1, c2, c3 = st.columns([1.25, 1, 1])
+        with c1:
+            expected_mode_label = st.selectbox(
+                "Référence de complétude",
+                options=["Total ZS observées sur la période", "Maximum hebdomadaire observé"],
+                index=0,
+                key="surv_completeness_expected_mode",
+                help=(
+                    "Total ZS observées : dénominateur stable par province sur toute la période filtrée. "
+                    "Maximum hebdomadaire : dénominateur basé sur la meilleure semaine observée."
+                ),
+            )
+        with c2:
+            completeness_threshold = st.slider(
+                "Seuil d'alerte (%)",
+                min_value=0,
+                max_value=100,
+                value=80,
+                step=5,
+                key="surv_completeness_threshold",
+            )
+        with c3:
+            show_completion_table = st.checkbox(
+                "Afficher le tableau source",
+                value=False,
+                key="surv_completeness_show_table",
+            )
+
+        expected_mode = "max_week" if expected_mode_label == "Maximum hebdomadaire observé" else "union"
+        count_pivot, rel_pivot, expected, summary = _build_surveillance_completeness_matrices(
+            df_scope,
+            province_col,
+            zs_col,
+            expected_mode=expected_mode,
+        )
+        if count_pivot.empty:
+            st.info("Aucune combinaison Province / Zone de santé / Semaine exploitable pour produire la complétude.")
+            return
+
+        threshold_ratio = float(completeness_threshold) / 100.0
+        latest_col = count_pivot.columns[-1]
+        total_expected = float(expected.fillna(0).sum())
+        latest_count = float(count_pivot[latest_col].sum())
+        latest_pct = (latest_count / total_expected * 100.0) if total_expected > 0 else np.nan
+        mean_pct = float(rel_pivot.mean().mean() * 100.0) if not rel_pivot.empty else np.nan
+        alert_cells = int((rel_pivot < threshold_ratio).sum().sum())
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Provinces", f"{count_pivot.shape[0]:,}")
+        k2.metric("Semaines", f"{count_pivot.shape[1]:,}")
+        k3.metric("Complétude moyenne", "NA" if pd.isna(mean_pct) else f"{mean_pct:.1f}%")
+        k4.metric(f"Dernière semaine ({latest_col})", "NA" if pd.isna(latest_pct) else f"{latest_pct:.1f}%")
+
+        if alert_cells > 0:
+            st.caption(
+                f"Cellules sous le seuil de {int(completeness_threshold)}% : {alert_cells:,}. "
+                "Ces provinces et semaines méritent une vérification avec les équipes concernées."
+            )
+
+        fig = _make_surveillance_completeness_heatmap(count_pivot, rel_pivot)
+        if fig is not None:
+            try:
+                st_plot(fig, key="surv_completeness_heatmap")
+            except Exception:
+                st.plotly_chart(fig, width="stretch", key="surv_completeness_heatmap")
+
+        province_summary = summary.sort_values(
+            ["Province"],
+            ascending=[True],
+            key=lambda col: col.map(_surv_alpha_sort_key) if col.name == "Province" else col,
+        ).copy()
+
+        week_rows = []
+        zero_by_week_rows = []
+        for week in count_pivot.columns.tolist():
+            week_total = float(count_pivot[week].sum())
+            week_pct = (week_total / total_expected * 100.0) if total_expected > 0 else np.nan
+            week_rel = rel_pivot[week]
+            provinces_below = [str(p) for p in week_rel.index[week_rel < threshold_ratio].tolist()]
+            provinces_zero = [str(p) for p in count_pivot.index[count_pivot[week].eq(0)].tolist()]
+            week_rows.append({
+                "Semaine": str(week),
+                "ZS rapportantes": int(week_total),
+                "Complétude globale (%)": round(week_pct, 1) if not pd.isna(week_pct) else np.nan,
+                f"Provinces sous {int(completeness_threshold)}%": int(len(provinces_below)),
+                "Provinces sans partage": int(len(provinces_zero)),
+                "Liste provinces sous seuil": _surv_join_list(provinces_below, max_items=6),
+            })
+            if provinces_zero:
+                zero_by_week_rows.append({
+                    "Semaine": str(week),
+                    "Nombre de provinces sans partage": int(len(provinces_zero)),
+                    "Provinces sans partage": _surv_join_list(provinces_zero, max_items=10),
+                })
+
+        threshold_by_province_rows = []
+        zero_by_province_rows = []
+        zero_mask = count_pivot.eq(0)
+        for province in count_pivot.index.tolist():
+            weeks_below = [str(w) for w in rel_pivot.columns[rel_pivot.loc[province] < threshold_ratio].tolist()]
+            weeks_zero = [str(w) for w in count_pivot.columns[zero_mask.loc[province]].tolist()]
+            if weeks_below:
+                threshold_by_province_rows.append({
+                    "Province": str(province),
+                    "Nombre de semaines sous seuil": int(len(weeks_below)),
+                    "Semaines sous seuil": _surv_join_list(weeks_below, max_items=12),
+                })
+            if weeks_zero:
+                zero_by_province_rows.append({
+                    "Province": str(province),
+                    "Nombre de semaines sans partage": int(len(weeks_zero)),
+                    "Semaines sans partage": _surv_join_list(weeks_zero, max_items=12),
+                })
+
+        week_summary = pd.DataFrame(week_rows).sort_values(
+            ["Complétude globale (%)", "Semaine"],
+            ascending=[True, True],
+            na_position="last",
+        )
+        threshold_by_province = pd.DataFrame(threshold_by_province_rows).sort_values(
+            ["Nombre de semaines sous seuil", "Province"],
+            ascending=[False, True],
+            key=lambda col: col.map(_surv_alpha_sort_key) if col.name == "Province" else col,
+        ) if threshold_by_province_rows else pd.DataFrame()
+        zero_by_province = pd.DataFrame(zero_by_province_rows).sort_values(
+            ["Nombre de semaines sans partage", "Province"],
+            ascending=[False, True],
+            key=lambda col: col.map(_surv_alpha_sort_key) if col.name == "Province" else col,
+        ) if zero_by_province_rows else pd.DataFrame()
+        zero_by_week = pd.DataFrame(zero_by_week_rows).sort_values(
+            ["Nombre de provinces sans partage", "Semaine"],
+            ascending=[False, True],
+        ) if zero_by_week_rows else pd.DataFrame()
+
+        p1, p2 = st.columns([1.15, 1.0])
+        with p1:
+            st.markdown("**Liste linéaire par province**")
+            st.dataframe(province_summary, width="stretch", height=320, hide_index=True)
+        with p2:
+            st.markdown("**Liste linéaire par semaine**")
+            st.dataframe(week_summary, width="stretch", height=320, hide_index=True)
+
+        p3, p4 = st.columns([1.0, 1.0])
+        with p3:
+            st.markdown(f"**Provinces avec semaines sous {int(completeness_threshold)}%**")
+            if threshold_by_province.empty:
+                st.success("Aucune province n'est passée sous le seuil choisi dans la fenêtre analysée.")
+            else:
+                st.dataframe(threshold_by_province, width="stretch", height=260, hide_index=True)
+        with p4:
+            st.markdown("**Semaines avec provinces sans partage**")
+            if zero_by_week.empty:
+                st.success("Aucune semaine sans partage total par province n'a été détectée.")
+            else:
+                st.dataframe(zero_by_week, width="stretch", height=260, hide_index=True)
+
+        if not zero_by_province.empty:
+            st.caption(
+                "Note : les semaines sans partage correspondent aux provinces présentes dans le fichier mais sans aucune "
+                "zone de santé rapportante sur la semaine concernée."
+            )
+
+        if show_completion_table:
+            st.markdown("**Tableau source : nombre de ZS rapportantes par province et semaine**")
+            count_view = count_pivot.reset_index().rename(columns={"_surv_province": "Province"})
+            st.dataframe(count_view, width="stretch", height=360, hide_index=True)
+
+
 def render_surveillance_tab(ctx: dict) -> None:
     """Render the surveillance analytics tab."""
     globals().update(ctx)
@@ -72,10 +425,33 @@ def render_surveillance_tab(ctx: dict) -> None:
         st.caption(
             "Cette organisation permet une lecture progressive de la situation à partir de la plage de semaines active dans la barre latérale."
         )
+        cfg1, cfg2 = st.columns(2)
+        with cfg1:
+            top_province_n = st.number_input(
+                "Nombre de provinces à afficher",
+                min_value=1,
+                max_value=30,
+                value=5,
+                step=1,
+                key="surveillance_top_province_n",
+            )
+        with cfg2:
+            top_zs_n = st.number_input(
+                "Nombre de zones de santé à afficher",
+                min_value=1,
+                max_value=30,
+                value=5,
+                step=1,
+                key="surveillance_top_zs_n",
+            )
 
         df_surv_scope, surv_reference = _prepare_surveillance_period_scope(df_f)
 
         if not surv_reference.empty:
+            if COL_PROV in df_surv_scope.columns and COL_ZS in df_surv_scope.columns:
+                _render_surveillance_completeness_section(df_surv_scope, COL_PROV, COL_ZS)
+                st.divider()
+
             latest_order = surv_reference["order"].iloc[-1]
             latest_label = str(surv_reference["label"].iloc[-1])
             last4_reference = surv_reference.tail(4).copy()
@@ -120,6 +496,8 @@ def render_surveillance_tab(ctx: dict) -> None:
                     "latest_week_df": df_latest_week,
                     "latest_label": latest_label,
                 },
+                top_province_n=int(top_province_n),
+                top_zs_n=int(top_zs_n),
             )
 
             st.divider()
@@ -137,6 +515,8 @@ def render_surveillance_tab(ctx: dict) -> None:
                     "latest_week_df": df_latest_week,
                     "latest_label": latest_label,
                 },
+                top_province_n=int(top_province_n),
+                top_zs_n=int(top_zs_n),
             )
 
             st.divider()
@@ -154,6 +534,8 @@ def render_surveillance_tab(ctx: dict) -> None:
                     "latest_week_df": df_latest_week,
                     "latest_label": latest_label,
                 },
+                top_province_n=int(top_province_n),
+                top_zs_n=int(top_zs_n),
             )
 
 
@@ -192,10 +574,24 @@ def render_surveillance_tab(ctx: dict) -> None:
                         taille_fig=(1500, 700),
                     )
                     if fig_multi_prov is not None:
-                        st_plot(
+                        fig_multi_prov.update_layout(
+                            legend=dict(
+                                title=dict(text=COL_PROV),
+                                orientation="v",
+                                yanchor="top",
+                                y=1,
+                                xanchor="left",
+                                x=1.02,
+                                itemclick="toggle",
+                                itemdoubleclick="toggleothers",
+                            ),
+                            margin=dict(r=220),
+                        )
+                        fig_multi_prov = sanitize_plotly_figure_for_streamlit(fig_multi_prov)
+                        st.plotly_chart(
                             fig_multi_prov,
+                            width="stretch",
                             key="surveillance_multi_curve_province",
-                            height=700,
                         )
                         st.caption(
                             "Astuce : clique sur une province dans la légende pour masquer ou afficher sa courbe. "

@@ -105,7 +105,7 @@ def _describe_surveillance_top_table(
     total_cases: int,
     empty_label: str,
 ) -> str:
-    """Génère une lecture rapide du top 5 géographique."""
+    """Génère une lecture rapide du top géographique."""
     if table.empty or total_cases <= 0:
         return empty_label
 
@@ -114,9 +114,10 @@ def _describe_surveillance_top_table(
     leader_label = " / ".join([part for part in leader_parts if part and part != "nan"]) or "Non renseigné"
     leader_share = float(leader["Cas"]) / float(total_cases) * 100.0
     top5_share = float(table["Cas"].sum()) / float(total_cases) * 100.0
+    top_count = int(len(table))
     return (
         f"{leader_label} concentre {leader_share:.1f}% des cas de cette période ; "
-        f"le top 5 en concentre {top5_share:.1f}%."
+        f"le top {top_count} en concentre {top5_share:.1f}%."
     )
 
 
@@ -391,7 +392,7 @@ def _build_province_interpretations(
     comparison_label: Optional[str] = None,
     top_n: int = 5,
 ) -> list[str]:
-    """Construit un résumé narratif standard par province pour le top 5."""
+    """Construit un résumé narratif standard par province pour le top affiché."""
     if df_scope is None or df_scope.empty or COL_PROV not in df_scope.columns:
         return []
 
@@ -589,6 +590,8 @@ def _render_surveillance_window(
     description: str,
     empty_message: str,
     narrative_context: Optional[dict[str, Any]] = None,
+    top_province_n: int = 5,
+    top_zs_n: int = 5,
 ) -> None:
     """Affiche une fenêtre standardisée de surveillance."""
     st.markdown(f"### {title}")
@@ -640,8 +643,8 @@ def _render_surveillance_window(
 
     g1, g2 = st.columns(2)
     with g1:
-        st.markdown("**Analyse des 5 provinces les plus touchées**")
-        top_prov = _build_surveillance_top_table(df_scope, [COL_PROV], top_n=5)
+        st.markdown(f"**Analyse des {int(top_province_n)} provinces les plus touchées**")
+        top_prov = _build_surveillance_top_table(df_scope, [COL_PROV], top_n=int(top_province_n))
         if top_prov.empty:
             st.info("L’analyse provinciale est indisponible : variable Province absente ou non renseignée.")
         else:
@@ -656,9 +659,9 @@ def _render_surveillance_window(
             st.dataframe(top_prov, width="stretch", hide_index=True)
 
     with g2:
-        st.markdown("**Analyse des 5 zones de santé les plus touchées**")
+        st.markdown(f"**Analyse des {int(top_zs_n)} zones de santé les plus touchées**")
         zs_group_cols = [c for c in [COL_PROV, COL_ZS] if c in df_scope.columns]
-        top_zs = _build_surveillance_top_table(df_scope, zs_group_cols, top_n=5)
+        top_zs = _build_surveillance_top_table(df_scope, zs_group_cols, top_n=int(top_zs_n))
         if top_zs.empty:
             st.info("L’analyse des zones de santé est indisponible : variable ZS absente ou non renseignée.")
         else:
@@ -676,10 +679,10 @@ def _render_surveillance_window(
         df_scope,
         comparison_df=narrative_context.get("comparison_df"),
         comparison_label=narrative_context.get("comparison_label"),
-        top_n=5,
+        top_n=int(top_province_n),
     )
     if province_interpretations:
-        with st.expander("Interprétation automatique par province (top 5)", expanded=False):
+        with st.expander(f"Interprétation automatique par province (top {int(top_province_n)})", expanded=False):
             for province_text in province_interpretations:
                 st.markdown(f"- {province_text}")
 
