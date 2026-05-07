@@ -57,6 +57,7 @@ from dashboard_app.overview import (
 )
 from dashboard_app.tabs.idsr import _build_idsr_period_labels
 from dashboard_app.tabs.irep import (
+    _irep_clean_province_series,
     _irep_build_silence_table,
     _irep_build_window_risk_table,
     _irep_prepare_analysis_scope,
@@ -371,6 +372,10 @@ class IrepDecisionSupportTest(unittest.TestCase):
         self.assertEqual(int(pop_ref["Population_reference"].sum()), 6000)
         self.assertIn("Kinshasa", set(pop_ref["Province_reference"]))
         self.assertIn("ZS B", set(pop_ref["Zone_de_sante_reference"]))
+
+    def test_irep_clean_province_series_normalizes_ocha_labels(self):
+        cleaned = _irep_clean_province_series(pd.Series(["Haut-Katanga", "Maī-Ndombe", "Kasaī", "Sud-Ubangi"]))
+        self.assertEqual(cleaned.tolist(), ["Haut Katanga", "Maindombe", "Kasai", "Sud Ubangi"])
 
     def test_irep_window_table_uses_population_and_flags_silent_units(self):
         pop_ref = _irep_prepare_population_reference_frame(

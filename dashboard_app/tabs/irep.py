@@ -4,6 +4,36 @@ from dashboard_app.runtime_support import inject_runtime_support
 
 inject_runtime_support(globals())
 
+PROVINCE_PATTERNS = [
+    (r"^\s*bas[\s_-]*uele\s*$", "Bas Uele"),
+    (r"^\s*equateur\s*$", "Equateur"),
+    (r"^\s*haut[\s_-]*katanga\s*$", "Haut Katanga"),
+    (r"^\s*haut[\s_-]*lomami\s*$", "Haut Lomami"),
+    (r"^\s*haut[\s_-]*uele\s*$", "Haut Uele"),
+    (r"^\s*ituri\s*$", "Ituri"),
+    (r"^\s*kasai[\s_-]*central\s*$", "Kasai Central"),
+    (r"^\s*kasai\s*$", "Kasai"),
+    (r"^\s*kinshasa\s*$", "Kinshasa"),
+    (r"^\s*kongo[\s_-]*central\s*$", "Kongo Central"),
+    (r"^\s*kasai[\s_-]*oriental\s*$", "Kasai Oriental"),
+    (r"^\s*kwango\s*$", "Kwango"),
+    (r"^\s*kwilu\s*$", "Kwilu"),
+    (r"^\s*lomami\s*$", "Lomami"),
+    (r"^\s*lualaba\s*$", "Lualaba"),
+    (r"^\s*mai[\s_-]*ndombe\s*$", "Maindombe"),
+    (r"^\s*maindombe\s*$", "Maindombe"),
+    (r"^\s*maniema\s*$", "Maniema"),
+    (r"^\s*mongala\s*$", "Mongala"),
+    (r"^\s*nord[\s_-]*kivu\s*$", "Nord Kivu"),
+    (r"^\s*nord[\s_-]*ubangi\s*$", "Nord Ubangi"),
+    (r"^\s*sankuru\s*$", "Sankuru"),
+    (r"^\s*sud[\s_-]*kivu\s*$", "Sud Kivu"),
+    (r"^\s*sud[\s_-]*ubangi\s*$", "Sud Ubangi"),
+    (r"^\s*tanganyika\s*$", "Tanganyika"),
+    (r"^\s*tshuapa\s*$", "Tshuapa"),
+    (r"^\s*tshopo\s*$", "Tshopo"),
+]
+
 
 def _irep_normalize_key(value: object) -> str:
     """Normalise une clé géographique pour les jointures de référence."""
@@ -137,6 +167,28 @@ def _irep_clean_label_series(series: pd.Series) -> pd.Series:
     return out
 
 
+def _irep_clean_province_value(value: object) -> object:
+    """Ramène les libellés de province vers une forme canonique."""
+    if value is None or pd.isna(value):
+        return pd.NA
+    text = str(value).strip()
+    if not text:
+        return pd.NA
+    normalized = unicodedata.normalize("NFKD", text)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    for pattern, replacement in PROVINCE_PATTERNS:
+        if re.match(pattern, normalized, flags=re.IGNORECASE):
+            return replacement
+    return _irep_clean_label_series(pd.Series([text], dtype="string")).iloc[0]
+
+
+def _irep_clean_province_series(series: pd.Series) -> pd.Series:
+    """Applique le nettoyage canonique des provinces à une série."""
+    out = series.apply(_irep_clean_province_value)
+    return out.astype("string")
+
+
 def _irep_prepare_population_reference_frame(raw_df: pd.DataFrame) -> pd.DataFrame:
     """Prépare une table de population exploitable pour provinces et zones."""
     empty = pd.DataFrame(
@@ -200,7 +252,7 @@ def _irep_prepare_population_reference_frame(raw_df: pd.DataFrame) -> pd.DataFra
 
     out = pd.DataFrame(index=work.index)
     out["Province_reference"] = (
-        _irep_clean_label_series(work[province_col]) if province_col else pd.Series(pd.NA, index=work.index, dtype="string")
+        _irep_clean_province_series(work[province_col]) if province_col else pd.Series(pd.NA, index=work.index, dtype="string")
     )
     out["Zone_de_sante_reference"] = (
         _irep_clean_label_series(work[zone_col]) if zone_col else pd.Series(pd.NA, index=work.index, dtype="string")
@@ -408,7 +460,7 @@ def _irep_prepare_analysis_scope(df_source: pd.DataFrame) -> tuple[pd.DataFrame,
 
     work = scoped.copy()
     if COL_PROV in work.columns:
-        work[COL_PROV] = _irep_clean_label_series(work[COL_PROV])
+        work[COL_PROV] = _irep_clean_province_series(work[COL_PROV])
     if COL_ZS in work.columns:
         work[COL_ZS] = _irep_clean_label_series(work[COL_ZS])
 
@@ -594,7 +646,10 @@ def _irep_build_window_risk_table(
 
     work = window_df.copy()
     for col in valid_group_cols:
-        work[col] = _irep_clean_label_series(work[col])
+        if col == COL_PROV:
+            work[col] = _irep_clean_province_series(work[col])
+        else:
+            work[col] = _irep_clean_label_series(work[col])
     work = work.dropna(subset=valid_group_cols)
     if work.empty:
         return pd.DataFrame(), meta
@@ -641,7 +696,10 @@ def _irep_build_window_risk_table(
     trend_base = base_df.copy()
     for col in valid_group_cols:
         if col in trend_base.columns:
-            trend_base[col] = _irep_clean_label_series(trend_base[col])
+            if col == COL_PROV:
+                trend_base[col] = _irep_clean_province_series(trend_base[col])
+            else:
+                trend_base[col] = _irep_clean_label_series(trend_base[col])
     trend_base = trend_base.dropna(subset=valid_group_cols)
 
     if trend_current_orders:
@@ -860,7 +918,10 @@ def _irep_build_silence_table(
     def _unit_frame(source: pd.DataFrame) -> pd.DataFrame:
         frame = source.copy()
         for col in valid_group_cols:
-            frame[col] = _irep_clean_label_series(frame[col])
+            if col == COL_PROV:
+                frame[col] = _irep_clean_province_series(frame[col])
+            else:
+                frame[col] = _irep_clean_label_series(frame[col])
         frame = frame.dropna(subset=valid_group_cols)
         if frame.empty:
             return pd.DataFrame()
@@ -881,7 +942,7 @@ def _irep_build_silence_table(
     if not expected_units.empty:
         if geography_level == "province":
             expected_units = expected_units.rename(columns={"Province_reference": COL_PROV})
-            expected_units[COL_PROV] = _irep_clean_label_series(expected_units[COL_PROV])
+            expected_units[COL_PROV] = _irep_clean_province_series(expected_units[COL_PROV])
             expected_units["_zone_norm"] = pd.NA
         else:
             expected_units = expected_units.rename(
@@ -890,7 +951,7 @@ def _irep_build_silence_table(
                     "Zone_de_sante_reference": COL_ZS,
                 }
             )
-            expected_units[COL_PROV] = _irep_clean_label_series(expected_units[COL_PROV])
+            expected_units[COL_PROV] = _irep_clean_province_series(expected_units[COL_PROV])
             expected_units[COL_ZS] = _irep_clean_label_series(expected_units[COL_ZS])
         expected_cols = [*valid_group_cols, "_prov_norm", "_zone_norm", "Population_reference"]
         expected_units = expected_units[expected_cols].drop_duplicates()
