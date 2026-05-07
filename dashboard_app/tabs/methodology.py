@@ -50,14 +50,69 @@ def render_methodology_tab(ctx: dict) -> None:
             ("Complétude (%)", "Proportion moyenne de champs clés renseignés", "Champs standards disponibles", "Mesure la documentation, pas la qualité clinique intrinsèque."),
             ("Alerte hebdomadaire", "Cas récents comparés à une moyenne historique courte", "Groupe géographique et semaine", "Signal à investiguer, sensible au faible historique."),
             ("Score de risque", "Score composite 0-100 combinant volume, tendance, CFR, qualité et promptitude", "Groupe géographique sélectionné", "Priorise l'attention ; ne remplace pas l'analyse experte."),
-            ("IREP", "Indice provincial composite de risque épidémique", "Province", "Dépend des poids choisis et des indicateurs disponibles."),
+            ("IREP", "Score composite 0-100 combinant tendance, incidence, létalité, promptitude et complétude", "Province ou zone de santé selon l'onglet IREP", "Dépend des poids choisis, du dénominateur population et de la disponibilité des composantes."),
         ],
         columns=["Indicateur", "Règle de calcul", "Dénominateur", "Limite principale"],
     )
     st.markdown("### 2. Définitions des indicateurs")
     st.dataframe(indicator_defs, width="stretch", hide_index=True, height=420)
 
-    st.markdown("### 3. Règles de standardisation")
+    st.markdown("### 3. IREP : formules et logique de calcul")
+    st.caption(
+        "L'IREP aide à hiérarchiser les territoires en combinant volume, risque relatif et qualité de l'information. "
+        "Il sert à prioriser l'attention, pas à conclure seul à une flambée."
+    )
+
+    irep_components = pd.DataFrame(
+        [
+            ("Cas", "Somme des cas sur la fenêtre analysée", "Fenêtre hebdomadaire, 4 dernières semaines ou cumulée"),
+            ("Tendance", "Cas fenêtre courante / (Cas fenêtre précédente + 1)", "Compare la dynamique récente au niveau géographique analysé"),
+            ("Taux d'attaque (%)", "(Cas / Population exposée) × 100", "Lecture proportionnelle du poids de l'événement dans la population"),
+            ("Incidence", "(Cas / Population exposée) × multiplicateur", "Multiplicateur paramétrable : 1 000, 10 000 ou 100 000"),
+            ("Létalité (%)", "(Décès / Cas) × 100", "Mesure la gravité apparente parmi les cas rapportés"),
+            ("Promptitude (%)", "Cas notifiés dans le délai seuil / Cas avec délai valide × 100", "Mesure la rapidité de notification"),
+            ("Risque de promptitude", "100 - Promptitude (%)", "Plus la promptitude baisse, plus le risque augmente"),
+            ("Complétude (%)", "Moyenne des champs critiques renseignés × 100", "Par défaut : Province_notification et Zone_de_sante_notification"),
+            ("Risque de complétude", "100 - Complétude (%)", "Une faible complétude augmente le risque d'interprétation"),
+            ("Scoring composante", "Transformation robuste en score 0-100", "Les composantes sont remises sur une échelle comparable"),
+        ],
+        columns=["Composante", "Formule / règle", "Interprétation opérationnelle"],
+    )
+    st.dataframe(irep_components, width="stretch", hide_index=True, height=380)
+
+    st.markdown(
+        """
+```text
+IREP = Somme des composantes disponibles après redistribution des poids
+```
+
+```text
+IREP = w_tendance × Score_tendance
+     + w_incidence × Score_incidence
+     + w_létalité × Score_létalité
+     + w_promptitude × Score_promptitude
+     + w_complétude × Score_complétude
+```
+"""
+    )
+    st.caption(
+        "Si une composante est indisponible, son poids est redistribué entre les composantes restantes afin d'éviter "
+        "de pénaliser artificiellement le territoire."
+    )
+
+    irep_rules = pd.DataFrame(
+        [
+            ("Fenêtres de lecture", "Situation hebdomadaire, 4 dernières semaines et situation cumulée."),
+            ("Population par défaut", "Le référentiel `data/RDC_Zone_de_sante_OCHA.xlsx` est utilisé s'il n'y a pas de téléversement."),
+            ("Dénominateur population", "Somme des populations uniques par ZS ou population maximale du groupe selon le paramétrage."),
+            ("Lecture recommandée", "Toujours confronter l'IREP aux cas bruts, à l'incidence, à la complétude, aux zones silencieuses et à la promptitude."),
+            ("Interprétation", "Un territoire peut avoir moins de cas mais rester plus prioritaire si son incidence ou ses risques de qualité sont plus élevés."),
+        ],
+        columns=["Règle", "Application dans le dashboard"],
+    )
+    st.dataframe(irep_rules, width="stretch", hide_index=True)
+
+    st.markdown("### 4. Règles de standardisation")
     standardization_rules = pd.DataFrame(
         [
             ("Géographie", "Province, Zone de santé et Aire de santé sont harmonisées vers les colonnes standards du dashboard."),
@@ -72,7 +127,7 @@ def render_methodology_tab(ctx: dict) -> None:
     )
     st.dataframe(standardization_rules, width="stretch", hide_index=True)
 
-    st.markdown("### 4. Contrôles qualité appliqués")
+    st.markdown("### 5. Contrôles qualité appliqués")
     qc_rules = pd.DataFrame(
         [
             ("Chronologie", "Dates incohérentes : notification avant début, résultat avant prélèvement, issue avant admission, etc."),
@@ -86,7 +141,7 @@ def render_methodology_tab(ctx: dict) -> None:
     )
     st.dataframe(qc_rules, width="stretch", hide_index=True)
 
-    st.markdown("### 5. Limites à mentionner dans les restitutions")
+    st.markdown("### 6. Limites à mentionner dans les restitutions")
     limitations = pd.DataFrame(
         [
             ("Données incomplètes", "Une variable absente ou peu renseignée peut modifier l'interprétation des tendances, profils et délais."),
@@ -96,12 +151,13 @@ def render_methodology_tab(ctx: dict) -> None:
             ("Changements de définition", "Toute modification de définition de cas ou de stratégie de dépistage peut modifier les tendances."),
             ("Cartographie", "Les résultats cartographiques dépendent de la qualité des libellés géographiques et des fichiers GeoJSON."),
             ("Alertes automatiques", "Les alertes statistiques ne remplacent pas l'investigation, la vérification terrain et la validation épidémiologique."),
+            ("IREP", "Le score dépend des poids, de la population de référence et de la disponibilité des composantes ; il doit être lu comme un outil de priorisation."),
         ],
         columns=["Limite", "Conséquence pratique"],
     )
     st.dataframe(limitations, width="stretch", hide_index=True)
 
-    st.markdown("### 6. Confidentialité et diffusion")
+    st.markdown("### 7. Confidentialité et diffusion")
     st.markdown(
         """
         - Les listes linéaires peuvent contenir des informations nominatives ou indirectement identifiantes.
@@ -111,7 +167,7 @@ def render_methodology_tab(ctx: dict) -> None:
         """
     )
 
-    st.markdown("### 7. Checklist avant validation institutionnelle")
+    st.markdown("### 8. Checklist avant validation institutionnelle")
     checklist = pd.DataFrame(
         [
             ("Source vérifiée", "Le fichier chargé correspond à la maladie, à la période et au niveau attendu."),
