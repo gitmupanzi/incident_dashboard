@@ -104,6 +104,39 @@ def validate_table_identifier(identifier: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_\\.]*", str(identifier).strip()))
 
 
+def validate_read_only_sql_query(sql_query: str) -> bool:
+    query = str(sql_query or "").strip()
+    if not query:
+        return False
+
+    query = re.sub(r";+\s*$", "", query)
+    if ";" in query:
+        return False
+
+    if not re.match(r"^(select|with)\b", query, flags=re.IGNORECASE):
+        return False
+
+    forbidden = [
+        "insert",
+        "update",
+        "delete",
+        "drop",
+        "alter",
+        "truncate",
+        "create",
+        "grant",
+        "revoke",
+        "comment",
+        "call",
+        "do",
+        "copy",
+        "vacuum",
+        "analyze",
+        "refresh",
+    ]
+    return re.search(r"\b(" + "|".join(forbidden) + r")\b", query, flags=re.IGNORECASE) is None
+
+
 def build_postgresql_query(query_mode: str, table_name: str, sql_query: str) -> str:
     if query_mode == "Table":
         clean_table_name = str(table_name).strip()
@@ -119,7 +152,10 @@ def build_postgresql_query(query_mode: str, table_name: str, sql_query: str) -> 
     if not clean_query:
         st.error("Renseigne une requête SQL PostgreSQL.")
         st.stop()
-    return clean_query
+    if not validate_read_only_sql_query(clean_query):
+        st.error("La requÃªte SQL doit Ãªtre une requÃªte de lecture unique (`SELECT` ou `WITH ... SELECT`).")
+        st.stop()
+    return re.sub(r";+\s*$", "", clean_query)
 
 
 def read_postgresql_file(

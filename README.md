@@ -1,97 +1,127 @@
-# Dashboard de Gestion des Données Épidémiologiques
+# Incident Dashboard
 
-Ce projet est un **dashboard Streamlit** destiné à la **gestion, la standardisation, l’analyse et la visualisation** des données épidémiologiques de surveillance.
+Application Streamlit pour la standardisation, l'analyse et la visualisation de donnees epidemiologiques de surveillance.
 
-Il prend en charge :
+Le projet cible principalement trois besoins operationnels :
 
-- les **listes linéaires** (données individuelles) : choléra, rougeole, mpox, Ebola, intoxication, etc.
-- les **données agrégées IDSR** (hebdomadaires)
+- analyser des line lists de surveillance
+- exploiter des donnees de laboratoire integrees aux line lists
+- produire des lectures hebdomadaires a partir des donnees IDSR agregees
 
-L’objectif est de fournir un **cadre unique, standardisé et réutilisable** pour le suivi des maladies à potentiel épidémique, avec des indicateurs cohérents et directement exploitables pour la décision opérationnelle.
+L'objectif est de fournir un cadre unique, reutilisable et plus robuste pour transformer des fichiers heterogenes en sorties analytiques directement exploitables pour la decision.
 
----
+## Ce que fait l'application
 
-## Fonctionnalités principales
+- standardise les colonnes issues de plusieurs formats de line lists
+- derive des variables communes :
+  `Annee_epid`, `Num_semaine_epid`, `Semaine_epid`, `Age_en_ans`, `Tranche_age`
+- calcule des indicateurs standards de surveillance :
+  cas, deces, letalite, completude, promptitude, positivite labo, alertes hebdomadaires
+- propose des vues dediees pour :
+  surveillance, profil epidemiologique, qualite des donnees, SITREP, IDSR, IREP et cartographie
+- exporte des resultats en CSV, Excel et, selon les modules, en PDF
 
-- nettoyage et **standardisation automatique** des variables
-- création de **variables dérivées communes**
-  - année et semaine épidémiologique
-  - âge harmonisé et tranches d’âge
-  - variables géographiques standardisées
-- production de **tableaux analytiques**
-  - province, zone de santé, aire de santé
-  - semaine épidémiologique
-  - indicateurs clés de surveillance
-- production de **visualisations interactives**
-- export des résultats en **CSV**, **Excel** et selon les cas en **PDF**
-- cartographie avec fichiers **GeoJSON** lorsque les données géographiques sont disponibles
+## Perimetre analytique
 
----
+### 1. Line lists de surveillance
 
-## Visualisations disponibles
+Le dashboard prend en charge plusieurs types de listes lineaires, notamment :
 
-Le dashboard propose plusieurs visualisations pour explorer les données de manière complémentaire :
+- cholera
+- rougeole
+- mpox
+- Ebola / MVE
+- meningite
+- intoxication
+- autre line list via mapping manuel des colonnes
 
-- **Situation globale des cas et des décès**  
-  Vue synthétique des indicateurs principaux pour apprécier rapidement le niveau de gravité et le volume de cas observés.
+### 2. Donnees de laboratoire
 
-- **Évolution hebdomadaire des cas** 📈  
-  Suivi temporel de la dynamique épidémique afin d’identifier les pics, les ralentissements et les changements de tendance.
+Les champs de laboratoire sont integres au pipeline analytique quand ils existent dans les fichiers sources :
 
-- **Taux de létalité par semaine** ⚠️  
-  Analyse de la gravité au fil du temps à partir du rapport entre les décès et les cas notifiés.
+- prelevement
+- date de prelevement
+- date de reception labo
+- date de resultat
+- resultat TDR
+- resultat labo
+- type de prelevement
 
-- **Répartition des cas par province** 🗺️  
-  Comparaison des provinces pour repérer rapidement les zones les plus contributrices au total de cas.
+### 3. Donnees IDSR agregees
 
-- **Analyse par zone de santé** 🏥  
-  Lecture plus fine de la distribution spatiale pour appuyer le pilotage opérationnel local.
+L'onglet IDSR est dedie aux donnees hebdomadaires agregees par maladie et par niveau geographique. Il permet notamment :
 
-- **Tableaux croisés province × semaine** 📋  
-  Vue combinée géographique et temporelle, utile pour la restitution, le suivi et l’interprétation des tendances.
+- l'analyse des cas et deces par semaine
+- la lecture de la completude de rapportage
+- le calcul du taux d'attaque et de l'incidence
+- la production de tableaux de synthese par province et zone de sante
 
-- **Cartographie des cas** 🌍  
-  Représentation spatiale des notifications lorsque les fichiers géographiques sont disponibles, avec possibilité de jointure fuzzy pour gérer les écarts d’écriture.
+## Fonctionnalites principales
 
----
-
-## Technologies utilisées
-
-- **Python 3.9+**
-- **Streamlit** - interface interactive
-- **Pandas / NumPy** - manipulation des données
-- **Plotly** - visualisations interactives
-- **OpenPyXL** - lecture et export Excel
-- **RapidFuzz** _(optionnel)_ - jointure fuzzy
-- **GeoPandas** _(optionnel)_ - cartographie
-
----
+- chargement des donnees depuis un fichier local, un fichier inclus dans le projet ou PostgreSQL
+- normalisation des noms de colonnes et des valeurs courantes
+- calcul automatique des semaines epidemiologiques ISO
+- harmonisation des variables geographiques
+- controle qualite des donnees
+- visualisations interactives Plotly
+- cartographie a partir de fichiers GeoJSON
+- outils d'analyse avancee : alertes, clusters spatio-temporels, score de risque operationnel, IREP
 
 ## Structure du projet
 
-Le code applicatif est organisé autour du package [`dashboard_app`](./dashboard_app) :
+```text
+incident_dashboard/
+|-- incident_dashboard.py        # point d'entree Streamlit principal
+|-- dashboard_app/
+|   |-- app_loader.py           # chargement des sources et PostgreSQL
+|   |-- column_mapping.py       # mapping automatique / manuel des colonnes
+|   |-- core.py                 # helpers transverses, graphiques, export
+|   |-- domain.py               # logique metier et standardisation
+|   |-- advanced.py             # calculs avances et cache Excel
+|   |-- overview.py             # synthese et aides a la lecture
+|   |-- narratives.py           # generation de textes d'interpretation
+|   |-- runtime_support.py      # contexte partage
+|   |-- tabs/                   # rendu des onglets Streamlit
+|-- data/                       # referentiels et geometries
+|-- line_list/                  # fichiers de demonstration / travail local
+|-- tests/                      # tests unitaires
+|-- requirements.txt
+```
 
-- `dashboard_app/core.py` : socle technique, graphiques et helpers transverses
-- `dashboard_app/domain.py` : logique métier, standardisation, KPI, qualité et cartes
-- `dashboard_app/overview.py` : synthèse, vues d’accueil et helpers transversaux
-- `dashboard_app/advanced.py` : calculs avancés, chargement Excel en cache et IREP
-- `dashboard_app/app_loader.py` : helpers de sources line list et lecture PostgreSQL
-- `dashboard_app/runtime_support.py` : contexte partagé pour les modules extraits
-- `dashboard_app/narratives.py` : briques narratives, lecture surveillance et SITREP
-- `dashboard_app/tabs/` : rendu des grands onglets Streamlit (`surveillance`, `profil`, `qualité`, `sitrep`, `idsr`, `irep`, `maps`, `methodology`)
-- `incident_dashboard.py` : orchestrateur Streamlit principal (sidebar, chargement, filtres, composition)
+## Modes de chargement
 
----
+### Line lists
+
+Pour les maladies de type line list, l'application permet de charger les donnees de trois manieres :
+
+- televersement d'un fichier `.xlsx`, `.xls` ou `.csv`
+- selection d'un fichier deja present dans `line_list/`
+- lecture depuis PostgreSQL
+
+### IDSR
+
+Pour l'onglet IDSR, le chargement est volontairement plus strict :
+
+- televersement d'un classeur Excel IDSR
+- selection d'un classeur IDSR valide present dans `line_list/`
+
+Le chargeur IDSR verifie maintenant que le classeur ressemble bien a un fichier IDSR agrege avant de lancer l'analyse.
+
+## Prerequis
+
+- Python 3.9 ou plus recent
+- pip
+- environnement virtuel recommande
 
 ## Installation
 
-### 1. Créer un environnement virtuel
+### 1. Creer un environnement virtuel
 
 ```bash
 python -m venv .venv
 ```
 
-### 2. Activer l’environnement
+### 2. Activer l'environnement
 
 Sous Windows PowerShell :
 
@@ -99,50 +129,105 @@ Sous Windows PowerShell :
 .venv\Scripts\Activate.ps1
 ```
 
-### 3. Installer les dépendances
+### 3. Installer les dependances
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
-
-## Lancer l’application
+## Lancer l'application
 
 ```bash
 streamlit run .\incident_dashboard.py
 ```
 
-## Tests
+## Executer les tests
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-Une fois lancée, l’application permet de charger :
+## Donnees attendues
 
-- un fichier **Excel** ou **CSV** de type line list
-- un fichier **IDSR agrégé** pour les vues hebdomadaires dédiées
+### Pour les line lists
 
----
+Les analyses sont plus fiables si les fichiers contiennent au minimum :
 
-## Données géographiques
+- une localisation de notification :
+  `Province_notification`, `Zone_de_sante_notification`
+- un repere temporel :
+  `Date_notification` ou le couple `Annee_epid` + `Num_semaine_epid`
 
-Les cartes sont disponibles si les fichiers géographiques nécessaires sont présents dans le dossier [`data`](./data).
+Selon les analyses, d'autres variables sont utiles :
 
-Selon la qualité des libellés géographiques, le dashboard peut utiliser :
+- `Date_debut_maladie`
+- `Age`, `Unite_age`
+- `Sexe`
+- `Issue`
+- `Classification_finale`
+- variables de laboratoire
 
-- une **jointure directe**
-- une **jointure fuzzy** pour rapprocher des noms proches mais orthographiés différemment
+### Pour l'option `Autre`
 
----
+Si le fichier ne suit pas un schema connu, l'application propose :
 
-## Cas d’usage
+- une detection automatique des colonnes
+- une validation manuelle des correspondances
+- la sauvegarde de profils de mapping reutilisables
 
-Ce dashboard peut être utilisé pour :
+### Pour IDSR
 
-- le suivi hebdomadaire des flambées
-- la surveillance multi-maladies
-- l’analyse descriptive des cas
-- le contrôle qualité des données
-- la préparation de tableaux de bord et de restitutions opérationnelles
+Un fichier IDSR valide doit fournir, selon le format disponible, des informations de type :
+
+- province
+- zone de sante
+- semaine epidemiologique ou debut de semaine
+- cas et/ou deces
+- population
+
+## Donnees geographiques
+
+Les cartes detaillees sont disponibles si les fichiers necessaires sont presents dans `data/`, notamment :
+
+- `geometry_rdc_provinces.geojson`
+- `geometry_rdc_zones_sante.geojson`
+- fichiers de correspondance geographique
+
+Le dashboard prend en charge :
+
+- la jointure directe sur les libelles
+- la jointure fuzzy pour rapprocher des noms proches
+
+## Cas d'usage
+
+- suivi hebdomadaire des flambees
+- surveillance multi-maladies
+- analyses descriptives par age, sexe, lieu et temps
+- lecture rapide de la situation pour les reunions de coordination
+- verification de la qualite des donnees avant diffusion
+- preparation de tableaux, graphiques et exports pour SITREP
+
+## Qualite et fiabilite
+
+Le projet contient des tests unitaires sur les briques critiques :
+
+- standardisation des schemas de donnees
+- mapping de colonnes
+- calcul des indicateurs
+- logique IDSR
+- fonctions d'aide a la decision comme IREP et alertes
+
+Si vous modifiez les regles de standardisation ou les conventions de colonnes, il est recommande d'executer la suite de tests avant toute mise en production.
+
+## Limites actuelles
+
+- la qualite des sorties depend directement de la qualite des colonnes sources
+- certaines analyses avancées supposent des champs bien renseignes sur les dates et la geographie
+- les mappings multi-maladies reposent encore sur des conventions de noms qui doivent etre entretenues
+
+## Point d'entree principal
+
+- application principale : [incident_dashboard.py](./incident_dashboard.py)
+- logique metier : [dashboard_app/domain.py](./dashboard_app/domain.py)
+- IDSR : [dashboard_app/tabs/idsr.py](./dashboard_app/tabs/idsr.py)
+- mapping de colonnes : [dashboard_app/column_mapping.py](./dashboard_app/column_mapping.py)

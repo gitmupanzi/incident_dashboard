@@ -551,38 +551,46 @@ def standardize_ll_by_disease(df: pd.DataFrame, disease_key: str) -> pd.DataFram
             if c in df.columns:
                 df[c] = _to_dt(df[c])
 
-    # On remplit les colonnes standard si elles sont totalement vides
+    # On remplit les colonnes standard ligne par ligne pour combler les trous
+    # sans ecraser les valeurs deja presentes.
     for target_col, spec_key in date_candidate_map.items():
         if target_col not in df.columns:
             df[target_col] = pd.NaT
-        if df[target_col].isna().all():
-            df[target_col] = _coalesce_first(df, spec.get(spec_key, []))
+        fallback_series = _coalesce_first(df, spec.get(spec_key, []))
+        df[target_col] = _to_dt(df[target_col]).combine_first(fallback_series)
 
     for target_col, spec_key in text_candidate_map.items():
         if target_col not in df.columns:
             df[target_col] = pd.NA
-        if df[target_col].isna().all():
-            df[target_col] = _coalesce_first(df, spec.get(spec_key, []))
+        fallback_series = _coalesce_first(df, spec.get(spec_key, []))
+        df[target_col] = df[target_col].combine_first(fallback_series)
 
     # Recalcul ISO si nécessaire après coalesce
     # (ex: Mpox où Date_debut_maladie était vide et vient d'être rempli)
-    need_year = df["Annee_epid"].isna().all()
-    need_week = df["Num_semaine_epid"].isna().all()
-    if need_year or need_week:
-        ref = None
-        if df["Date_notification"].notna().any():
-            ref = df["Date_notification"]
-        elif df["Date_debut_maladie"].notna().any():
-            ref = df["Date_debut_maladie"]
-        if ref is not None:
-            iso = ref.dt.isocalendar()
-            if need_year:
-                df["Annee_epid"] = iso["year"].astype("Int64")
-            if need_week:
-                df["Num_semaine_epid"] = iso["week"].astype("Int64")
-            y = pd.to_numeric(df["Annee_epid"], errors="coerce").astype("Int64")
-            w = pd.to_numeric(df["Num_semaine_epid"], errors="coerce").astype("Int64")
-            df["Semaine_epid"] = y.astype("string") + "-W" + w.astype("string").str.zfill(2)
+    ref = df["Date_notification"].combine_first(df["Date_debut_maladie"])
+    if ref.notna().any():
+        iso = ref.dt.isocalendar()
+        if "Annee_epid" not in df.columns:
+            df["Annee_epid"] = pd.Series(pd.NA, index=df.index, dtype="Int64")
+        if "Num_semaine_epid" not in df.columns:
+            df["Num_semaine_epid"] = pd.Series(pd.NA, index=df.index, dtype="Int64")
+
+        year_current = pd.to_numeric(df["Annee_epid"], errors="coerce").astype("Int64")
+        week_current = pd.to_numeric(df["Num_semaine_epid"], errors="coerce").astype("Int64")
+        df["Annee_epid"] = year_current.combine_first(iso["year"].astype("Int64"))
+        df["Num_semaine_epid"] = week_current.combine_first(iso["week"].astype("Int64"))
+
+    if "Semaine_epid" not in df.columns:
+        df["Semaine_epid"] = pd.NA
+    week_label_current = df["Semaine_epid"].astype("string")
+    missing_week_label = week_label_current.isna() | week_label_current.str.strip().eq("")
+    if missing_week_label.any():
+        y = pd.to_numeric(df["Annee_epid"], errors="coerce").astype("Int64")
+        w = pd.to_numeric(df["Num_semaine_epid"], errors="coerce").astype("Int64")
+        computed_week_label = y.astype("string") + "-W" + w.astype("string").str.zfill(2)
+        valid_computed_week_label = y.notna() & w.notna()
+        fill_mask = missing_week_label & valid_computed_week_label
+        df.loc[fill_mask, "Semaine_epid"] = computed_week_label.loc[fill_mask]
 
     return df
 

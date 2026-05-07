@@ -3,6 +3,7 @@
 import re
 import unicodedata
 import warnings
+from pathlib import Path
 
 from dashboard_app.app_loader import (
     get_line_list_bundle_caption,
@@ -13,6 +14,109 @@ from dashboard_app.overview import format_range_label_for_display
 from dashboard_app.runtime_support import inject_runtime_support
 
 inject_runtime_support(globals())
+
+
+IDSR_RENAME_MAP = {
+    "NUM": "Num",
+    "PAYS": "Pays",
+    "PROV": "Province_notification",
+    "Province": "Province_notification",
+    "ZS": "Zone_de_sante_notification",
+    "Zone_de_sante": "Zone_de_sante_notification",
+    "POP": "Population",
+    "prov_GIS": "Province_GIS",
+    "Prov_GIS": "Province_GIS",
+    "Province_GIS": "Province_GIS",
+    "zs_GIS": "ZS_GIS",
+    "ZS_GIS": "ZS_GIS",
+    "ZoneSante_GIS": "ZS_GIS",
+    "NUMSEM": "Num_semaine_epid",
+    "Semaine": "Num_semaine_epid",
+    "MALADIE": "Maladie",
+    "disease": "Maladie",
+    "C328TNN": "Cas_tnn",
+    "C011MOIS": "Cas_0_11mois",
+    "C1259MOIS": "Cas_12_59mois",
+    "C515ANS": "Cas_5_14ans",
+    "CP15ANS": "Cas_15plus",
+    "DTNN": "Deces_tnn",
+    "D011MOIS": "Deces_0_11mois",
+    "D1259MOIS": "Deces_12_59mois",
+    "D515ANS": "Deces_5_14ans",
+    "DP15ANS": "Deces_15plus",
+    "TOTALCAS": "Total_cas",
+    "TOTALDECES": "Total_deces",
+    "LETAL": "Taux_letalite",
+    "ATTAQ": "Taux_attaque",
+    "RecStatus": "Recstatus",
+    "UniqueKey": "Cle_unique",
+    "Year": "Annee_epid",
+    "year": "Annee_epid",
+    "Annee": "Annee_epid",
+}
+
+
+def harmonize_idsr_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = normalize_idsr_column_names(df)
+    return df.rename(columns={k: v for k, v in IDSR_RENAME_MAP.items() if k in df.columns})
+
+
+def idsr_frame_looks_valid(df: pd.DataFrame) -> bool:
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return False
+
+    work = harmonize_idsr_columns(df.copy())
+    has_geography = {
+        "Province_notification",
+        "Zone_de_sante_notification",
+    }.issubset(set(work.columns))
+    has_time = any(
+        col in work.columns
+        for col in ["Num_semaine_epid", "DEBUTSEM", "Date_debut_semaine", "Semaine_epid"]
+    )
+    strong_signals = [
+        "Population",
+        "Total_cas",
+        "Total_deces",
+        "Taux_letalite",
+        "Taux_attaque",
+        "Maladie",
+        "Cas_tnn",
+        "Cas_0_11mois",
+        "Deces_tnn",
+        "DEBUTSEM",
+    ]
+    signal_count = sum(1 for col in strong_signals if col in work.columns)
+    return bool(has_geography and has_time and signal_count >= 2)
+
+
+def _seek_excel_source(file_source: object) -> None:
+    if hasattr(file_source, "seek"):
+        try:
+            file_source.seek(0)
+        except Exception:
+            pass
+
+
+def list_available_idsr_files(available_files: list[Path]) -> list[Path]:
+    candidates: list[Path] = []
+    for path in available_files:
+        if path.suffix.lower() not in {".xlsx", ".xls"}:
+            continue
+
+        try:
+            with pd.ExcelFile(path) as xls:
+                prioritized = [name for name in ("IDS_RDC", "IDSR", "idsr") if name in xls.sheet_names]
+                remaining = [name for name in xls.sheet_names if name not in prioritized]
+            for sheet_name in [*prioritized, *remaining]:
+                sample = pd.read_excel(path, sheet_name=sheet_name, nrows=10)
+                if idsr_frame_looks_valid(sample):
+                    candidates.append(path)
+                    break
+        except Exception:
+            continue
+
+    return sorted(candidates, key=lambda p: p.name.lower())
 
 
 
@@ -312,6 +416,23 @@ def _build_idsr_completeness_matrices(
             k_min, k_max = int(keys.min()), int(keys.max())
             if 1 <= k_min <= k_max <= 53:
                 week_labels = [str(i) for i in range(k_min, k_max + 1)]
+            elif k_min > 53:
+                try:
+                    start_year, start_week = divmod(k_min, 100)
+                    end_year, end_week = divmod(k_max, 100)
+                    start_date = pd.Timestamp.fromisocalendar(start_year, start_week, 1)
+                    end_date = pd.Timestamp.fromisocalendar(end_year, end_week, 1)
+                    if start_date <= end_date:
+                        continuous_labels = []
+                        cursor = start_date
+                        while cursor <= end_date:
+                            iso_cursor = cursor.isocalendar()
+                            continuous_labels.append(f"{int(iso_cursor.year)}-W{int(iso_cursor.week):02d}")
+                            cursor += pd.Timedelta(days=7)
+                        if continuous_labels:
+                            week_labels = continuous_labels
+                except Exception:
+                    pass
 
     counts = (
         unique_reporting
@@ -1022,22 +1143,42 @@ def _build_idsr_period_labels(df_scope: pd.DataFrame) -> tuple[str, str]:
 def _load_idsr_workbook(file_source: object) -> pd.DataFrame:
     """Charge un fichier IDSR en priorisant les feuilles usuelles."""
     last_exc = None
-    for preferred_sheet in ("IDS_RDC", "IDSR", "idsr"):
+    candidate_sheets: list[str] = []
+
+    try:
+        _seek_excel_source(file_source)
+        with pd.ExcelFile(file_source) as xls:
+            candidate_sheets = list(xls.sheet_names)
+    except Exception as exc:
+        last_exc = exc
+
+    prioritized = [sheet for sheet in ("IDS_RDC", "IDSR", "idsr") if sheet in candidate_sheets]
+    remaining = [sheet for sheet in candidate_sheets if sheet not in prioritized]
+
+    for sheet_name in [*prioritized, *remaining]:
         try:
-            df_loaded = load_excel_cached(file_source, sheet_name=preferred_sheet)
-            if isinstance(df_loaded, pd.DataFrame) and not df_loaded.empty:
+            _seek_excel_source(file_source)
+            df_loaded = load_excel_cached(file_source, sheet_name=sheet_name)
+            if isinstance(df_loaded, pd.DataFrame) and not df_loaded.empty and idsr_frame_looks_valid(df_loaded):
                 return df_loaded
         except Exception as exc:
             last_exc = exc
 
     try:
-        return load_excel_cached(file_source)
+        _seek_excel_source(file_source)
+        df_loaded = load_excel_cached(file_source)
+        if isinstance(df_loaded, pd.DataFrame) and not df_loaded.empty and idsr_frame_looks_valid(df_loaded):
+            return df_loaded
     except Exception as exc:
         last_exc = exc
 
-    if last_exc is not None:
+    if last_exc is not None and not candidate_sheets:
         raise last_exc
-    return pd.DataFrame()
+
+    raise ValueError(
+        "Le classeur selectionne ne ressemble pas a un fichier IDSR agrege valide "
+        "(colonnes geographiques, temporelles et indicateurs IDSR introuvables)."
+    )
 
 
 def render_idsr_tab(ctx: dict) -> None:
@@ -1090,10 +1231,7 @@ def render_idsr_tab(ctx: dict) -> None:
             except Exception as exc:
                 st.error(f"Impossible de lire le fichier IDSR téléversé : {exc}")
     else:
-        available_idsr_files = [
-            path for path in list_available_line_list_files()
-            if path.suffix.lower() in {".xlsx", ".xls"}
-        ]
+        available_idsr_files = list_available_idsr_files(list_available_line_list_files())
         if available_idsr_files:
             preferred_local_path = guess_preferred_included_file(
                 available_idsr_files,
@@ -1124,7 +1262,7 @@ def render_idsr_tab(ctx: dict) -> None:
                 except Exception as exc:
                     st.error(f"Impossible de lire le fichier IDSR local : {exc}")
         else:
-            st.info("Aucun fichier Excel IDSR n'est disponible dans `line_list/`.")
+            st.info("Aucun fichier Excel IDSR valide n'est disponible dans `line_list/`.")
 
     if df_idsr.empty:
         render_reader_narrative(
@@ -1139,8 +1277,7 @@ def render_idsr_tab(ctx: dict) -> None:
         # ---------------------------------------------------------------------
         # 2) Harmonisation colonnes (BRUT vs COMPILÉ)
         # ---------------------------------------------------------------------
-        df_idsr = df_idsr.copy()
-        df_idsr = normalize_idsr_column_names(df_idsr)
+        df_idsr = harmonize_idsr_columns(df_idsr.copy())
 
         rename_map = {
             # Identifiants

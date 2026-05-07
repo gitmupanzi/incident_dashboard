@@ -1,5 +1,6 @@
 import math
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from dashboard_app.app_loader import validate_read_only_sql_query
 from dashboard_app.advanced import clean_week, compute_irep_province
 from dashboard_app.core import safe_pct
 from dashboard_app.domain import (
@@ -55,7 +57,13 @@ from dashboard_app.overview import (
     format_range_label_for_display,
     split_geo_pair_label,
 )
-from dashboard_app.tabs.idsr import _build_idsr_period_labels
+from dashboard_app.tabs.idsr import (
+    _build_idsr_completeness_matrices,
+    _build_idsr_period_labels,
+    _load_idsr_workbook,
+    idsr_frame_looks_valid,
+    list_available_idsr_files,
+)
 from dashboard_app.tabs.irep import (
     _irep_clean_province_series,
     _irep_build_silence_table,
@@ -184,6 +192,23 @@ class StandardizationTest(unittest.TestCase):
         analytic_df = standardize_df(core_df)
         self.assertTrue(bool(analytic_df.loc[0, "is_tdr_pos"]))
         self.assertFalse(bool(analytic_df.loc[1, "is_tdr_pos"]))
+
+    def test_standardize_ll_by_disease_backfills_missing_dates_row_by_row(self):
+        raw = pd.DataFrame(
+            {
+                "Date_notification": [None, "2026-01-08"],
+                "Date_consultation": ["2026-01-05", None],
+                "Province_notification": ["Kinshasa", "Kinshasa"],
+                "Zone_de_sante_notification": ["Gombe", "Gombe"],
+            }
+        )
+
+        out = standardize_ll_by_disease(raw, "intox")
+
+        self.assertEqual(out.loc[0, DATE_NOTIF].strftime("%Y-%m-%d"), "2026-01-05")
+        self.assertEqual(int(out.loc[0, COL_YEAR]), 2026)
+        self.assertEqual(int(out.loc[0, COL_WNUM]), 2)
+        self.assertEqual(out.loc[0, COL_WEEK], "2026-W02")
 
 
 class IndicatorTest(unittest.TestCase):
@@ -641,6 +666,89 @@ class NarrativePeriodTest(unittest.TestCase):
 
         self.assertEqual(period_label, "02/03/2026 -> 22/03/2026")
         self.assertEqual(time_span, "SE10-2026 -> SE12-2026")
+
+    def test_idsr_completeness_matrices_fill_missing_iso_weeks(self):
+        df = pd.DataFrame(
+            {
+                COL_PROV: ["Kinshasa", "Kinshasa"],
+                COL_ZS: ["ZS A", "ZS A"],
+                COL_YEAR: [2026, 2026],
+                COL_WNUM: [10, 12],
+            }
+        )
+
+        count_pivot, _, _, _ = _build_idsr_completeness_matrices(df, COL_PROV, COL_ZS)
+
+        self.assertEqual(count_pivot.columns.tolist(), ["2026-W10", "2026-W11", "2026-W12"])
+        self.assertEqual(int(count_pivot.loc["Kinshasa", "2026-W11"]), 0)
+
+
+class IdsrLoadingTest(unittest.TestCase):
+    def test_idsr_frame_validator_accepts_aggregated_shape(self):
+        df = pd.DataFrame(
+            {
+                "PROV": ["Kinshasa"],
+                "ZS": ["Gombe"],
+                "NUMSEM": [10],
+                "DEBUTSEM": ["lundi 03 mars 2026"],
+                "TOTALCAS": [12],
+                "POP": [100000],
+            }
+        )
+
+        self.assertTrue(idsr_frame_looks_valid(df))
+
+    def test_load_idsr_workbook_rejects_non_idsr_workbook(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "ll_cholera.xlsx"
+            pd.DataFrame(
+                {
+                    "Province_notification": ["Kinshasa"],
+                    "Zone_de_sante_notification": ["Gombe"],
+                    "Date_notification": ["2026-01-05"],
+                }
+            ).to_excel(path, sheet_name="LL_Cholera", index=False)
+
+            with self.assertRaises(ValueError):
+                _load_idsr_workbook(path)
+
+    def test_list_available_idsr_files_filters_non_idsr_workbooks(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            idsr_path = root / "surveillance_idsr.xlsx"
+            ll_path = root / "line_list.xlsx"
+
+            pd.DataFrame(
+                {
+                    "PROV": ["Kinshasa"],
+                    "ZS": ["Gombe"],
+                    "NUMSEM": [10],
+                    "DEBUTSEM": ["lundi 03 mars 2026"],
+                    "TOTALCAS": [12],
+                    "POP": [100000],
+                }
+            ).to_excel(idsr_path, sheet_name="Feuil1", index=False)
+            pd.DataFrame(
+                {
+                    "Province_notification": ["Kinshasa"],
+                    "Zone_de_sante_notification": ["Gombe"],
+                    "Date_notification": ["2026-01-05"],
+                }
+            ).to_excel(ll_path, sheet_name="LL_Cholera", index=False)
+
+            out = list_available_idsr_files([idsr_path, ll_path])
+
+            self.assertEqual(out, [idsr_path])
+
+
+class AppLoaderValidationTest(unittest.TestCase):
+    def test_validate_read_only_sql_query_accepts_select_and_with(self):
+        self.assertTrue(validate_read_only_sql_query("SELECT * FROM public.line_list"))
+        self.assertTrue(validate_read_only_sql_query("WITH a AS (SELECT 1) SELECT * FROM a"))
+
+    def test_validate_read_only_sql_query_rejects_multi_statement_or_write_queries(self):
+        self.assertFalse(validate_read_only_sql_query("SELECT * FROM a; DELETE FROM a"))
+        self.assertFalse(validate_read_only_sql_query("DELETE FROM public.line_list"))
 
 
 class StandardSchemaContractTest(unittest.TestCase):
