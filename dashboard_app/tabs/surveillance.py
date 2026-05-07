@@ -421,7 +421,7 @@ def render_surveillance_tab(ctx: dict) -> None:
 
             **📖 Logique de lecture**
             - La **situation hebdomadaire** reflète la semaine la plus récente visible dans la plage filtrée.
-            - La **situation des 4 dernières semaines** permet de lire rapidement la tendance récente.
+            - La **situation des dernières semaines** permet de lire rapidement la tendance récente sur une fenêtre glissante paramétrable.
             - La **situation cumulée** consolide l’ensemble de la fenêtre active pour orienter la réponse.
 
             **⚠️ Point d’attention**
@@ -435,7 +435,7 @@ def render_surveillance_tab(ctx: dict) -> None:
         st.caption(
             "Cette organisation permet une lecture progressive de la situation à partir de la plage de semaines active dans la barre latérale."
         )
-        cfg1, cfg2 = st.columns(2)
+        cfg1, cfg2, cfg3 = st.columns([0.9, 0.9, 1.2])
         with cfg1:
             top_province_n = st.number_input(
                 "Nombre de provinces à afficher",
@@ -454,6 +454,16 @@ def render_surveillance_tab(ctx: dict) -> None:
                 step=1,
                 key="surveillance_top_zs_n",
             )
+        with cfg3:
+            recent_window_weeks = st.number_input(
+                "Nombre de dernières semaines à analyser",
+                min_value=2,
+                max_value=26,
+                value=4,
+                step=1,
+                key="surveillance_recent_window_weeks",
+                help="La situation récente reste réglée par défaut sur 4 semaines, mais vous pouvez choisir une autre fenêtre glissante.",
+            )
 
         df_surv_scope, surv_reference = _prepare_surveillance_period_scope(df_f)
 
@@ -464,9 +474,10 @@ def render_surveillance_tab(ctx: dict) -> None:
 
             latest_order = surv_reference["order"].iloc[-1]
             latest_label = str(surv_reference["label"].iloc[-1])
-            last4_reference = surv_reference.tail(4).copy()
-            last4_orders = last4_reference["order"].tolist()
-            last4_labels = last4_reference["label"].astype(str).tolist()
+            recent_window_weeks = int(min(max(int(recent_window_weeks), 2), len(surv_reference)))
+            recent_reference = surv_reference.tail(int(recent_window_weeks)).copy()
+            recent_orders = recent_reference["order"].tolist()
+            recent_labels = recent_reference["label"].astype(str).tolist()
             first_label = str(surv_reference["label"].iloc[0])
             previous_week_reference = surv_reference.tail(2).head(1).copy() if len(surv_reference) >= 2 else pd.DataFrame()
             previous_week_df = pd.DataFrame()
@@ -477,21 +488,23 @@ def render_surveillance_tab(ctx: dict) -> None:
                     df_surv_scope["_surv_order"] == previous_week_reference["order"].iloc[0]
                 ].copy()
 
-            prev4_reference = (
-                surv_reference.iloc[max(len(surv_reference) - 8, 0): max(len(surv_reference) - 4, 0)].copy()
-                if len(surv_reference) > 4 else pd.DataFrame()
+            prev_recent_reference = (
+                surv_reference.iloc[
+                    max(len(surv_reference) - (2 * int(recent_window_weeks)), 0): max(len(surv_reference) - int(recent_window_weeks), 0)
+                ].copy()
+                if len(surv_reference) > int(recent_window_weeks) else pd.DataFrame()
             )
-            prev4_df = pd.DataFrame()
-            prev4_label = None
-            if not prev4_reference.empty:
-                prev4_orders = prev4_reference["order"].tolist()
-                prev4_df = df_surv_scope[df_surv_scope["_surv_order"].isin(prev4_orders)].copy()
-                prev4_labels = prev4_reference["label"].astype(str).tolist()
-                if prev4_labels:
-                    prev4_label = ", ".join(prev4_labels)
+            prev_recent_df = pd.DataFrame()
+            prev_recent_label = None
+            if not prev_recent_reference.empty:
+                prev_recent_orders = prev_recent_reference["order"].tolist()
+                prev_recent_df = df_surv_scope[df_surv_scope["_surv_order"].isin(prev_recent_orders)].copy()
+                prev_recent_labels = prev_recent_reference["label"].astype(str).tolist()
+                if prev_recent_labels:
+                    prev_recent_label = ", ".join(prev_recent_labels)
 
             df_latest_week = df_surv_scope[df_surv_scope["_surv_order"] == latest_order].copy()
-            df_last4_weeks = df_surv_scope[df_surv_scope["_surv_order"].isin(last4_orders)].copy()
+            df_recent_weeks = df_surv_scope[df_surv_scope["_surv_order"].isin(recent_orders)].copy()
 
             _render_surveillance_window(
                 "1. Situation hebdomadaire",
@@ -513,15 +526,15 @@ def render_surveillance_tab(ctx: dict) -> None:
             st.divider()
 
             _render_surveillance_window(
-                "2. Situation des 4 dernières semaines",
-                df_last4_weeks,
-                f"Lecture glissante sur les {len(last4_labels)} semaines les plus récentes de la sélection : {', '.join(last4_labels)}.",
-                "Aucune donnée n’est disponible pour construire la tendance des 4 dernières semaines.",
+                f"2. Situation des {int(recent_window_weeks)} dernières semaines",
+                df_recent_weeks,
+                f"Lecture glissante sur les {len(recent_labels)} semaines les plus récentes de la sélection : {', '.join(recent_labels)}.",
+                f"Aucune donnée n’est disponible pour construire la tendance des {int(recent_window_weeks)} dernières semaines.",
                 narrative_context={
                     "scope_kind": "recent4",
-                    "current_label": "Les 4 dernières semaines",
-                    "comparison_df": prev4_df if not prev4_df.empty else None,
-                    "comparison_label": "les 4 semaines précédentes" if prev4_label else None,
+                    "current_label": f"Les {int(recent_window_weeks)} dernières semaines",
+                    "comparison_df": prev_recent_df if not prev_recent_df.empty else None,
+                    "comparison_label": f"les {int(recent_window_weeks)} semaines précédentes" if prev_recent_label else None,
                     "latest_week_df": df_latest_week,
                     "latest_label": latest_label,
                 },

@@ -1381,7 +1381,7 @@ def render_irep_tab(ctx: dict) -> None:
 
         **Logique de lecture**
         - **Situation hebdomadaire** : lecture de la dernière semaine visible.
-        - **Situation des 4 dernières semaines** : lecture de la tendance récente.
+        - **Situation des dernières semaines** : lecture de la tendance récente sur une fenêtre glissante paramétrable.
         - **Situation cumulée** : consolidation de toute la fenêtre active.
 
         **Approche analytique attendue**
@@ -1515,7 +1515,7 @@ Le résultat dépend fortement du dénominateur population. Si la population de 
     ]
     default_completeness = [c for c in [COL_PROV, COL_ZS] if c in completeness_candidates]
 
-    p1, p2, p3 = st.columns([1.4, 1.0, 1.0])
+    p1, p2, p3, p4 = st.columns([1.35, 0.8, 0.8, 1.05])
     with p1:
         completeness_required = st.multiselect(
             "Champs critiques pour la complétude",
@@ -1541,6 +1541,16 @@ Le résultat dépend fortement du dénominateur population. Si la population de 
             step=1,
             key="irep_top_zs_n",
         )
+    with p4:
+        recent_window_weeks = st.number_input(
+            "Nombre de dernières semaines à analyser",
+            min_value=2,
+            max_value=26,
+            value=4,
+            step=1,
+            key="irep_recent_window_weeks",
+            help="La lecture récente utilise 4 semaines par défaut, mais la fenêtre peut être élargie ou réduite.",
+        )
 
     weights = {
         "trend": float(w_trend),
@@ -1562,17 +1572,23 @@ Le résultat dépend fortement du dénominateur population. Si la population de 
 
     latest_order = reference["order"].iloc[-1]
     latest_label = str(reference["label"].iloc[-1])
-    last4_reference = reference.tail(4).copy()
-    last4_orders = last4_reference["order"].tolist()
-    last4_labels = last4_reference["label"].astype(str).tolist()
+    recent_window_weeks = int(min(max(int(recent_window_weeks), 2), len(reference)))
+    recent_reference = reference.tail(int(recent_window_weeks)).copy()
+    recent_orders = recent_reference["order"].tolist()
+    recent_labels = recent_reference["label"].astype(str).tolist()
     first_label = str(reference["label"].iloc[0])
 
     prev_week_orders = reference.tail(2).head(1)["order"].tolist() if len(reference) >= 2 else []
-    prev4_reference = reference.iloc[max(len(reference) - 8, 0): max(len(reference) - 4, 0)].copy() if len(reference) > 4 else pd.DataFrame()
-    prev4_orders = prev4_reference["order"].tolist() if not prev4_reference.empty else []
+    prev_recent_reference = (
+        reference.iloc[
+            max(len(reference) - (2 * int(recent_window_weeks)), 0): max(len(reference) - int(recent_window_weeks), 0)
+        ].copy()
+        if len(reference) > int(recent_window_weeks) else pd.DataFrame()
+    )
+    prev_recent_orders = prev_recent_reference["order"].tolist() if not prev_recent_reference.empty else []
 
     df_latest_week = df_irep_scope[df_irep_scope["_surv_order"] == latest_order].copy()
-    df_last4_weeks = df_irep_scope[df_irep_scope["_surv_order"].isin(last4_orders)].copy()
+    df_recent_weeks = df_irep_scope[df_irep_scope["_surv_order"].isin(recent_orders)].copy()
 
     _irep_render_window(
         title="1. Situation hebdomadaire",
@@ -1596,13 +1612,13 @@ Le résultat dépend fortement du dénominateur population. Si la population de 
     st.divider()
 
     _irep_render_window(
-        title="2. Situation des 4 dernières semaines",
-        intro=f"Lecture glissante sur {len(last4_labels)} semaine(s) : {', '.join(last4_labels)}. La tendance compare cette fenêtre aux 4 semaines précédentes quand elles existent.",
-        window_df=df_last4_weeks,
+        title=f"2. Situation des {int(recent_window_weeks)} dernières semaines",
+        intro=f"Lecture glissante sur {len(recent_labels)} semaine(s) : {', '.join(recent_labels)}. La tendance compare cette fenêtre aux {int(recent_window_weeks)} semaines précédentes quand elles existent.",
+        window_df=df_recent_weeks,
         base_df=df_irep_scope,
         pop_ref=pop_ref,
-        trend_current_orders=last4_orders,
-        trend_previous_orders=prev4_orders,
+        trend_current_orders=recent_orders,
+        trend_previous_orders=prev_recent_orders,
         completeness_required=completeness_required,
         threshold_days=float(threshold_days),
         weights=weights,
@@ -1616,15 +1632,14 @@ Le résultat dépend fortement du dénominateur population. Si la population de 
 
     st.divider()
 
-    recent4_orders = last4_orders
     _irep_render_window(
         title="3. Situation cumulée",
-        intro=f"Cumul de toute la fenêtre active : {first_label} à {latest_label}. Le score garde un regard sur l'accélération récente via les 4 dernières semaines.",
+        intro=f"Cumul de toute la fenêtre active : {first_label} à {latest_label}. Le score garde un regard sur l'accélération récente via les {int(recent_window_weeks)} dernières semaines.",
         window_df=df_irep_scope,
         base_df=df_irep_scope,
         pop_ref=pop_ref,
-        trend_current_orders=recent4_orders,
-        trend_previous_orders=prev4_orders,
+        trend_current_orders=recent_orders,
+        trend_previous_orders=prev_recent_orders,
         completeness_required=completeness_required,
         threshold_days=float(threshold_days),
         weights=weights,
