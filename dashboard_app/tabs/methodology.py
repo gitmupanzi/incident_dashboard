@@ -65,7 +65,7 @@ def render_methodology_tab(ctx: dict) -> None:
 
     irep_components = pd.DataFrame(
         [
-            ("Cas", "Somme des cas sur la fenêtre analysée", "Fenêtre hebdomadaire, 4 dernières semaines ou cumulée"),
+            ("Cas", "Somme des cas sur la fenêtre analysée", "Fenetre hebdomadaire, fenetre recente parametrable ou cumulee"),
             ("Tendance", "Cas fenêtre courante / (Cas fenêtre précédente + 1)", "Compare la dynamique récente au niveau géographique analysé"),
             ("Taux d'attaque (%)", "(Cas / Population exposée) × 100", "Lecture proportionnelle du poids de l'événement dans la population"),
             ("Incidence", "(Cas / Population exposée) × multiplicateur", "Multiplicateur paramétrable : 1 000, 10 000 ou 100 000"),
@@ -102,7 +102,7 @@ IREP = w_tendance × Score_tendance
 
     irep_rules = pd.DataFrame(
         [
-            ("Fenêtres de lecture", "Situation hebdomadaire, 4 dernières semaines et situation cumulée."),
+            ("Fenêtres de lecture", "Situation hebdomadaire, fenetre recente parametrable et situation cumulee."),
             ("Population par défaut", "Le référentiel `data/RDC_Zone_de_sante_OCHA.xlsx` est utilisé s'il n'y a pas de téléversement."),
             ("Dénominateur population", "Somme des populations uniques par ZS ou population maximale du groupe selon le paramétrage."),
             ("Lecture recommandée", "Toujours confronter l'IREP aux cas bruts, à l'incidence, à la complétude, aux zones silencieuses et à la promptitude."),

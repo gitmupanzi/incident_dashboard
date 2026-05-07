@@ -1627,7 +1627,7 @@ Le résultat dépend fortement du dénominateur population. Si la population de 
         quality_threshold=int(quality_threshold),
         top_province_n=int(top_province_n),
         top_zs_n=int(top_zs_n),
-        download_suffix="quatre_semaines",
+        download_suffix="dernieres_semaines",
     )
 
     st.divider()

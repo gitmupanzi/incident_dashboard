@@ -531,8 +531,9 @@ def render_surveillance_tab(ctx: dict) -> None:
                 f"Lecture glissante sur les {len(recent_labels)} semaines les plus récentes de la sélection : {', '.join(recent_labels)}.",
                 f"Aucune donnée n’est disponible pour construire la tendance des {int(recent_window_weeks)} dernières semaines.",
                 narrative_context={
-                    "scope_kind": "recent4",
+                    "scope_kind": "recent_window",
                     "current_label": f"Les {int(recent_window_weeks)} dernières semaines",
+                    "recent_window_weeks": int(recent_window_weeks),
                     "comparison_df": prev_recent_df if not prev_recent_df.empty else None,
                     "comparison_label": f"les {int(recent_window_weeks)} semaines précédentes" if prev_recent_label else None,
                     "latest_week_df": df_latest_week,

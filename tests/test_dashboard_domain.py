@@ -651,6 +651,27 @@ class NarrativePeriodTest(unittest.TestCase):
         self.assertIn("du 02/03/2026 au 22/03/2026", summary)
         self.assertNotIn("du 05/03/2026 au 09/03/2026", summary)
 
+    def test_recent_window_summary_uses_selected_week_count(self):
+        df = pd.DataFrame(
+            {
+                COL_YEAR: [2026, 2026],
+                COL_WNUM: [10, 12],
+                DATE_NOTIF: ["2026-03-05", "2026-03-09"],
+                COL_PROV: ["Kinshasa", "Tshopo"],
+                COL_ZS: ["ZS A", "ZS B"],
+                "is_death": [0, 1],
+            }
+        )
+
+        summary = _build_scope_overview_text(
+            df,
+            scope_kind="recent_window",
+            recent_window_weeks=4,
+        )
+
+        self.assertIsNotNone(summary)
+        self.assertIn("Au cours des 4 dernieres semaines", summary)
+
     def test_idsr_period_labels_follow_iso_week_bounds_and_sorted_window(self):
         df = pd.DataFrame(
             {

@@ -328,11 +328,24 @@ def _build_top_province_summary_text(df_scope: pd.DataFrame) -> Optional[str]:
     )
 
 
+def _format_recent_window_scope_text(recent_window_weeks: Optional[int]) -> str:
+    """Retourne un libelle court pour une fenetre recente parametree."""
+    try:
+        n_weeks = int(recent_window_weeks)
+    except Exception:
+        n_weeks = 0
+    if n_weeks > 0:
+        return f"des {n_weeks} dernieres semaines"
+    return "de la fenetre recente"
+
+
 def _build_scope_overview_text(
     df_scope: pd.DataFrame,
     scope_kind: str,
+    current_label: Optional[str] = None,
     latest_week_df: Optional[pd.DataFrame] = None,
     latest_label: Optional[str] = None,
+    recent_window_weeks: Optional[int] = None,
 ) -> Optional[str]:
     """Construit le paragraphe d'ouverture adapté à la fenêtre courante."""
     total_cases, total_deaths, cfr = _surveillance_scope_kpis(df_scope)
@@ -354,8 +367,8 @@ def _build_scope_overview_text(
 
     if scope_kind == "weekly":
         prefix = f"Durant {latest_label or 'la semaine la plus récente'}"
-    elif scope_kind == "recent4":
-        prefix = "Au cours des 4 dernières semaines"
+    elif scope_kind == "recent_window":
+        prefix = f"Au cours {_format_recent_window_scope_text(recent_window_weeks)}"
     else:
         prefix = f"Sur le cumul {date_span}" if date_span else "Sur l’ensemble de la fenêtre sélectionnée"
 
@@ -472,6 +485,7 @@ def _build_surveillance_summary_lines(
     comparison_label: Optional[str] = None,
     latest_week_df: Optional[pd.DataFrame] = None,
     latest_label: Optional[str] = None,
+    recent_window_weeks: Optional[int] = None,
 ) -> list[str]:
     """Assemble le résumé automatique standard à afficher dans chaque situation."""
     lines: list[str] = []
@@ -479,8 +493,10 @@ def _build_surveillance_summary_lines(
     overview_text = _build_scope_overview_text(
         df_scope,
         scope_kind=scope_kind,
+        current_label=current_label,
         latest_week_df=latest_week_df,
         latest_label=latest_label,
+        recent_window_weeks=recent_window_weeks,
     )
     if overview_text:
         lines.append(overview_text)
@@ -627,6 +643,7 @@ def _render_surveillance_window(
         comparison_label=narrative_context.get("comparison_label"),
         latest_week_df=narrative_context.get("latest_week_df"),
         latest_label=narrative_context.get("latest_label"),
+        recent_window_weeks=narrative_context.get("recent_window_weeks"),
     )
 
     if summary_lines:
