@@ -56,6 +56,12 @@ from dashboard_app.overview import (
     split_geo_pair_label,
 )
 from dashboard_app.tabs.idsr import _build_idsr_period_labels
+from dashboard_app.tabs.irep import (
+    _irep_build_silence_table,
+    _irep_build_window_risk_table,
+    _irep_prepare_analysis_scope,
+    _irep_prepare_population_reference_frame,
+)
 
 
 CORE_STANDARD_COLUMNS = [
@@ -319,6 +325,229 @@ class AdvancedAnalyticsTest(unittest.TestCase):
         row = clusters[clusters[COL_ZS] == "ZS Forte"].iloc[0]
         self.assertEqual(row["Cas_recents"], 12)
         self.assertTrue(bool(row["cluster_signal"]))
+
+
+class IrepDecisionSupportTest(unittest.TestCase):
+    def _sample_line_list(self):
+        rows = []
+        counts = {
+            "ZS Forte": [2, 3, 4, 12],
+            "ZS Stable": [3, 3, 3, 3],
+        }
+        for zone, week_counts in counts.items():
+            for week_idx, n_cases in enumerate(week_counts, start=1):
+                for case_idx in range(n_cases):
+                    rows.append(
+                        {
+                            COL_PROV: "Kinshasa",
+                            COL_ZS: zone,
+                            "YW": f"2026-W{week_idx:02d}",
+                            "is_death": 1 if zone == "ZS Forte" and week_idx == 4 and case_idx == 0 else 0,
+                            "score_completude_core_%": 90 if zone == "ZS Stable" else 65,
+                            "delai_onset_to_notif": 1 if zone == "ZS Stable" else 4,
+                            COL_TDRR: "positif" if zone == "ZS Forte" and week_idx == 4 else "negatif",
+                            "Age": 20,
+                            "Sexe": "Masculin",
+                            "Issue": "deces" if zone == "ZS Forte" and week_idx == 4 and case_idx == 0 else "vivant",
+                            "Date_debut_maladie": "2026-01-01",
+                            "Date_notification": "2026-01-02",
+                        }
+                    )
+        return pd.DataFrame(rows)
+
+    def test_irep_population_reference_supports_zone_and_province_denominators(self):
+        pop_ref = _irep_prepare_population_reference_frame(
+            pd.DataFrame(
+                {
+                    "PROVINCE": ["Kinshasa", "Kinshasa", "Nord Kivu"],
+                    "Nom": ["ZS A", "ZS B", "ZS C"],
+                    "ZSCode": ["CD1", "CD2", "CD3"],
+                    "Population": [1000, 2000, 3000],
+                }
+            )
+        )
+
+        self.assertEqual(len(pop_ref), 3)
+        self.assertEqual(int(pop_ref["Population_reference"].sum()), 6000)
+        self.assertIn("Kinshasa", set(pop_ref["Province_reference"]))
+        self.assertIn("ZS B", set(pop_ref["Zone_de_sante_reference"]))
+
+    def test_irep_window_table_uses_population_and_flags_silent_units(self):
+        pop_ref = _irep_prepare_population_reference_frame(
+            pd.DataFrame(
+                {
+                    "PROVINCE": ["Kinshasa", "Kinshasa", "Kinshasa"],
+                    "Nom": ["ZS Forte", "ZS Stable", "ZS Silence"],
+                    "ZSCode": ["CD1", "CD2", "CD3"],
+                    "Population": [1000, 2000, 1500],
+                }
+            )
+        )
+
+        rows = []
+        for week, cases_forte, cases_stable in [(1, 2, 3), (2, 3, 3), (3, 4, 3), (4, 12, 0)]:
+            for idx in range(cases_forte):
+                rows.append(
+                    {
+                        COL_PROV: "Kinshasa",
+                        COL_ZS: "ZS Forte",
+                        "YW": f"2026-W{week:02d}",
+                        DATE_ONSET: "2026-01-01",
+                        DATE_NOTIF: "2026-01-03",
+                        COL_ISSUE: "deces" if week == 4 and idx == 0 else "vivant",
+                    }
+                )
+            for _ in range(cases_stable):
+                rows.append(
+                    {
+                        COL_PROV: "Kinshasa",
+                        COL_ZS: "ZS Stable",
+                        "YW": f"2026-W{week:02d}",
+                        DATE_ONSET: "2026-01-01",
+                        DATE_NOTIF: "2026-01-02",
+                        COL_ISSUE: "vivant",
+                    }
+                )
+
+        scoped, reference = _irep_prepare_analysis_scope(pd.DataFrame(rows))
+        latest_order = reference["order"].iloc[-1]
+        previous_orders = reference.tail(2).head(1)["order"].tolist()
+        latest_df = scoped[scoped["_surv_order"] == latest_order].copy()
+
+        table, meta = _irep_build_window_risk_table(
+            latest_df,
+            scoped,
+            group_cols=[COL_PROV, COL_ZS],
+            geography_level="zone",
+            pop_ref=pop_ref,
+            trend_current_orders=[latest_order],
+            trend_previous_orders=previous_orders,
+            completeness_required=[COL_PROV, COL_ZS, DATE_ONSET, DATE_NOTIF, COL_ISSUE],
+            threshold_days=2,
+            weights={
+                "trend": 0.30,
+                "incidence": 0.25,
+                "cfr": 0.20,
+                "timeliness": 0.15,
+                "completeness": 0.10,
+            },
+        )
+
+        self.assertEqual(len(table), 1)
+        self.assertEqual(table.iloc[0][COL_ZS], "ZS Forte")
+        self.assertEqual(int(table.iloc[0]["Population_exposée"]), 1000)
+        self.assertAlmostEqual(float(table.iloc[0]["Incidence_pour_100000"]), 1200.0, places=2)
+        self.assertEqual(meta["population_coverage"], 1)
+
+        silence = _irep_build_silence_table(
+            latest_df,
+            scoped,
+            group_cols=[COL_PROV, COL_ZS],
+            geography_level="zone",
+            pop_ref=pop_ref,
+        )
+        self.assertEqual(set(silence[COL_ZS]), {"ZS Stable", "ZS Silence"})
+
+    def test_irep_window_table_supports_custom_incidence_multiplier(self):
+        pop_ref = _irep_prepare_population_reference_frame(
+            pd.DataFrame(
+                {
+                    "PROVINCE": ["Kinshasa"],
+                    "Nom": ["ZS Forte"],
+                    "ZSCode": ["CD1"],
+                    "Population": [1000],
+                }
+            )
+        )
+        rows = [
+            {
+                COL_PROV: "Kinshasa",
+                COL_ZS: "ZS Forte",
+                "YW": "2026-W04",
+                DATE_ONSET: "2026-01-01",
+                DATE_NOTIF: "2026-01-02",
+                COL_ISSUE: "vivant",
+            }
+            for _ in range(10)
+        ]
+        scoped, reference = _irep_prepare_analysis_scope(pd.DataFrame(rows))
+        latest_order = reference["order"].iloc[-1]
+        latest_df = scoped[scoped["_surv_order"] == latest_order].copy()
+
+        table, meta = _irep_build_window_risk_table(
+            latest_df,
+            scoped,
+            group_cols=[COL_PROV, COL_ZS],
+            geography_level="zone",
+            pop_ref=pop_ref,
+            trend_current_orders=[latest_order],
+            trend_previous_orders=[],
+            completeness_required=[COL_PROV, COL_ZS, DATE_ONSET, DATE_NOTIF, COL_ISSUE],
+            threshold_days=2,
+            weights={
+                "trend": 0.30,
+                "incidence": 0.25,
+                "cfr": 0.20,
+                "timeliness": 0.15,
+                "completeness": 0.10,
+            },
+            denominator_mode="zs_sum",
+            incidence_multiplier=1000,
+        )
+
+        self.assertIn("Incidence_pour_1000", table.columns)
+        self.assertAlmostEqual(float(table.iloc[0]["Incidence_pour_1000"]), 10.0, places=2)
+        self.assertAlmostEqual(float(meta["global_incidence"]), 10.0, places=2)
+
+    def test_irep_total_population_falls_back_to_reference_when_zone_match_is_missing(self):
+        pop_ref = _irep_prepare_population_reference_frame(
+            pd.DataFrame(
+                {
+                    "PROVINCE": ["Kinshasa", "Kinshasa"],
+                    "Nom": ["ZS Forte", "ZS Stable"],
+                    "ZSCode": ["CD1", "CD2"],
+                    "Population": [1000, 2000],
+                }
+            )
+        )
+        rows = [
+            {
+                COL_PROV: "Kinshasa",
+                COL_ZS: "ZS Inconnue",
+                "YW": "2026-W04",
+                DATE_ONSET: "2026-01-01",
+                DATE_NOTIF: "2026-01-02",
+                COL_ISSUE: "vivant",
+            }
+            for _ in range(5)
+        ]
+        scoped, reference = _irep_prepare_analysis_scope(pd.DataFrame(rows))
+        latest_order = reference["order"].iloc[-1]
+        latest_df = scoped[scoped["_surv_order"] == latest_order].copy()
+
+        table, meta = _irep_build_window_risk_table(
+            latest_df,
+            scoped,
+            group_cols=[COL_PROV, COL_ZS],
+            geography_level="zone",
+            pop_ref=pop_ref,
+            trend_current_orders=[latest_order],
+            trend_previous_orders=[],
+            completeness_required=[COL_PROV, COL_ZS, DATE_ONSET, DATE_NOTIF, COL_ISSUE],
+            threshold_days=2,
+            weights={
+                "trend": 0.30,
+                "incidence": 0.25,
+                "cfr": 0.20,
+                "timeliness": 0.15,
+                "completeness": 0.10,
+            },
+            denominator_mode="zs_sum",
+            incidence_multiplier=100000,
+        )
+
+        self.assertTrue(pd.isna(table.iloc[0]["Population_exposée"]))
+        self.assertEqual(int(meta["total_population"]), 3000)
 
     def test_operational_risk_score_ranks_groups(self):
         df = self._sample_line_list()
