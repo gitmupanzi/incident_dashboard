@@ -115,6 +115,7 @@ def render_sitrep_tab(ctx: dict) -> None:
                 logger.warning(f"[SITREP] Export PNG Plotly ignoré : {e}")
                 return None
 
+        @st.cache_data(show_spinner=False)
         def build_weekly_summary(df_scope):
             """Table hebdo Cas/Décès/CFR (sur df_scope filtré)."""
             if COL_YEAR not in df_scope.columns or COL_WNUM not in df_scope.columns:
@@ -139,6 +140,7 @@ def render_sitrep_tab(ctx: dict) -> None:
             )
             return wk
 
+        @st.cache_data(show_spinner=False)
         def build_geo_tables(d_se, min_cas_zs=30, min_cas_prov=50):
             """Tables province/ZS pour la semaine (d_se)."""
             out = {}
@@ -167,6 +169,7 @@ def render_sitrep_tab(ctx: dict) -> None:
 
             return out
 
+        @st.cache_data(show_spinner=False)
         def build_demo_tables(d_se):
             """Sexe / tranches âge (si disponibles)."""
             out = {}
@@ -190,6 +193,7 @@ def render_sitrep_tab(ctx: dict) -> None:
                 out["age_table"] = age
             return out
 
+        @st.cache_data(show_spinner=False)
         def build_delay_summary(d_se):
             """Résumé timeliness (début maladie → admission) si dates présentes."""
             if (DATE_ONSET not in d_se.columns) or (DATE_ADM not in d_se.columns):
@@ -218,6 +222,7 @@ def render_sitrep_tab(ctx: dict) -> None:
         # =========================================================
         # 3) Build payload (onglet SITREP extrait) — VERSION ENRICHIE
         # =========================================================
+        @st.cache_data(show_spinner=False)
         def _build_sitrep_payload_from_df(
             df_scope,
             se,

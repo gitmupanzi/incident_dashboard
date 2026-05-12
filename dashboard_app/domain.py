@@ -485,6 +485,7 @@ def _rename_columns_by_alias_map(df: pd.DataFrame, alias_map: Dict[str, str]) ->
 
     return df.rename(columns=rename_dict) if rename_dict else df
 
+@st.cache_data(show_spinner=False)
 def standardize_ll_by_disease(df: pd.DataFrame, disease_key: str) -> pd.DataFrame:
     """
     1) Renommage spécifique maladie (DISEASE_SPECS[disease_key]['rename_map'])
@@ -1667,6 +1668,7 @@ def _enrich_rougeole_lab_columns(df: pd.DataFrame) -> pd.DataFrame:
 # =========================
 # SECTION: INDICATEURS KPI
 # =========================
+@st.cache_data(show_spinner=False)
 def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
     """
     Calcule les KPI avec des dénominateurs cohérents (= nombre de cas filtrés).
@@ -1821,6 +1823,7 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
         "dehy_tbl": dehy_tbl,
     }
 
+@st.cache_data(show_spinner=False)
 def compute_group_indicators(df_in: pd.DataFrame, group_col: str) -> pd.DataFrame:
     """Table d'indicateurs par groupe avec les mêmes définitions/denoms."""
     if df_in is None or df_in.empty or group_col not in df_in.columns:
@@ -1922,6 +1925,7 @@ def compile_from_folder(folder, pattern, sheet=None):
 def load_data_from_excel(path):
     return pd.read_excel(path)
 
+@st.cache_data(show_spinner=False)
 def standardize_df(df):
     df = df.copy()
 
@@ -2108,6 +2112,7 @@ def standardize_df(df):
 # =========================
 # SECTION: QUALITE DES DONNEES
 # =========================
+@st.cache_data(show_spinner=False)
 def qc_flags(df: pd.DataFrame) -> pd.DataFrame:
     """Retourne un tableau long des incohérences (1 ligne = 1 flag = 1 cas)."""
     out = []
@@ -2170,6 +2175,7 @@ def qc_flags(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["row_id", "flag"])
     return pd.DataFrame(out)
 
+@st.cache_data(show_spinner=False)
 def completeness_table(df: pd.DataFrame, cols_required: list[str], by: str) -> pd.DataFrame:
     """Complétude (%) des champs clés par groupe. Robuste aux doublons de colonnes."""
 
@@ -2206,6 +2212,7 @@ def completeness_table(df: pd.DataFrame, cols_required: list[str], by: str) -> p
     g["score_completude_%"] = g[cols].mean(axis=1).round(1)
     return g.sort_values("score_completude_%", ascending=True)
 
+@st.cache_data(show_spinner=False)
 def standard_data_quality_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Résumé standard de qualité des données sur les line lists filtrées."""
     if df is None or df.empty:
@@ -2238,6 +2245,7 @@ def standard_data_quality_summary(df: pd.DataFrame) -> pd.DataFrame:
             rows.append({"Indicateur": label, "Valeur": round(float(pd.Series(df[col]).fillna(False).mean() * 100), 1)})
     return pd.DataFrame(rows)
 
+@st.cache_data(show_spinner=False)
 def duplicate_candidates_table(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty or "duplicate_fingerprint" not in df.columns or "duplicate_potential" not in df.columns:
         return pd.DataFrame()
@@ -2306,6 +2314,7 @@ def list_available_standard_delays(df: pd.DataFrame) -> List[Tuple[str, str]]:
             available.append((col, label))
     return available
 
+@st.cache_data(show_spinner=False)
 def build_delay_group_summary(df: pd.DataFrame, delay_col: str, group_col: str, threshold: float = 2) -> pd.DataFrame:
     """Resume un delai standard par groupe avec indicateurs robustes."""
     threshold_val = float(threshold)
@@ -2484,6 +2493,7 @@ def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     return pd.DataFrame(rows, columns=["Étape", "n", "Dénominateur", "%"])
 
+@st.cache_data(show_spinner=False)
 def alerts_weekly_simple(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
     """
     Alerte simple:
@@ -2543,6 +2553,7 @@ def _score_minmax_0_100(series: pd.Series, inverse: bool = False) -> pd.Series:
     return out
 
 
+@st.cache_data(show_spinner=False)
 def build_weekly_alerts(
     df: pd.DataFrame,
     group_col: str,
@@ -2701,6 +2712,7 @@ def build_spatiotemporal_cluster_table(
     return out.reset_index(drop=True)
 
 
+@st.cache_data(show_spinner=False)
 def build_operational_risk_score(
     df: pd.DataFrame,
     *,

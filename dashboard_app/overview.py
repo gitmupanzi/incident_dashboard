@@ -237,6 +237,7 @@ def derive_age_5yr_generic(df_: pd.DataFrame) -> pd.Series:
     return pd.cut(years, bins=bins, labels=labels, right=False).astype("string")
 
 
+@st.cache_data(show_spinner=False)
 def build_global_summary_table(df_: pd.DataFrame) -> pd.DataFrame:
     n_cases = int(len(df_))
     n_deaths = int(df_["is_death"].sum()) if "is_death" in df_.columns else 0
@@ -259,6 +260,7 @@ def build_global_summary_table(df_: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["Indicateur", "Valeur"])
 
 
+@st.cache_data(show_spinner=False)
 def build_frequency_table(df_: pd.DataFrame, col: str, top_n: int | None = None) -> pd.DataFrame:
     if col not in df_.columns:
         return pd.DataFrame(columns=[col, 'n', '%'])
@@ -270,6 +272,7 @@ def build_frequency_table(df_: pd.DataFrame, col: str, top_n: int | None = None)
     return freq
 
 
+@st.cache_data(show_spinner=False)
 def build_simple_lab_table(df_: pd.DataFrame) -> pd.DataFrame:
     rows = []
     n_cases = int(len(df_))
@@ -302,6 +305,7 @@ def build_simple_lab_table(df_: pd.DataFrame) -> pd.DataFrame:
     return df_out
 
 
+@st.cache_data(show_spinner=False)
 def build_weekly_lab_summary(df_: pd.DataFrame) -> pd.DataFrame:
     """Construit un suivi hebdomadaire des tests valides et de la positivite."""
     week_col = resolve_week_column(df_)
@@ -444,6 +448,7 @@ def _build_narrative_period_text(df_: pd.DataFrame) -> tuple[str, str]:
     return "sur une période non documentée", week_txt
 
 
+@st.cache_data(show_spinner=False)
 def build_who_narrative_summary(df_: pd.DataFrame) -> str:
     """
     Résumé automatisé rédigé dans un langage de surveillance compatible
@@ -653,6 +658,7 @@ def build_weekly_overview_table(df_: pd.DataFrame) -> pd.DataFrame:
     return grouped
 
 
+@st.cache_data(show_spinner=False)
 def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
     """Calcule les KPI principaux de la page d'accueil."""
     kpi = compute_indicators(df_)
@@ -820,6 +826,17 @@ def split_geo_pair_label(label_value: Any) -> tuple[Optional[str], Optional[str]
     return (province_txt or None), (zone_txt or None)
 
 
+@st.cache_data(show_spinner=False)
+def _read_geo_file_cached(path_str: str, mtime_ns: int):
+    del mtime_ns
+    return gpd.read_file(path_str)
+
+
+def _read_geo_file(path: Union[str, Path]):
+    path_obj = Path(path).resolve()
+    return _read_geo_file_cached(str(path_obj), path_obj.stat().st_mtime_ns)
+
+
 def _attach_zone_map_labels(gdf_geo: pd.DataFrame) -> pd.DataFrame:
     """Ajoute province + zone au GeoDataFrame des zones de santé."""
     gdf_zone = gdf_geo.copy()
@@ -836,7 +853,7 @@ def _attach_zone_map_labels(gdf_geo: pd.DataFrame) -> pd.DataFrame:
     province_geo_path = Path("data/geometry_rdc_provinces.geojson")
     if province_geo_path.exists() and gpd is not None and "geometry" in gdf_zone.columns:
         try:
-            gdf_prov = gpd.read_file(province_geo_path)[["name", "geometry"]].copy()
+            gdf_prov = _read_geo_file(province_geo_path)[["name", "geometry"]].copy()
             try:
                 if gdf_zone.crs is not None and gdf_prov.crs is not None and str(gdf_zone.crs) != str(gdf_prov.crs):
                     gdf_prov = gdf_prov.to_crs(gdf_zone.crs)
@@ -877,6 +894,7 @@ def _attach_zone_map_labels(gdf_geo: pd.DataFrame) -> pd.DataFrame:
     return gdf_zone
 
 
+@st.cache_data(show_spinner=False)
 def _prepare_geo_matching_payload(
     df_source: pd.DataFrame,
     geo_path: str,
@@ -885,7 +903,7 @@ def _prepare_geo_matching_payload(
     match_threshold: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame, float, pd.DataFrame, str, str]:
     """Prépare la jointure carte/données avec une clé Province + Zone pour les ZS."""
-    gdf_geo = gpd.read_file(geo_path)
+    gdf_geo = _read_geo_file(geo_path)
     source_label_col = group_col
     geo_label_col = "name"
     geo_key_col = "name"
@@ -922,6 +940,7 @@ def _prepare_geo_matching_payload(
     return gdf_join, df_map, match_rate, label_source, source_label_col, geo_label_col
 
 
+@st.cache_data(show_spinner=False)
 def prepare_overview_map_data(
     df_: pd.DataFrame,
     level: str,

@@ -15,6 +15,7 @@ def _surv_clean_numeric_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFra
     return out
 
 
+@st.cache_data(show_spinner=False)
 def _surv_prepare_delay_scope(df: pd.DataFrame, delay_cols: list[str]) -> pd.DataFrame:
     """Prépare les délais pour les indicateurs et graphiques de promptitude."""
     out = _surv_clean_numeric_columns(df, delay_cols)
@@ -25,6 +26,7 @@ def _surv_prepare_delay_scope(df: pd.DataFrame, delay_cols: list[str]) -> pd.Dat
     return out
 
 
+@st.cache_data(show_spinner=False)
 def _surv_plotly_frame(df: pd.DataFrame, numeric_cols: list[str] | None = None) -> pd.DataFrame:
     """Retourne un DataFrame compatible Plotly JSON (pd.NA/NaT -> None)."""
     out = df.copy()
@@ -70,6 +72,7 @@ def _surv_alpha_sort_key(value: object) -> str:
     return str(value).strip().casefold()
 
 
+@st.cache_data(show_spinner=False)
 def _build_surveillance_completeness_matrices(
     df: pd.DataFrame,
     province_col: str,

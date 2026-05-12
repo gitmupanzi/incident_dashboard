@@ -189,6 +189,7 @@ def _irep_clean_province_series(series: pd.Series) -> pd.Series:
     return out.astype("string")
 
 
+@st.cache_data(show_spinner=False)
 def _irep_prepare_population_reference_frame(raw_df: pd.DataFrame) -> pd.DataFrame:
     """Prépare une table de population exploitable pour provinces et zones."""
     empty = pd.DataFrame(
@@ -362,6 +363,7 @@ def _irep_load_population_reference(uploaded_file: object | None) -> tuple[pd.Da
         return pd.DataFrame(), f"Lecture impossible du fichier population : {exc}"
 
 
+@st.cache_data(show_spinner=False)
 def _irep_build_population_lookups(pop_ref: pd.DataFrame) -> dict:
     """Construit les tables de correspondance population province / zone."""
     lookups = {
@@ -447,6 +449,7 @@ def _irep_build_population_lookups(pop_ref: pd.DataFrame) -> dict:
     return lookups
 
 
+@st.cache_data(show_spinner=False)
 def _irep_prepare_analysis_scope(df_source: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Prépare le périmètre temporel et les variables minimales pour l'IREP."""
     if df_source is None or df_source.empty:
@@ -605,6 +608,7 @@ def _irep_factor_summary(row: pd.Series) -> str:
     return ", ".join(ordered[:2])
 
 
+@st.cache_data(show_spinner=False)
 def _irep_build_window_risk_table(
     window_df: pd.DataFrame,
     base_df: pd.DataFrame,
@@ -850,10 +854,11 @@ def _irep_build_window_risk_table(
     return out.reset_index(drop=True), meta
 
 
+@st.cache_data(show_spinner=False)
 def _irep_reference_units_from_population(
     pop_ref: pd.DataFrame,
     geography_level: str,
-    scope_provinces: set[str],
+    scope_provinces: tuple[str, ...],
 ) -> pd.DataFrame:
     """Construit l'univers attendu à partir de la population de référence."""
     if pop_ref is None or pop_ref.empty:
@@ -902,6 +907,7 @@ def _irep_reference_units_from_population(
     )[cols]
 
 
+@st.cache_data(show_spinner=False)
 def _irep_build_silence_table(
     window_df: pd.DataFrame,
     base_df: pd.DataFrame,
@@ -937,7 +943,7 @@ def _irep_build_silence_table(
     if base_units.empty:
         return pd.DataFrame()
 
-    scope_provinces = set(base_units["_prov_norm"].dropna().astype(str).tolist())
+    scope_provinces = tuple(sorted(set(base_units["_prov_norm"].dropna().astype(str).tolist())))
     expected_units = _irep_reference_units_from_population(pop_ref, geography_level, scope_provinces)
     if not expected_units.empty:
         if geography_level == "province":

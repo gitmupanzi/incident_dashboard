@@ -56,11 +56,13 @@ IDSR_RENAME_MAP = {
 }
 
 
+@st.cache_data(show_spinner=False)
 def harmonize_idsr_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = normalize_idsr_column_names(df)
     return df.rename(columns={k: v for k, v in IDSR_RENAME_MAP.items() if k in df.columns})
 
 
+@st.cache_data(show_spinner=False)
 def idsr_frame_looks_valid(df: pd.DataFrame) -> bool:
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return False
@@ -98,23 +100,32 @@ def _seek_excel_source(file_source: object) -> None:
             pass
 
 
+@st.cache_data(show_spinner=False)
+def _path_looks_like_idsr_workbook(path_str: str, mtime_ns: int) -> bool:
+    del mtime_ns
+    path = Path(path_str)
+    try:
+        with pd.ExcelFile(path) as xls:
+            prioritized = [name for name in ("IDS_RDC", "IDSR", "idsr") if name in xls.sheet_names]
+            remaining = [name for name in xls.sheet_names if name not in prioritized]
+        for sheet_name in [*prioritized, *remaining]:
+            sample = pd.read_excel(path, sheet_name=sheet_name, nrows=10)
+            if idsr_frame_looks_valid(sample):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def list_available_idsr_files(available_files: list[Path]) -> list[Path]:
     candidates: list[Path] = []
     for path in available_files:
         if path.suffix.lower() not in {".xlsx", ".xls"}:
             continue
 
-        try:
-            with pd.ExcelFile(path) as xls:
-                prioritized = [name for name in ("IDS_RDC", "IDSR", "idsr") if name in xls.sheet_names]
-                remaining = [name for name in xls.sheet_names if name not in prioritized]
-            for sheet_name in [*prioritized, *remaining]:
-                sample = pd.read_excel(path, sheet_name=sheet_name, nrows=10)
-                if idsr_frame_looks_valid(sample):
-                    candidates.append(path)
-                    break
-        except Exception:
-            continue
+        resolved_path = path.resolve()
+        if _path_looks_like_idsr_workbook(str(resolved_path), resolved_path.stat().st_mtime_ns):
+            candidates.append(path)
 
     return sorted(candidates, key=lambda p: p.name.lower())
 
@@ -196,6 +207,7 @@ def _parse_idsr_french_date_value(value: object) -> object:
         return pd.NaT
 
 
+@st.cache_data(show_spinner=False)
 def parse_idsr_date_series(values: pd.Series) -> pd.Series:
     """Convertit une colonne date IDSR en vraie date pandas, y compris les mois français."""
     src = pd.Series(values).copy()
@@ -235,6 +247,7 @@ def parse_idsr_date_series(values: pd.Series) -> pd.Series:
     return pd.to_datetime(parsed, errors="coerce").dt.normalize()
 
 
+@st.cache_data(show_spinner=False)
 def normalize_idsr_column_names(df: pd.DataFrame) -> pd.DataFrame:
     """Nettoie les en-têtes IDSR sans changer leur logique métier."""
     df = df.copy()
@@ -247,6 +260,7 @@ def normalize_idsr_column_names(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(show_spinner=False)
 def normalize_idsr_debutsem_column(df: pd.DataFrame) -> pd.DataFrame:
     """Crée/alimente Date_debut_semaine à partir de DEBUTSEM et convertit DEBUTSEM en vraie date."""
     if "DEBUTSEM" not in df.columns:
@@ -260,6 +274,7 @@ def normalize_idsr_debutsem_column(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(show_spinner=False)
 def idsr_year_from_debutsem(values: pd.Series, mode: str = "iso") -> pd.Series:
     """Retourne l'année exploitable depuis DEBUTSEM.
 
@@ -359,6 +374,7 @@ def render_idsr_phase_header(title: str, description: str = "") -> None:
 
 
 
+@st.cache_data(show_spinner=False)
 def _idsr_week_label_for_completeness(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     """Retourne un libellé semaine et une clé de tri pour les analyses IDSR hebdomadaires."""
     if df is None or df.empty:
@@ -385,6 +401,7 @@ def _idsr_week_label_for_completeness(df: pd.DataFrame) -> tuple[pd.Series, pd.S
     return pd.Series(pd.NA, index=idx, dtype="string"), pd.Series(np.nan, index=idx)
 
 
+@st.cache_data(show_spinner=False)
 def _build_idsr_completeness_matrices(
     df: pd.DataFrame,
     province_col: str,
@@ -719,6 +736,7 @@ def render_idsr_completeness_section(df: pd.DataFrame, province_col: str, zs_col
                 )
 
 
+@st.cache_data(show_spinner=False)
 def _idsr_clean_group_cols_for_rates(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
     """Nettoie les colonnes de regroupement utilisées pour les taux IDSR."""
     work = df.copy()
@@ -729,6 +747,7 @@ def _idsr_clean_group_cols_for_rates(df: pd.DataFrame, group_cols: list[str]) ->
     return work
 
 
+@st.cache_data(show_spinner=False)
 def _idsr_population_by_group(
     df: pd.DataFrame,
     group_cols: list[str],
@@ -763,6 +782,7 @@ def _idsr_population_by_group(
     return work.groupby(group_cols, dropna=False, as_index=False).agg(Population_reference=(pop_col, "max"))
 
 
+@st.cache_data(show_spinner=False)
 def _idsr_population_total(
     df: pd.DataFrame,
     *,
@@ -793,6 +813,7 @@ def _idsr_population_total(
     return float(pop_ref) if pd.notna(pop_ref) else np.nan
 
 
+@st.cache_data(show_spinner=False)
 def _build_idsr_attack_incidence_table(
     df: pd.DataFrame,
     group_cols: list[str],
@@ -833,6 +854,7 @@ def _build_idsr_attack_incidence_table(
     return out
 
 
+@st.cache_data(show_spinner=False)
 def _build_idsr_attack_incidence_weekly(
     df: pd.DataFrame,
     *,
@@ -1105,6 +1127,7 @@ Le résultat dépend fortement de la qualité de la colonne `Population`. Si la 
                 st.dataframe(weekly_tbl, width="stretch", height=300, hide_index=True)
 
 
+@st.cache_data(show_spinner=False)
 def _build_idsr_period_labels(df_scope: pd.DataFrame) -> tuple[str, str]:
     """Construit des libellés de période cohérents pour le résumé IDSR."""
     period_label = compute_analysis_period_value(df_scope)
@@ -1140,7 +1163,7 @@ def _build_idsr_period_labels(df_scope: pd.DataFrame) -> tuple[str, str]:
     return period_label, time_span
 
 
-def _load_idsr_workbook(file_source: object) -> pd.DataFrame:
+def _load_idsr_workbook_impl(file_source: object) -> pd.DataFrame:
     """Charge un fichier IDSR en priorisant les feuilles usuelles."""
     last_exc = None
     candidate_sheets: list[str] = []
@@ -1179,6 +1202,34 @@ def _load_idsr_workbook(file_source: object) -> pd.DataFrame:
         "Le classeur selectionne ne ressemble pas a un fichier IDSR agrege valide "
         "(colonnes geographiques, temporelles et indicateurs IDSR introuvables)."
     )
+
+
+@st.cache_data(show_spinner=False)
+def _load_idsr_workbook_from_path(path_str: str, mtime_ns: int) -> pd.DataFrame:
+    del mtime_ns
+    return _load_idsr_workbook_impl(path_str)
+
+
+@st.cache_data(show_spinner=False)
+def _load_idsr_workbook_from_bytes(file_bytes: bytes) -> pd.DataFrame:
+    return _load_idsr_workbook_impl(BytesIO(file_bytes))
+
+
+def _load_idsr_workbook(file_source: object) -> pd.DataFrame:
+    if hasattr(file_source, "getvalue") and callable(file_source.getvalue):
+        file_bytes = file_source.getvalue()
+        if not file_bytes:
+            return pd.DataFrame()
+        return _load_idsr_workbook_from_bytes(file_bytes)
+
+    if isinstance(file_source, (str, Path)):
+        path_obj = Path(file_source)
+        if not path_obj.exists():
+            raise FileNotFoundError(f"Fichier introuvable: {path_obj}")
+        resolved_path = path_obj.resolve()
+        return _load_idsr_workbook_from_path(str(resolved_path), resolved_path.stat().st_mtime_ns)
+
+    return _load_idsr_workbook_impl(file_source)
 
 
 def render_idsr_tab(ctx: dict) -> None:

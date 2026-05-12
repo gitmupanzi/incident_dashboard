@@ -5,6 +5,50 @@ from dashboard_app.runtime_support import inject_runtime_support
 inject_runtime_support(globals())
 
 
+def _quality_build_export_traceability_table(
+    df_scope: pd.DataFrame,
+    disease_key_value: str,
+    files_used_tuple: tuple[str, ...],
+) -> pd.DataFrame:
+    week_min_val = "-"
+    week_max_val = "-"
+    year_min_val = "-"
+    year_max_val = "-"
+
+    if COL_WNUM in df_scope.columns and df_scope[COL_WNUM].notna().any():
+        week_num = pd.to_numeric(df_scope[COL_WNUM], errors="coerce").dropna()
+        if not week_num.empty:
+            week_min_val = int(week_num.min())
+            week_max_val = int(week_num.max())
+
+    if COL_YEAR in df_scope.columns and df_scope[COL_YEAR].notna().any():
+        year_num = pd.to_numeric(df_scope[COL_YEAR], errors="coerce").dropna()
+        if not year_num.empty:
+            year_min_val = int(year_num.min())
+            year_max_val = int(year_num.max())
+
+    rows = [
+        {"ParamÃ¨tre": "Date export", "Valeur": str(date.today())},
+        {"ParamÃ¨tre": "Maladie / line list", "Valeur": DISEASE_SPECS.get(disease_key_value, {}).get("label", disease_key_value)},
+        {"ParamÃ¨tre": "Sources chargÃ©es", "Valeur": ", ".join(files_used_tuple) if files_used_tuple else "Non documentÃ©"},
+        {"ParamÃ¨tre": "Cas exportÃ©s", "Valeur": int(len(df_scope))},
+        {"ParamÃ¨tre": "Colonnes exportÃ©es", "Valeur": int(len(df_scope.columns))},
+        {"ParamÃ¨tre": "SE min observÃ©e", "Valeur": week_min_val},
+        {"ParamÃ¨tre": "SE max observÃ©e", "Valeur": week_max_val},
+        {"ParamÃ¨tre": "AnnÃ©e min observÃ©e", "Valeur": year_min_val},
+        {"ParamÃ¨tre": "AnnÃ©e max observÃ©e", "Valeur": year_max_val},
+        {
+            "ParamÃ¨tre": "Provinces distinctes",
+            "Valeur": int(_surveillance_clean_text_series(df_scope[COL_PROV]).nunique()) if COL_PROV in df_scope.columns else 0,
+        },
+        {
+            "ParamÃ¨tre": "Zones de santÃ© distinctes",
+            "Valeur": int(_surveillance_clean_text_series(df_scope[COL_ZS]).nunique()) if COL_ZS in df_scope.columns else 0,
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
 def render_quality_tab(ctx: dict) -> None:
     """Render the data quality and export tab."""
     globals().update(ctx)
@@ -431,6 +475,7 @@ def render_quality_tab(ctx: dict) -> None:
         
         st.subheader("Extraction des données filtrées, traçabilité et options d’export")
 
+        @st.cache_data(show_spinner=False)
         def _build_export_traceability_table(df_scope: pd.DataFrame) -> pd.DataFrame:
             """Construit une table simple de traçabilité pour les exports."""
             week_min_val = "-"

@@ -92,9 +92,19 @@ def guess_preferred_included_file(
     return scored_files[0][1] if scored_files else available_files[0]
 
 
+@st.cache_data(show_spinner=False)
+def _get_excel_sheet_names_from_path_cached(path_str: str, mtime_ns: int) -> list[str]:
+    del mtime_ns
+    return pd.ExcelFile(path_str).sheet_names
+
+
 def get_excel_sheet_names_from_path(path: Path) -> list[str]:
     try:
-        return pd.ExcelFile(path).sheet_names
+        resolved_path = path.resolve()
+        return _get_excel_sheet_names_from_path_cached(
+            str(resolved_path),
+            resolved_path.stat().st_mtime_ns,
+        )
     except Exception as exc:
         st.error(f"Impossible de lire le fichier Excel local : {exc}")
         st.stop()
