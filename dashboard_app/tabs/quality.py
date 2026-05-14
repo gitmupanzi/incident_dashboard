@@ -60,14 +60,14 @@ def render_quality_tab(ctx: dict) -> None:
         tab_help(
             "Comment lire cet onglet",
             """
-            **🎯 Objectif** : Vérifier si les provinces attendues notifient (complétude géographique).
+            **🎯 Objectif** : vérifier si les provinces attendues transmettent bien leurs données.
         
             **📖 Interprétation**
-            - **Manquantes** : silence épidémiologique ou problème de remontée/rapportage.
-            - Le tableau croisé aide à repérer les zones/provinces dominantes ou sous-notifiantes.
+            - **Manquantes** : absence réelle de cas, retard de transmission ou problème de rapportage.
+            - Le tableau aide à repérer les provinces ou zones qui notifient peu.
         
             **⚠️ Points d’attention**
-            - Une province silencieuse pendant une épidémie = signal d’alerte système à investiguer.
+            - Une province silencieuse pendant une épidémie doit être vérifiée rapidement.
             """,
             expanded=False
         )     
@@ -461,14 +461,14 @@ def render_quality_tab(ctx: dict) -> None:
         tab_help(
             "Comment lire cet onglet",
             """
-            **🎯 Objectif** : Consulter et exporter les données filtrées pour analyses/partage.
+            **🎯 Objectif** : consulter et exporter les données filtrées pour analyse et partage.
         
             **📖 Utilisation**
             - Exportation **CSV/Excel** pour analyses complémentaires (R/Python/DHIS2).
             - Vérifier les filtres actifs avant export.
         
             **⚠️ Points d’attention**
-            - Les exports reflètent exactement le périmètre filtré (province/ZS/AS/semaine/classification).
+            - Les exports reflètent exactement les filtres actifs (province/ZS/AS/semaine/classification).
             """,
             expanded=False
         )
@@ -561,6 +561,24 @@ def render_quality_tab(ctx: dict) -> None:
             )
             if (("YW" in df_f.columns) or (COL_WEEK in df_f.columns)) else pd.DataFrame()
         )
+        export_standard_signals = build_standard_signal_table(
+            df_f,
+            week_col="YW" if "YW" in df_f.columns else COL_WEEK,
+            completeness_threshold=80.0,
+            timeliness_threshold_days=float(seuil_jours),
+            timeliness_target_pct=80.0,
+            investigation_target_pct=90.0,
+            positivity_high_threshold=40.0,
+            cfr_high_threshold=3.0,
+            min_alert_cases=10,
+            alert_ratio=1.5,
+        )
+        export_standard_tracker = build_standard_action_tracker_template(
+            export_standard_signals,
+            disease_label=DISEASE_SPECS.get(disease_key, {}).get("label", disease_key),
+            analysis_label=compute_analysis_period_value(df_f),
+            generated_on=str(date.today()),
+        )
 
         export_completeness = pd.DataFrame()
         export_completeness_by = None
@@ -634,6 +652,113 @@ def render_quality_tab(ctx: dict) -> None:
                 st.markdown("**Clusters spatio-temporels récents**")
                 st_dataframe_safe(export_clusters.head(100), height=300)
 
+            if not export_standard_signals.empty:
+                st.markdown("**Points à suivre en priorité**")
+                st_dataframe_safe(export_standard_signals, height=300)
+
+        st.divider()
+        st.markdown("**Suivi des actions**")
+        st.caption(
+            "Le tableau ci-dessous est prérempli à partir des points à suivre. "
+            "Tu peux compléter les responsables, les échéances, l'avancement et les commentaires avant export."
+        )
+        tracker_signature = hashlib.md5(
+            "|".join(export_standard_tracker.get("Signal_ID", pd.Series(dtype="string")).astype(str).tolist()).encode("utf-8")
+        ).hexdigest()
+        tracker_state_key = "quality_standard_action_tracker"
+        tracker_signature_key = "quality_standard_action_tracker_signature"
+
+        if st.session_state.get(tracker_signature_key) != tracker_signature:
+            existing_tracker = st.session_state.get(tracker_state_key)
+            st.session_state[tracker_state_key] = merge_standard_action_tracker_template(export_standard_tracker, existing_tracker)
+            st.session_state[tracker_signature_key] = tracker_signature
+
+        tracker_col1, tracker_col2 = st.columns([1, 1])
+        with tracker_col1:
+            if st.button("Réinitialiser le tracker", key="quality_standard_tracker_reset"):
+                st.session_state[tracker_state_key] = export_standard_tracker.copy()
+                st.session_state[tracker_signature_key] = tracker_signature
+        with tracker_col2:
+            if not export_standard_tracker.empty:
+                st.caption(f"{len(export_standard_tracker)} action(s) proposée(s) pour le périmètre courant.")
+
+        current_tracker = st.session_state.get(tracker_state_key, export_standard_tracker.copy())
+        if current_tracker is None or not isinstance(current_tracker, pd.DataFrame):
+            current_tracker = export_standard_tracker.copy()
+        current_tracker = merge_standard_action_tracker_template(export_standard_tracker, current_tracker)
+
+        if current_tracker.empty:
+            st.success("Aucun point prioritaire n'alimente le suivi des actions pour le périmètre filtré.")
+        else:
+            edited_tracker = st.data_editor(
+                current_tracker,
+                width="stretch",
+                height=360,
+                hide_index=True,
+                num_rows="fixed",
+                column_config={
+                    "Signal_ID": st.column_config.TextColumn("ID signal", disabled=True),
+                    "Maladie_source": st.column_config.TextColumn("Maladie", disabled=True),
+                    "Perimetre_analyse": st.column_config.TextColumn("Périmètre", disabled=True),
+                    "Bloc": st.column_config.TextColumn("Bloc", disabled=True),
+                    "Indicateur": st.column_config.TextColumn("Indicateur", disabled=True),
+                    "Statut_signal": st.column_config.TextColumn("Niveau d'alerte", disabled=True),
+                    "Priorite_action": st.column_config.SelectboxColumn(
+                        "Priorité",
+                        options=["Urgent", "Cette semaine", "Routine"],
+                    ),
+                    "Niveau_reponse": st.column_config.SelectboxColumn(
+                        "Niveau",
+                        options=["Province", "Surveillance", "Technique / soins", "Coordination", "National", "Autre"],
+                    ),
+                    "Constat": st.column_config.TextColumn("Ce qu'on observe", disabled=True, width="large"),
+                    "Action_a_suivre": st.column_config.TextColumn("Action proposée", width="large"),
+                    "Responsable": st.column_config.TextColumn("Responsable"),
+                    "Echeance": st.column_config.TextColumn("Échéance"),
+                    "Statut_action": st.column_config.SelectboxColumn(
+                        "Avancement",
+                        options=["À démarrer", "À suivre", "En cours", "Terminé", "Bloqué", "Planifié"],
+                    ),
+                    "Commentaire": st.column_config.TextColumn("Commentaire", width="large"),
+                    "Date_generation": st.column_config.TextColumn("Date de génération", disabled=True),
+                },
+                key="quality_standard_action_tracker_editor",
+            )
+            st.session_state[tracker_state_key] = edited_tracker.copy()
+            current_tracker = edited_tracker.copy()
+
+            tracker_open = int(current_tracker["Statut_action"].astype(str).isin(["À démarrer", "À suivre", "En cours"]).sum())
+            tracker_done = int(current_tracker["Statut_action"].astype(str).eq("Terminé").sum())
+            tracker_blocked = int(current_tracker["Statut_action"].astype(str).eq("Bloqué").sum())
+            t1, t2, t3 = st.columns(3)
+            t1.metric("Actions ouvertes", format_metric_value(tracker_open))
+            t2.metric("Actions terminées", format_metric_value(tracker_done))
+            t3.metric("Actions bloquées", format_metric_value(tracker_blocked))
+
+            tracker_export = current_tracker.rename(
+                columns={
+                    "Signal_ID": "ID signal",
+                    "Maladie_source": "Maladie",
+                    "Perimetre_analyse": "Périmètre",
+                    "Statut_signal": "Niveau d'alerte",
+                    "Priorite_action": "Priorité",
+                    "Niveau_reponse": "Niveau",
+                    "Constat": "Ce qu'on observe",
+                    "Action_a_suivre": "Action proposée",
+                    "Echeance": "Échéance",
+                    "Statut_action": "Avancement",
+                    "Date_generation": "Date de génération",
+                }
+            )
+            tracker_csv = tracker_export.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Télécharger le suivi des actions (CSV)",
+                data=tracker_csv,
+                file_name=f"{export_base_name}_tracker_actions.csv",
+                mime="text/csv",
+                key="dl_quality_export_csv_tracker",
+            )
+
         st.markdown("**Aperçu de la line list filtrée**")
         st_dataframe_safe(df_f, height=420)
 
@@ -695,6 +820,10 @@ def render_quality_tab(ctx: dict) -> None:
                         export_alerts.to_excel(writer, sheet_name="Alertes", index=False)
                     if not export_clusters.empty:
                         export_clusters.to_excel(writer, sheet_name="Clusters", index=False)
+                    if not export_standard_signals.empty:
+                        export_standard_signals.to_excel(writer, sheet_name="Points_prioritaires", index=False)
+                    if current_tracker is not None and isinstance(current_tracker, pd.DataFrame) and not current_tracker.empty:
+                        tracker_export.to_excel(writer, sheet_name="Suivi_actions", index=False)
 
             excel_name = (
                 f"{export_base_name}_pack_qualite.xlsx"
@@ -723,23 +852,23 @@ def render_quality_tab(ctx: dict) -> None:
         tab_help(
             "Comment lire cet onglet",
             """
-            **🎯 Objectif** : Détecter incohérences, problèmes de complétude, goulots labo, et signaux d’alerte.
+            **🎯 Objectif** : repérer les incohérences, les données manquantes, les difficultés de laboratoire et les alertes.
         
             **📖 Sections**
-            - **Indicateurs rapides** : 3–5 KPI qualité/action
+            - **Indicateurs rapides** : quelques chiffres clés
             - **QC Flags** : incohérences (dates, TDR, âge…)
-            - **Complétude champs clés** : % remplissage par site
+            - **Complétude champs clés** : niveau de remplissage par site
             - **Cascade labo** : cas → prélèvement → TDR → résultat valide → positif
-            - **Alertes tendance** : hausse inhabituelle vs baseline simple
+            - **Alertes tendance** : hausse inhabituelle par rapport aux semaines précédentes
         
             **⚠️ Points d’attention**
-            - Un signal ≠ confirmation d’épidémie : déclenche une investigation terrain.
-            - Les % de cascade sont calculés sur une logique *entonnoir* (séquentielle).
+            - Un signal ne confirme pas à lui seul une épidémie : il faut vérifier sur le terrain.
+            - Les % de cascade suivent une logique en étapes successives.
             """,
             expanded=False
         )
         
-        st.subheader("Contrôle qualité des données et alertes opérationnelles de surveillance")
+        st.subheader("Qualité des données et alertes utiles pour l'action")
         
         # -------- Helpers (robustes) --------
         def _get_pct_from_cascade(casc: pd.DataFrame, key: str) -> float:

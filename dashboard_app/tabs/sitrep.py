@@ -18,25 +18,25 @@ def render_sitrep_tab(ctx: dict) -> None:
             "Comment lire cet onglet",
             """
             **🎯 Objectif**
-            - Produire une lecture décisionnelle courte de la **semaine épidémiologique sélectionnée** à partir des filtres actifs.
+            - Donner une vue courte et utile de la **semaine sélectionnée** à partir des filtres actifs.
 
-            **📖 Logique de lecture**
-            - Le SITREP met l’accent sur la **semaine ciblée**, sa comparaison à la semaine précédente disponible et le **cumul annuel**.
-            - Les foyers géographiques, la létalité critique et les signaux utiles à l’action sont synthétisés en priorité.
+            **📖 Comment lire**
+            - Le SITREP met l’accent sur la **semaine ciblée**, la compare à la semaine précédente et rappelle aussi le **cumul annuel**.
+            - Il met surtout en avant les zones les plus touchées, la gravité et les points qui demandent une action rapide.
 
-            **🚫 Ce qui n’est pas répété ici**
+            **🚫 Ce qui reste dans les autres onglets**
             - Les analyses détaillées de délais restent dans **Surveillance**.
-            - Les profils démographiques détaillés restent dans **Profil**.
-            - Les tableaux exhaustifs de qualité et de complétude restent dans **Données, complétude & qualité**.
+            - Les profils détaillés restent dans **Profil**.
+            - Les tableaux complets de qualité et de complétude restent dans **Données, complétude & qualité**.
 
             **📤 Exportation**
-            - Le PDF reprend la synthèse affichée dans cet onglet pour le périmètre actif.
+            - Le PDF reprend la synthèse affichée dans cet onglet.
             """,
             expanded=False
         )
 
         st.caption(
-            "Le SITREP reprend uniquement les informations nécessaires à la décision rapide, sans dupliquer les analyses détaillées déjà portées par les autres onglets."
+            "Le SITREP reprend seulement les informations les plus utiles pour une lecture rapide, sans répéter les analyses détaillées des autres onglets."
         )
 
         # =========================================================
@@ -91,7 +91,7 @@ def render_sitrep_tab(ctx: dict) -> None:
             annee = int(y_max)
 
         st.caption(
-            f"Périmètre SITREP : données filtrées (`df_f`). SE disponibles : {w_min}–{w_max}. "
+            f"Données utilisées pour le SITREP : données filtrées (`df_f`). SE disponibles : {w_min}–{w_max}. "
             f"Années disponibles : {y_min}–{y_max}. Semaine ciblée : {_build_sitrep_week_label(semaine, annee)}."
         )
 

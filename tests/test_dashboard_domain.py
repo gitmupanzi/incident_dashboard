@@ -42,10 +42,13 @@ from dashboard_app.domain import (
     DATE_RECEP,
     DATE_RES,
     build_operational_risk_score,
+    build_standard_action_tracker_template,
+    build_standard_signal_table,
     build_spatiotemporal_cluster_table,
     build_weekly_alerts,
     compute_indicators,
     is_death,
+    merge_standard_action_tracker_template,
     standardize_df,
     standardize_ll_by_disease,
     standardize_ll_core,
@@ -351,6 +354,177 @@ class AdvancedAnalyticsTest(unittest.TestCase):
         row = clusters[clusters[COL_ZS] == "ZS Forte"].iloc[0]
         self.assertEqual(row["Cas_recents"], 12)
         self.assertTrue(bool(row["cluster_signal"]))
+
+
+class StandardAnalyticsTest(unittest.TestCase):
+    def test_build_standard_signal_table_flags_core_operational_triggers(self):
+        rows = []
+        weekly_counts = {
+            ("Kinshasa", "ZS Forte"): [2, 3, 4, 12],
+            ("Nord Kivu", "ZS Silence"): [2, 2, 2, 0],
+        }
+        for (province, zone), counts in weekly_counts.items():
+            for week_idx, n_cases in enumerate(counts, start=1):
+                for case_idx in range(n_cases):
+                    rows.append(
+                        {
+                            COL_PROV: province,
+                            COL_ZS: zone,
+                            "YW": f"2026-W{week_idx:02d}",
+                            "is_death": 1 if province == "Kinshasa" and week_idx == 4 and case_idx == 0 else 0,
+                            "delai_onset_to_notif": 5 if week_idx == 4 else 1,
+                            DATE_INV: None if week_idx == 4 and case_idx < 6 else "2026-01-10",
+                            COL_TDR: "Oui",
+                            COL_TDRR: "positif" if week_idx == 4 else "negatif",
+                            DATE_ONSET: "2026-01-01",
+                            DATE_NOTIF: "2026-01-06" if week_idx == 4 else "2026-01-02",
+                            COL_ISSUE: "deces" if province == "Kinshasa" and week_idx == 4 and case_idx == 0 else "vivant",
+                        }
+                    )
+
+        signals = build_standard_signal_table(
+            pd.DataFrame(rows),
+            week_col="YW",
+            completeness_threshold=80.0,
+            timeliness_threshold_days=2.0,
+            timeliness_target_pct=80.0,
+            investigation_target_pct=90.0,
+            positivity_high_threshold=40.0,
+            cfr_high_threshold=3.0,
+            min_alert_cases=5,
+            alert_ratio=1.5,
+        )
+
+        self.assertFalse(signals.empty)
+
+        share_row = signals.loc[signals["Indicateur"] == "Provinces ayant transmis les données récentes"].iloc[0]
+        self.assertEqual(share_row["Statut"], "Alerte")
+        self.assertIn("silencieuse", share_row["Ce qu'on observe"])
+
+        alert_row = signals.loc[signals["Indicateur"] == "Hausse inhabituelle des cas"].iloc[0]
+        self.assertEqual(alert_row["Statut"], "Alerte")
+        self.assertEqual(alert_row["À surveiller"], "Oui")
+
+        investigation_row = signals.loc[signals["Indicateur"] == "Cas investigués"].iloc[0]
+        self.assertEqual(investigation_row["Statut"], "Alerte")
+
+        timeliness_row = signals.loc[signals["Indicateur"] == "Notification faite à temps"].iloc[0]
+        self.assertEqual(timeliness_row["Statut"], "Alerte")
+
+    def test_build_standard_signal_table_marks_controls_ok_when_recent_week_is_stable(self):
+        rows = []
+        for week_idx, n_cases in enumerate([4, 4, 5, 5], start=1):
+            for case_idx in range(n_cases):
+                rows.append(
+                    {
+                        COL_PROV: "Kinshasa",
+                        COL_ZS: "ZS Stable",
+                        "YW": f"2026-W{week_idx:02d}",
+                        "is_death": 0,
+                        "delai_onset_to_notif": 1,
+                        DATE_INV: "2026-01-03",
+                        COL_TDR: "Oui",
+                        COL_TDRR: "negatif",
+                        DATE_ONSET: "2026-01-01",
+                        DATE_NOTIF: "2026-01-02",
+                        COL_ISSUE: "vivant",
+                    }
+                )
+
+        signals = build_standard_signal_table(
+            pd.DataFrame(rows),
+            week_col="YW",
+            completeness_threshold=80.0,
+            timeliness_threshold_days=2.0,
+            timeliness_target_pct=80.0,
+            investigation_target_pct=90.0,
+            positivity_high_threshold=40.0,
+            cfr_high_threshold=3.0,
+            min_alert_cases=5,
+            alert_ratio=1.5,
+        )
+
+        self.assertFalse(signals.empty)
+        status_by_indicator = dict(zip(signals["Indicateur"], signals["Statut"]))
+        self.assertEqual(status_by_indicator["Cas investigués"], "OK")
+        self.assertEqual(status_by_indicator["Notification faite à temps"], "OK")
+        self.assertEqual(status_by_indicator["Part des tests positifs"], "OK")
+
+    def test_build_standard_action_tracker_template_uses_only_active_triggers(self):
+        signal_table = pd.DataFrame(
+            [
+                {
+                    "Bloc": "Promptitude",
+                    "Indicateur": "Notification faite à temps",
+                    "Statut": "Alerte",
+                    "À surveiller": "Oui",
+                    "Ce qu'on observe": "Promptitude insuffisante",
+                    "Action proposée": "Relancer les zones en retard",
+                },
+                {
+                    "Bloc": "Biologie",
+                    "Indicateur": "Part des tests positifs",
+                    "Statut": "OK",
+                    "À surveiller": "Non",
+                    "Ce qu'on observe": "RAS",
+                    "Action proposée": "Maintenir le suivi",
+                },
+            ]
+        )
+
+        tracker = build_standard_action_tracker_template(
+            signal_table,
+            disease_label="Choléra",
+            analysis_label="SE01 à SE04",
+            generated_on="2026-05-14",
+        )
+
+        self.assertEqual(len(tracker), 1)
+        row = tracker.iloc[0]
+        self.assertEqual(row["Signal_ID"], "Promptitude::Notification faite à temps")
+        self.assertEqual(row["Maladie_source"], "Choléra")
+        self.assertEqual(row["Priorite_action"], "Urgent")
+        self.assertEqual(row["Statut_action"], "À démarrer")
+
+    def test_merge_standard_action_tracker_template_preserves_manual_fields(self):
+        template = pd.DataFrame(
+            [
+                {
+                    "Signal_ID": "Promptitude::Notification faite à temps",
+                    "Priorite_action": "Urgent",
+                    "Niveau_reponse": "Surveillance",
+                    "Action_a_suivre": "Relancer les zones",
+                    "Responsable": "",
+                    "Echeance": "",
+                    "Statut_action": "À démarrer",
+                    "Commentaire": "",
+                }
+            ]
+        )
+        existing = pd.DataFrame(
+            [
+                {
+                    "Signal_ID": "Promptitude::Notification faite à temps",
+                    "Priorite_action": "Cette semaine",
+                    "Niveau_reponse": "National",
+                    "Action_a_suivre": "Action reformulée",
+                    "Responsable": "INFOSAN",
+                    "Echeance": "2026-05-20",
+                    "Statut_action": "En cours",
+                    "Commentaire": "Déjà transmis",
+                }
+            ]
+        )
+
+        merged = merge_standard_action_tracker_template(template, existing)
+
+        self.assertEqual(len(merged), 1)
+        row = merged.iloc[0]
+        self.assertEqual(row["Responsable"], "INFOSAN")
+        self.assertEqual(row["Echeance"], "2026-05-20")
+        self.assertEqual(row["Statut_action"], "En cours")
+        self.assertEqual(row["Commentaire"], "Déjà transmis")
+        self.assertEqual(row["Action_a_suivre"], "Action reformulée")
 
 
 class IrepDecisionSupportTest(unittest.TestCase):

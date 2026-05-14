@@ -2872,6 +2872,484 @@ def build_operational_risk_score(
 
     return base.sort_values(["Score_risque", "Cas"], ascending=[False, False]).reset_index(drop=True)
 
+
+@st.cache_data(show_spinner=False)
+def build_standard_signal_table(
+    df: pd.DataFrame,
+    *,
+    week_col: str = "YW",
+    completeness_threshold: float = 80.0,
+    timeliness_threshold_days: float = 2.0,
+    timeliness_target_pct: float = 80.0,
+    investigation_target_pct: float = 90.0,
+    positivity_high_threshold: float = 40.0,
+    cfr_high_threshold: float = 3.0,
+    min_alert_cases: int = 10,
+    alert_ratio: float = 1.5,
+) -> pd.DataFrame:
+    """
+    Construit une lecture standardisée des points à suivre sur le périmètre filtré.
+
+    Cette synthèse met en avant les éléments les plus utiles à partager rapidement :
+    transmission des données, rapidité de notification, investigation, laboratoire,
+    gravité et hausse récente des cas.
+    """
+    columns = [
+        "Bloc",
+        "Indicateur",
+        "Statut",
+        "À surveiller",
+        "Repère",
+        "Valeur",
+        "Ce qu'on observe",
+        "Action proposée",
+    ]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    work = df.copy()
+    rows: list[dict[str, Any]] = []
+    status_rank = {"Alerte": 0, "À suivre": 1, "OK": 2, "Non disponible": 3}
+
+    def _add_row(
+        bloc: str,
+        indicateur: str,
+        statut: str,
+        seuil: str,
+        valeur: str,
+        constat: str,
+        action: str,
+    ) -> None:
+        clean_status = statut if statut in status_rank else "Non disponible"
+        rows.append(
+            {
+                "Bloc": bloc,
+                "Indicateur": indicateur,
+                "Statut": clean_status,
+                "À surveiller": "Oui" if clean_status in {"Alerte", "À suivre"} else "Non",
+                "Repère": seuil,
+                "Valeur": valeur,
+                "Ce qu'on observe": constat,
+                "Action proposée": action,
+                "_status_rank": status_rank[clean_status],
+            }
+        )
+
+    def _clean_members(series: pd.Series) -> list[str]:
+        return sorted(
+            {
+                str(value).strip()
+                for value in series.dropna().tolist()
+                if str(value).strip()
+            }
+        )
+
+    def _fmt_metric(value: Any, decimals: int = 0, suffix: str = "") -> str:
+        if pd.isna(value):
+            return "NA"
+        try:
+            number = float(value)
+        except Exception:
+            return f"{value}{suffix}"
+        if decimals <= 0:
+            return f"{int(round(number)):,}".replace(",", " ") + suffix
+        return f"{number:,.{decimals}f}".replace(",", " ") + suffix
+
+    latest_scope = work.copy()
+    latest_label = "période active"
+    latest_week_key = None
+    alert_week_col = None
+
+    if "_surv_order" in work.columns and "_surv_label" in work.columns:
+        order_series = pd.to_numeric(work["_surv_order"], errors="coerce")
+        if order_series.notna().any():
+            latest_week_key = float(order_series.dropna().max())
+            latest_scope = work[order_series == latest_week_key].copy()
+            label_values = latest_scope["_surv_label"].dropna().astype(str).str.strip().tolist()
+            if label_values:
+                latest_label = label_values[0]
+            work["_sop_week_key"] = order_series
+            alert_week_col = "_sop_week_key"
+    elif week_col in work.columns and work[week_col].notna().any():
+        label_series = work[week_col].astype("string").fillna("").str.strip()
+        valid_labels = sorted([value for value in label_series.unique().tolist() if value])
+        if valid_labels:
+            latest_week_key = valid_labels[-1]
+            latest_label = str(latest_week_key)
+            latest_scope = work[label_series == latest_label].copy()
+            work["_sop_week_key"] = label_series
+            alert_week_col = "_sop_week_key"
+
+    total_cases = int(len(latest_scope))
+    deaths_series = (
+        pd.to_numeric(latest_scope["is_death"], errors="coerce").fillna(0)
+        if "is_death" in latest_scope.columns
+        else (
+            latest_scope[COL_ISSUE].apply(is_death).astype(int)
+            if COL_ISSUE in latest_scope.columns
+            else pd.Series(0, index=latest_scope.index, dtype="int64")
+        )
+    )
+    total_deaths = int(pd.to_numeric(deaths_series, errors="coerce").fillna(0).sum())
+    cfr_pct = safe_pct(total_deaths, total_cases)
+
+    cfr_status = "OK"
+    if total_cases <= 0:
+        cfr_status = "Non disponible"
+    elif pd.notna(cfr_pct) and cfr_pct >= float(cfr_high_threshold):
+        cfr_status = "Alerte"
+    elif total_deaths > 0:
+        cfr_status = "À suivre"
+    _add_row(
+        "Gravité",
+        "Létalité de la période la plus récente",
+        cfr_status,
+        f"< {float(cfr_high_threshold):.1f}%",
+        (
+            "0 cas"
+            if total_cases <= 0
+            else f"{_fmt_metric(cfr_pct, decimals=1, suffix='%')} ({_fmt_metric(total_deaths)} décès / {_fmt_metric(total_cases)} cas)"
+        ),
+        (
+            f"Aucun cas n'est visible sur {latest_label}."
+            if total_cases <= 0
+            else f"La létalité observée sur {latest_label} est de {_fmt_metric(cfr_pct, decimals=1, suffix='%')}."
+        ),
+        "Vérifier rapidement les décès, la prise en charge et les références dans les zones prioritaires.",
+    )
+
+    if DATE_INV in latest_scope.columns and total_cases > 0:
+        investigated = int(pd.to_datetime(latest_scope[DATE_INV], errors="coerce").notna().sum())
+        investigated_pct = safe_pct(investigated, total_cases)
+        inv_status = "OK" if pd.notna(investigated_pct) and investigated_pct >= float(investigation_target_pct) else "Alerte"
+        _add_row(
+            "Investigation",
+            "Cas investigués",
+            inv_status,
+            f">= {float(investigation_target_pct):.0f}%",
+            f"{_fmt_metric(investigated)} / {_fmt_metric(total_cases)} ({_fmt_metric(investigated_pct, decimals=1, suffix='%')})",
+            (
+                f"{_fmt_metric(total_cases - investigated)} cas de {latest_label} restent non investigués."
+                if investigated < total_cases
+                else f"Tous les cas visibles sur {latest_label} sont investigués."
+            ),
+            "Compléter l'investigation des cas manquants avant le prochain partage de situation.",
+        )
+    else:
+        _add_row(
+            "Investigation",
+            "Cas investigués",
+            "Non disponible",
+            f">= {float(investigation_target_pct):.0f}%",
+            "Champ Date_investigation absent ou non exploitable",
+            "Le suivi des investigations ne peut pas être calculé sur ce périmètre.",
+            "Renseigner la date d'investigation ou intégrer une variable équivalente.",
+        )
+
+    if "delai_onset_to_notif" in latest_scope.columns:
+        delay_series = pd.to_numeric(latest_scope["delai_onset_to_notif"], errors="coerce")
+        delay_valid = delay_series[delay_series.notna() & (delay_series >= 0)]
+        if not delay_valid.empty:
+            timely_pct = float((delay_valid <= float(timeliness_threshold_days)).mean() * 100.0)
+            timely_status = "OK" if timely_pct >= float(timeliness_target_pct) else "Alerte"
+            _add_row(
+                "Promptitude",
+                "Notification faite à temps",
+                timely_status,
+                f">= {float(timeliness_target_pct):.0f}% <= {float(timeliness_threshold_days):.0f} j",
+                f"{_fmt_metric(timely_pct, decimals=1, suffix='%')} (n={_fmt_metric(len(delay_valid))})",
+                f"La part des cas notifiés en <= {float(timeliness_threshold_days):.0f} jours sur {latest_label} est de {_fmt_metric(timely_pct, decimals=1, suffix='%')}.",
+                "Vérifier les retards entre le début des symptômes et la notification dans les zones prioritaires.",
+            )
+        else:
+            _add_row(
+                "Promptitude",
+                "Notification faite à temps",
+                "Non disponible",
+                f">= {float(timeliness_target_pct):.0f}% <= {float(timeliness_threshold_days):.0f} j",
+                "Aucun délai valide",
+                "Les délais de notification ne sont pas exploitables sur la période la plus récente.",
+                "Sécuriser les dates de début maladie et de notification.",
+            )
+    else:
+        _add_row(
+            "Promptitude",
+            "Notification faite à temps",
+            "Non disponible",
+            f">= {float(timeliness_target_pct):.0f}% <= {float(timeliness_threshold_days):.0f} j",
+            "Colonne delai_onset_to_notif absente",
+            "Le suivi onset → notification n'est pas disponible.",
+            "Calculer ou intégrer ce délai pour compléter l'analyse standard.",
+        )
+
+    result_col = None
+    if COL_TDRR in latest_scope.columns and latest_scope[COL_TDRR].notna().any():
+        result_col = COL_TDRR
+    elif "Resultat_labo" in latest_scope.columns and latest_scope["Resultat_labo"].notna().any():
+        result_col = "Resultat_labo"
+    if COL_TDR in latest_scope.columns and result_col is not None:
+        tdr_yes = _is_yes_series(latest_scope[COL_TDR])
+        result_norm = _tdr_result_norm(latest_scope[result_col])
+        valid_mask = tdr_yes & result_norm.isin(TDR_POS_SET.union(TDR_NEG_SET))
+        positive_mask = tdr_yes & result_norm.isin(TDR_POS_SET)
+        n_valid = int(valid_mask.sum())
+        n_pos = int(positive_mask.sum())
+        if n_valid > 0:
+            positivity_pct = safe_pct(n_pos, n_valid)
+            positivity_status = "Alerte" if pd.notna(positivity_pct) and positivity_pct >= float(positivity_high_threshold) else "OK"
+            _add_row(
+                "Biologie",
+                "Part des tests positifs",
+                positivity_status,
+                f"< {float(positivity_high_threshold):.0f}%",
+                f"{_fmt_metric(positivity_pct, decimals=1, suffix='%')} ({_fmt_metric(n_pos)} / {_fmt_metric(n_valid)})",
+                f"La part de tests positifs sur {latest_label} est calculée sur {_fmt_metric(n_valid)} test(s) valide(s).",
+                "Vérifier le ciblage des prélèvements et la disponibilité des tests dans les zones prioritaires.",
+            )
+        else:
+            _add_row(
+                "Biologie",
+                "Part des tests positifs",
+                "À suivre",
+                f"< {float(positivity_high_threshold):.0f}%",
+                "0 test valide",
+                f"Aucun résultat exploitable n'est disponible sur {latest_label} malgré la présence de variables biologiques.",
+                "Sécuriser le circuit prélèvement → test → résultat avant le prochain partage de situation.",
+            )
+    else:
+        _add_row(
+            "Biologie",
+            "Part des tests positifs",
+            "Non disponible",
+            f"< {float(positivity_high_threshold):.0f}%",
+            "Variables TDR/résultat absentes",
+            "Le suivi de la positivité n'est pas calculable sur ce périmètre.",
+            "Ajouter ou harmoniser les variables biologiques si cette lecture est attendue.",
+        )
+
+    if COL_PROV in work.columns and latest_week_key is not None:
+        expected_provinces = _clean_members(work[COL_PROV])
+        present_provinces = _clean_members(latest_scope[COL_PROV]) if COL_PROV in latest_scope.columns else []
+        if expected_provinces:
+            missing_provinces = [name for name in expected_provinces if name not in present_provinces]
+            province_pct = safe_pct(len(present_provinces), len(expected_provinces))
+            province_status = "OK" if pd.notna(province_pct) and province_pct >= float(completeness_threshold) and not missing_provinces else "Alerte"
+            missing_text = ", ".join(missing_provinces[:6])
+            if len(missing_provinces) > 6:
+                missing_text += f", +{len(missing_provinces) - 6} autre(s)"
+            _add_row(
+                "Partage",
+                "Provinces ayant transmis les données récentes",
+                province_status,
+                f">= {float(completeness_threshold):.0f}%",
+                f"{_fmt_metric(len(present_provinces))} / {_fmt_metric(len(expected_provinces))} ({_fmt_metric(province_pct, decimals=1, suffix='%')})",
+                (
+                    f"Province(s) silencieuse(s) sur {latest_label} : {missing_text}."
+                    if missing_provinces
+                    else f"Toutes les provinces observées ont partagé {latest_label}."
+                ),
+                "Relancer rapidement les provinces silencieuses et documenter la cause du non-partage.",
+            )
+
+    if alert_week_col is not None:
+        alert_group = COL_ZS if COL_ZS in work.columns and work[COL_ZS].notna().any() else (
+            COL_PROV if COL_PROV in work.columns and work[COL_PROV].notna().any() else None
+        )
+        if alert_group is not None:
+            alert_source = work[work[alert_week_col].notna()].copy()
+            alert_tbl = build_weekly_alerts(
+                alert_source,
+                alert_group,
+                week_col=alert_week_col,
+                baseline_weeks=3,
+                min_baseline_periods=2,
+                min_cases=int(min_alert_cases),
+                alert_ratio=float(alert_ratio),
+            )
+            if not alert_tbl.empty:
+                latest_alerts = alert_tbl[alert_tbl[alert_week_col] == latest_week_key].copy()
+                signal_count = int(latest_alerts["signal"].fillna(False).sum()) if "signal" in latest_alerts.columns else 0
+                top_alerts = (
+                    latest_alerts[latest_alerts["signal"] == True][alert_group]
+                    .dropna()
+                    .astype(str)
+                    .head(5)
+                    .tolist()
+                    if signal_count > 0 and alert_group in latest_alerts.columns
+                    else []
+                )
+                _add_row(
+                    "Tendance",
+                    "Hausse inhabituelle des cas",
+                    "Alerte" if signal_count > 0 else "OK",
+                    f"0 signal ou baseline x {float(alert_ratio):.1f}",
+                    f"{_fmt_metric(signal_count)} signal(s)",
+                    (
+                        f"Groupes en alerte sur {latest_label} : {', '.join(top_alerts)}."
+                        if top_alerts
+                        else f"Aucune alerte automatique n'est détectée sur {latest_label} avec les seuils actifs."
+                    ),
+                    "Partager les zones signalées et vérifier rapidement s'il faut une investigation complémentaire.",
+                )
+
+            cluster_tbl = build_spatiotemporal_cluster_table(
+                alert_source,
+                group_cols=[c for c in [COL_PROV, COL_ZS] if c in alert_source.columns],
+                week_col=alert_week_col,
+                recent_weeks=2,
+                previous_weeks=4,
+                min_recent_cases=max(5, int(min_alert_cases // 2)),
+                growth_ratio=float(alert_ratio),
+            )
+            if not cluster_tbl.empty:
+                cluster_count = int(cluster_tbl["cluster_signal"].fillna(False).sum()) if "cluster_signal" in cluster_tbl.columns else 0
+                _add_row(
+                    "Tendance",
+                    "Foyers récents à vérifier",
+                    "Alerte" if cluster_count > 0 else "OK",
+                    "0 cluster signalé",
+                    f"{_fmt_metric(cluster_count)} cluster(s) signalé(s)",
+                    (
+                        f"{_fmt_metric(cluster_count)} foyer(s) présentent une concentration récente inhabituelle."
+                        if cluster_count > 0
+                        else "Aucun cluster récent n'est identifié avec les seuils actifs."
+                    ),
+                    "Prioriser la vérification terrain des foyers à croissance récente.",
+                )
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return pd.DataFrame(columns=columns)
+    out = out.sort_values(["_status_rank", "Bloc", "Indicateur"]).drop(columns=["_status_rank"]).reset_index(drop=True)
+    return out[columns]
+
+
+def build_standard_action_tracker_template(
+    standard_signal_table: pd.DataFrame,
+    *,
+    disease_label: str = "",
+    analysis_label: str = "",
+    generated_on: Optional[str] = None,
+) -> pd.DataFrame:
+    """Construit un suivi d'actions à partir des points à surveiller."""
+    columns = [
+        "Signal_ID",
+        "Maladie_source",
+        "Perimetre_analyse",
+        "Bloc",
+        "Indicateur",
+        "Statut_signal",
+        "Priorite_action",
+        "Niveau_reponse",
+        "Constat",
+        "Action_a_suivre",
+        "Responsable",
+        "Echeance",
+        "Statut_action",
+        "Commentaire",
+        "Date_generation",
+    ]
+    if standard_signal_table is None or standard_signal_table.empty:
+        return pd.DataFrame(columns=columns)
+
+    work = standard_signal_table.copy()
+    signal_active_col = "À surveiller" if "À surveiller" in work.columns else "Signal_actif"
+    action_col = "Action proposée" if "Action proposée" in work.columns else "Action_recommandée"
+    finding_col = "Ce qu'on observe" if "Ce qu'on observe" in work.columns else "Constat"
+
+    if signal_active_col in work.columns:
+        work = work[work[signal_active_col].astype(str).str.strip().str.lower() == "oui"].copy()
+    if work.empty:
+        return pd.DataFrame(columns=columns)
+
+    generation_value = str(generated_on or date.today())
+    rows: list[dict[str, Any]] = []
+    for _, row in work.iterrows():
+        bloc = str(row.get("Bloc", "")).strip()
+        indicateur = str(row.get("Indicateur", "")).strip()
+        statut_signal = str(row.get("Statut", "À suivre")).strip() or "À suivre"
+        action_text = str(row.get(action_col, "")).strip()
+        constat_text = str(row.get(finding_col, "")).strip()
+
+        if statut_signal == "Alerte":
+            priorite = "Urgent"
+            statut_action = "À démarrer"
+        elif statut_signal in {"À suivre", "Surveillance"}:
+            priorite = "Cette semaine"
+            statut_action = "À suivre"
+        else:
+            priorite = "Routine"
+            statut_action = "Planifié"
+
+        if bloc in {"Partage", "Tendance"}:
+            niveau = "Coordination"
+        elif bloc in {"Promptitude", "Investigation"}:
+            niveau = "Surveillance"
+        elif bloc in {"Biologie", "Gravité"}:
+            niveau = "Technique / soins"
+        else:
+            niveau = "Province"
+
+        rows.append(
+            {
+                "Signal_ID": f"{bloc}::{indicateur}",
+                "Maladie_source": str(disease_label).strip(),
+                "Perimetre_analyse": str(analysis_label).strip(),
+                "Bloc": bloc,
+                "Indicateur": indicateur,
+                "Statut_signal": statut_signal,
+                "Priorite_action": priorite,
+                "Niveau_reponse": niveau,
+                "Constat": constat_text,
+                "Action_a_suivre": action_text,
+                "Responsable": "",
+                "Echeance": "",
+                "Statut_action": statut_action,
+                "Commentaire": "",
+                "Date_generation": generation_value,
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns)
+
+
+def merge_standard_action_tracker_template(
+    tracker_template: pd.DataFrame,
+    existing_tracker: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """Réinjecte les champs saisis par l'utilisateur sur le template courant du tracker."""
+    if tracker_template is None or tracker_template.empty:
+        return pd.DataFrame(columns=list(tracker_template.columns) if isinstance(tracker_template, pd.DataFrame) else [])
+    if existing_tracker is None or not isinstance(existing_tracker, pd.DataFrame) or existing_tracker.empty:
+        return tracker_template.copy()
+    if "Signal_ID" not in tracker_template.columns or "Signal_ID" not in existing_tracker.columns:
+        return tracker_template.copy()
+
+    merged = tracker_template.copy()
+    keep_columns = [
+        "Priorite_action",
+        "Niveau_reponse",
+        "Action_a_suivre",
+        "Responsable",
+        "Echeance",
+        "Statut_action",
+        "Commentaire",
+    ]
+    available_keep = [col for col in keep_columns if col in existing_tracker.columns and col in merged.columns]
+    if not available_keep:
+        return merged
+
+    existing_unique = existing_tracker.drop_duplicates(subset=["Signal_ID"], keep="last").copy()
+    existing_map = existing_unique.set_index("Signal_ID")
+    for idx, signal_id in merged["Signal_ID"].astype(str).items():
+        if signal_id not in existing_map.index:
+            continue
+        for col in available_keep:
+            previous_value = existing_map.at[signal_id, col]
+            if pd.notna(previous_value) and str(previous_value).strip() != "":
+                merged.at[idx, col] = previous_value
+    return merged
+
 # =========================
 # HELPERS (Sitrep)
 # =========================

@@ -420,15 +420,15 @@ def render_surveillance_tab(ctx: dict) -> None:
         tab_help(
             "Comment lire cet onglet",
             """
-            **🎯 Objectif** : suivre la situation selon trois niveaux de lecture complémentaires pour distinguer l’hebdomadaire, la tendance récente et le cumul.
+            **🎯 Objectif** : suivre la situation à trois niveaux de lecture : la semaine récente, les dernières semaines et le cumul.
 
-            **📖 Logique de lecture**
-            - La **situation hebdomadaire** reflète la semaine la plus récente visible dans la plage filtrée.
-            - La **situation des dernières semaines** permet de lire rapidement la tendance récente sur une fenêtre glissante paramétrable.
-            - La **situation cumulée** consolide l’ensemble de la fenêtre active pour orienter la réponse.
+            **📖 Comment lire**
+            - La **situation hebdomadaire** montre la semaine la plus récente visible dans les filtres.
+            - La **situation des dernières semaines** aide à voir rapidement la tendance récente.
+            - La **situation cumulée** regroupe toute la période active pour orienter la réponse.
 
             **⚠️ Point d’attention**
-            - Les indicateurs dépendent directement des filtres actifs de semaines, de géographie et de classification.
+            - Les résultats changent selon les filtres de semaine, de géographie et de classification.
             """,
             expanded=False
         )
@@ -436,7 +436,7 @@ def render_surveillance_tab(ctx: dict) -> None:
         render_section_title(1, "Surveillance épidémiologique")
         render_tab_narrative("surveillance")
         st.caption(
-            "Cette organisation permet une lecture progressive de la situation à partir de la plage de semaines active dans la barre latérale."
+            "Cette organisation aide à lire la situation pas à pas, à partir de la période active choisie dans la barre latérale."
         )
         cfg1, cfg2, cfg3 = st.columns([0.9, 0.9, 1.2])
         with cfg1:
@@ -473,6 +473,39 @@ def render_surveillance_tab(ctx: dict) -> None:
         if not surv_reference.empty:
             if COL_PROV in df_surv_scope.columns and COL_ZS in df_surv_scope.columns:
                 _render_surveillance_completeness_section(df_surv_scope, COL_PROV, COL_ZS)
+                st.divider()
+
+            standard_signal_table = build_standard_signal_table(
+                df_surv_scope,
+                week_col="YW" if "YW" in df_surv_scope.columns else COL_WEEK,
+                completeness_threshold=80.0,
+                timeliness_threshold_days=float(seuil_jours),
+                timeliness_target_pct=80.0,
+                investigation_target_pct=90.0,
+                positivity_high_threshold=40.0,
+                cfr_high_threshold=3.0,
+                min_alert_cases=10,
+                alert_ratio=1.5,
+            )
+            if not standard_signal_table.empty:
+                st.markdown("### Points à suivre en priorité")
+                st.caption(
+                    "Cette synthèse résume ce qu'il faut regarder en premier : transmission des données, retards de notification, "
+                    "investigations incomplètes, résultats de laboratoire, gravité et hausse inhabituelle des cas."
+                )
+                active_signals = standard_signal_table[standard_signal_table["À surveiller"] == "Oui"].copy()
+                critical_signals = standard_signal_table[standard_signal_table["Statut"] == "Alerte"].copy()
+                k_sop1, k_sop2, k_sop3 = st.columns(3)
+                k_sop1.metric("Points à suivre", format_metric_value(len(active_signals)))
+                k_sop2.metric("Alertes", format_metric_value(len(critical_signals)))
+                k_sop3.metric("Indicateurs lus", format_metric_value(len(standard_signal_table)))
+                if active_signals.empty:
+                    st.success("Aucun point prioritaire n'est détecté sur le périmètre filtré avec les seuils actuels.")
+                else:
+                    st.markdown("**Actions proposées**")
+                    for action_text in active_signals["Action proposée"].dropna().astype(str).drop_duplicates().head(5).tolist():
+                        st.markdown(f"- {action_text}")
+                st_dataframe_safe(standard_signal_table, height=320)
                 st.divider()
 
             latest_order = surv_reference["order"].iloc[-1]
@@ -860,16 +893,16 @@ def render_surveillance_tab(ctx: dict) -> None:
         tab_help(
             "Comment lire cet onglet",
             f"""
-            **🎯 Objectif** : Mesurer la rapidité de détection et d’accès aux soins.
+            **🎯 Objectif** : mesurer la rapidité de détection, de notification et d’accès aux soins.
         
             **📖 Indicateurs**
             - Délai **début maladie → admission**
             - Délai **début maladie → prélèvement**
-            - **% ≤ {seuil_jours} jours** : proportion de cas pris en charge rapidement.
+            - **% ≤ {seuil_jours} jours** : part des cas pris en charge rapidement.
         
             **⚠️ Points d’attention**
-            - Des délais longs augmentent le risque de transmission communautaire.
-            - Des délais négatifs ou extrêmes = erreurs de saisie ou dates incorrectes.
+            - Des délais longs peuvent favoriser la transmission et retarder la prise en charge.
+            - Des délais négatifs ou très élevés signalent souvent des erreurs de date ou de saisie.
             """,
             expanded=False
         )
@@ -893,7 +926,7 @@ def render_surveillance_tab(ctx: dict) -> None:
 
             st.markdown("**Lecture opérationnelle prioritaire**")
             st.caption(
-                "Les indicateurs et classements ci-dessous sont plus utiles pour l’action immédiate que la distribution graphique brute."
+                "Les indicateurs et classements ci-dessous aident à agir rapidement, avant même de lire les graphiques en détail."
             )
 
             p1, n1 = _surv_threshold_metric(df_del["delai_onset_to_adm"] if "delai_onset_to_adm" in df_del.columns else None, seuil_jours)

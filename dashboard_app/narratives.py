@@ -549,24 +549,24 @@ def _build_surveillance_action_lines(
         leader_share = safe_pct(leader["Cas"], total_cases)
         if pd.notna(leader_share):
             actions.append(
-                f"Concentrer la supervision et les intrants de riposte sur {leader[COL_PROV]}, qui porte {leader_share:.1f}% des cas de {label_txt}."
+                f"Concentrer l'appui sur {leader[COL_PROV]}, qui représente {leader_share:.1f}% des cas de {label_txt}."
             )
 
     if pd.notna(cfr):
         if cfr >= 3.0:
             actions.append(
-                f"Déclencher une revue rapide des décès, de la prise en charge et des références car la létalité observée atteint {format_metric_value(cfr, decimals=1)}% sur {label_txt}."
+                f"Vérifier rapidement les décès, la prise en charge et les transferts, car la létalité atteint {format_metric_value(cfr, decimals=1)}% sur {label_txt}."
             )
         elif total_deaths > 0:
             actions.append(
-                f"Maintenir une revue hebdomadaire des décès et des délais de prise en charge pour éviter une hausse de la létalité ({format_metric_value(cfr, decimals=1)}% sur {label_txt})."
+                f"Suivre chaque semaine les décès et les délais de prise en charge pour éviter une hausse de la létalité ({format_metric_value(cfr, decimals=1)}% sur {label_txt})."
             )
 
     if DATE_INV in df_scope.columns:
         investigated = int(pd.to_datetime(df_scope[DATE_INV], errors="coerce").notna().sum())
         if investigated < total_cases:
             actions.append(
-                f"Compléter l’investigation de {format_metric_value(total_cases - investigated)} cas non investigués afin de fiabiliser les décisions opérationnelles."
+                f"Compléter l’investigation de {format_metric_value(total_cases - investigated)} cas non investigués pour mieux orienter la réponse."
             )
 
     result_col = None
@@ -579,7 +579,7 @@ def _build_surveillance_action_lines(
         n_tdr = int(_is_yes_series(df_scope[COL_TDR]).sum())
         if n_tdr <= 0:
             actions.append(
-                "Sécuriser rapidement les TDR et le circuit de confirmation biologique dans les zones prioritaires, car aucun test n’est documenté sur ce périmètre."
+                "Vérifier la disponibilité des TDR et du circuit de confirmation biologique, car aucun test n’est documenté ici."
             )
         elif result_col is not None:
             result_norm = _tdr_result_norm(df_scope[result_col])
@@ -589,12 +589,12 @@ def _build_surveillance_action_lines(
             positivity = safe_pct(n_pos, n_valid)
             if pd.notna(positivity) and positivity >= 40.0:
                 actions.append(
-                    f"Renforcer la confirmation biologique et l’approvisionnement en intrants, la positivité observée atteignant {format_metric_value(positivity, decimals=1)}%."
+                    f"Renforcer la confirmation biologique et la disponibilité des intrants, car la part de tests positifs atteint {format_metric_value(positivity, decimals=1)}%."
                 )
 
     if not actions:
         actions.append(
-            "Poursuivre la surveillance active, maintenir la qualité de saisie et vérifier chaque semaine les signaux géographiques avant diffusion."
+            "Poursuivre la surveillance, maintenir une bonne saisie des données et vérifier chaque semaine les zones à suivre."
         )
 
     return actions[:4]
@@ -867,7 +867,7 @@ def _build_sitrep_action_lines(payload: dict[str, Any]) -> list[str]:
         leader = top_prov.iloc[0]
         leader_share = safe_pct(leader["Cas"], total_cases)
         actions.append(
-            f"Cibler en priorité {leader[COL_PROV]}, qui concentre {leader_share:.1f}% des cas de {current_label}."
+            f"Cibler en priorité {leader[COL_PROV]}, qui représente {leader_share:.1f}% des cas de {current_label}."
         )
 
     critical_text = _build_sitrep_critical_cfr_summary(payload)
@@ -882,14 +882,14 @@ def _build_sitrep_action_lines(payload: dict[str, Any]) -> list[str]:
         n_tdr = int(_is_yes_series(current_df[COL_TDR]).sum())
         if n_tdr <= 0:
             actions.append(
-                "Aucun TDR n’est documenté sur la semaine sélectionnée : renforcer la confirmation biologique si elle est attendue."
+                "Aucun TDR n’est documenté sur la semaine sélectionnée : vérifier la confirmation biologique si elle est attendue."
             )
 
     if DATE_INV in current_df.columns:
         investigated = int(pd.to_datetime(current_df[DATE_INV], errors="coerce").notna().sum())
         if investigated < total_cases:
             actions.append(
-                f"Compléter l’investigation de {format_metric_value(total_cases - investigated)} cas pour consolider la lecture opérationnelle."
+                f"Compléter l’investigation de {format_metric_value(total_cases - investigated)} cas pour consolider l'analyse."
             )
 
     return actions[:4]
@@ -955,15 +955,14 @@ def render_reader_narrative(title: str, text: Any, *, tone: str = "standard") ->
 TAB_NARRATIVES = {
     "surveillance": (
         "Lecture de l'onglet",
-        "Cet onglet suit l'évolution des notifications dans le temps. "
-        "Pour un lecteur non spécialiste, une hausse signale surtout un changement à vérifier. "
-        "Pour l'équipe épidémiologique, elle doit être interprétée avec la complétude, les retards de notification "
-        "et la distribution géographique avant de conclure à une flambée."
+        "Cet onglet montre comment les cas évoluent dans le temps. "
+        "Une hausse attire l'attention, mais elle doit être relue avec la complétude des données, "
+        "les retards de notification et la répartition géographique avant de conclure."
     ),
     "promptitude": (
         "Lecture des délais",
-        "Les délais décrivent la rapidité du parcours entre début des signes, notification, prise en charge "
-        "et confirmation. Un délai long peut traduire un accès tardif aux soins, un retard de saisie ou une donnée incomplète."
+        "Les délais montrent si les cas sont détectés, notifiés, pris en charge et confirmés rapidement. "
+        "Un délai long peut venir d'un retard de soins, d'un retard de saisie ou d'une information manquante."
     ),
     "profil": (
         "Lecture du profil des cas",
@@ -972,18 +971,18 @@ TAB_NARRATIVES = {
     ),
     "qualite": (
         "Lecture qualité et décision",
-        "Cet onglet sert à distinguer les signaux de santé publique des problèmes de données. "
-        "Une alerte ou un score élevé indique une priorité de vérification, pas une confirmation automatique d'épidémie."
+        "Cet onglet aide à distinguer ce qui relève d'un signal sanitaire et ce qui relève d'un problème de données. "
+        "Une alerte attire l'attention, mais elle doit toujours être vérifiée."
     ),
     "export": (
         "Lecture et partage",
-        "Les exports reprennent le périmètre filtré à l'écran. Ils sont adaptés à la revue technique, au partage opérationnel "
-        "et à la traçabilité des analyses."
+        "Les exports reprennent exactement les données affichées à l'écran. "
+        "Ils servent au partage, à la relecture et à l'archivage des analyses."
     ),
     "sitrep": (
         "Lecture du SITREP",
-        "Le SITREP résume la situation pour une décision rapide. Il met en avant les messages clés, les zones à suivre "
-        "et les limites de lecture, sans remplacer les onglets détaillés."
+        "Le SITREP donne une vue courte de la situation pour une lecture rapide. "
+        "Il met en avant les messages clés, les zones à suivre et les limites de lecture."
     ),
     "idsr": (
         "Lecture IDSR",
@@ -1010,23 +1009,23 @@ ABSENCE_NARRATIVES = {
     ),
     "week": (
         "Lecture temporelle indisponible",
-        "Aucune variable de semaine exploitable n'a été trouvée dans le périmètre filtré. "
-        "Vérifiez les champs de date, d'année ou de semaine épidémiologique avant d'interpréter l'absence de courbe."
+        "Aucune information de semaine exploitable n'a été trouvée dans les données filtrées. "
+        "Vérifiez les champs de date, d'année ou de semaine avant d'interpréter l'absence de courbe."
     ),
     "delays": (
         "Délais non calculables",
-        "Les dates nécessaires ne sont pas disponibles ou ne sont pas suffisamment exploitables. "
-        "L'absence d'indicateur ne signifie pas que les délais sont bons ou mauvais ; elle signale d'abord une limite de documentation."
+        "Les dates nécessaires ne sont pas disponibles ou ne sont pas assez fiables. "
+        "L'absence d'indicateur ne veut pas dire que les délais sont bons ; elle montre d'abord une limite des données."
     ),
     "geo": (
         "Lecture géographique limitée",
-        "Aucune variable géographique exploitable n'est disponible dans le périmètre filtré. "
+        "Aucune information géographique exploitable n'est disponible dans les données filtrées. "
         "Vérifiez les champs Province, Zone de santé ou Aire de santé, ainsi que les filtres actifs."
     ),
     "alerts": (
         "Alertes non calculables",
         "L'historique disponible est insuffisant ou les variables nécessaires sont absentes. "
-        "Une absence d'alerte dans ce contexte ne doit pas être interprétée comme une absence de risque."
+        "Dans ce cas, l'absence d'alerte ne veut pas dire absence de risque."
     ),
     "risk": (
         "Priorisation non calculable",
@@ -1040,8 +1039,8 @@ ABSENCE_NARRATIVES = {
     ),
     "quality": (
         "Contrôle limité",
-        "Les champs nécessaires au contrôle ne sont pas disponibles dans le périmètre actuel. "
-        "Cela oriente d'abord vers une revue de structure du fichier plutôt que vers une conclusion sanitaire."
+        "Les champs nécessaires au contrôle ne sont pas disponibles dans les données actuelles. "
+        "Il faut d'abord revoir le fichier avant d'interpréter la situation sanitaire."
     ),
 }
 
