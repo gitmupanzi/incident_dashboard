@@ -56,6 +56,90 @@ IDSR_RENAME_MAP = {
 }
 
 
+IDSR_DISPLAY_LABELS = {
+    "Maladie": "Maladie",
+    "Province_notification": "Province de notification",
+    "Zone_de_sante_notification": "Zone de santé de notification",
+    "Population": "Population",
+    "Population_reference": "Population de référence",
+    "Annee_epid": "Année épidémiologique",
+    "Num_semaine_epid": "Numéro de semaine épidémiologique",
+    "Date_debut_semaine": "Date de début de semaine",
+    "Date_debut_semaine_iso": "Date de début de semaine (recalculée)",
+    "DEBUTSEM": "Date source de début de semaine",
+    "TIME_LAB": "Semaine épidémiologique",
+    "TIME_KEY": "Ordre chronologique de la semaine",
+    "YW": "Année-semaine",
+    "YW_KEY": "Ordre chronologique année-semaine",
+    "Semaine_key": "Ordre chronologique des semaines",
+    "Total_cas": "Cas suspects notifiés",
+    "Total_deces": "Décès notifiés",
+    "Taux_letalite": "Taux de létalité (%)",
+    "Taux_attaque": "Taux d’attaque (%)",
+    "Taux_attaque_%": "Taux d’attaque (%)",
+    "Cas_tnn": "Cas <1 mois",
+    "Cas_0_11mois": "Cas 0 à 11 mois",
+    "Cas_12_59mois": "Cas 12 à 59 mois",
+    "Cas_5_14ans": "Cas 5 à 14 ans",
+    "Cas_15plus": "Cas 15 ans et plus",
+    "Deces_tnn": "Décès <1 mois",
+    "Deces_0_11mois": "Décès 0 à 11 mois",
+    "Deces_12_59mois": "Décès 12 à 59 mois",
+    "Deces_5_14ans": "Décès 5 à 14 ans",
+    "Deces_15plus": "Décès 15 ans et plus",
+    "RecStatus": "Statut d’enregistrement",
+    "Recstatus": "Statut d’enregistrement",
+    "UniqueKey": "Identifiant unique",
+    "Cle_unique": "Identifiant unique",
+    "QC_Date_vs_Semaine": "Contrôle date / semaine",
+    "sum_cas_age": "Somme des cas par âge",
+    "sum_deces_age": "Somme des décès par âge",
+    "diff_cas": "Écart cas (total - âges)",
+    "diff_deces": "Écart décès (total - âges)",
+    "QC_Cas": "Contrôle qualité des cas",
+    "QC_Deces": "Contrôle qualité des décès",
+    "QC_Global": "Contrôle qualité global",
+    "Cas_prev": "Cas semaine précédente",
+    "Delta_cas": "Variation des cas",
+    "Delta_%": "Variation des cas (%)",
+    "Deces": "Décès",
+    "CFR_%": "Taux de létalité (%)",
+    "CFR_calc_%": "Taux de létalité recalculé (%)",
+    "CFR_recalc_pct": "Taux de létalité recalculé (%)",
+    "Taux_letalite_moy": "Taux de létalité moyen (%)",
+    "Taux_attaque_moy": "Taux d’attaque moyen (%)",
+    "LETAL_moy_pct": "Taux de létalité moyen (%)",
+    "Lignes": "Nombre de lignes",
+}
+
+
+def _idsr_display_column_label(column_name: object) -> str:
+    """Retourne un libellé compréhensible pour l’affichage/export des colonnes."""
+    label = str(column_name)
+    if label in IDSR_DISPLAY_LABELS:
+        return IDSR_DISPLAY_LABELS[label]
+
+    if label.startswith("Incidence_pour_"):
+        suffix = label.removeprefix("Incidence_pour_")
+        try:
+            return f"Incidence pour {int(suffix):,} habitants"
+        except Exception:
+            return "Incidence"
+
+    return label
+
+
+def _idsr_displayify_columns(df: pd.DataFrame, extra_labels: Optional[dict[str, str]] = None) -> pd.DataFrame:
+    """Renomme les colonnes d’un tableau pour l’utilisateur final."""
+    if df is None or not isinstance(df, pd.DataFrame):
+        return df
+
+    label_map = {str(col): _idsr_display_column_label(col) for col in df.columns}
+    if extra_labels:
+        label_map.update({k: v for k, v in extra_labels.items() if k is not None and v is not None})
+    return df.rename(columns=label_map)
+
+
 @st.cache_data(show_spinner=False)
 def harmonize_idsr_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = normalize_idsr_column_names(df)
@@ -292,6 +376,47 @@ def idsr_year_from_debutsem(values: pd.Series, mode: str = "iso") -> pd.Series:
     return pd.to_numeric(dt.dt.isocalendar()["year"], errors="coerce").astype("Int64")
 
 
+@st.cache_data(show_spinner=False)
+def _idsr_fill_missing_year_from_week_consensus(df: pd.DataFrame) -> pd.DataFrame:
+    """Complète Annee_epid si une semaine correspond à une seule année observée."""
+    if (
+        df is None
+        or not isinstance(df, pd.DataFrame)
+        or df.empty
+        or "Annee_epid" not in df.columns
+        or "Num_semaine_epid" not in df.columns
+    ):
+        return df
+
+    work = df.copy()
+    week_num = pd.to_numeric(work.get("Num_semaine_epid"), errors="coerce")
+    year_num = pd.to_numeric(work.get("Annee_epid"), errors="coerce")
+
+    observed = pd.DataFrame({"week": week_num, "year": year_num}).dropna()
+    if observed.empty:
+        return work
+
+    year_by_week = observed.groupby("week")["year"].agg(
+        lambda values: values.iloc[0] if pd.Series(values).nunique(dropna=True) == 1 else np.nan
+    )
+    if year_by_week.empty:
+        return work
+
+    missing_year_mask = year_num.isna() & week_num.notna()
+    if not missing_year_mask.any():
+        return work
+
+    inferred_year = week_num.map(year_by_week)
+    fill_mask = missing_year_mask & inferred_year.notna()
+    if not fill_mask.any():
+        return work
+
+    work.loc[fill_mask, "Annee_epid"] = (
+        pd.to_numeric(inferred_year.loc[fill_mask], errors="coerce").round().astype("Int64")
+    )
+    return work
+
+
 def _idsr_format_year_week_label(year: object, week: object) -> str:
     """Formate une semaine pour l'affichage analytique : 2026-W17 si l'année est connue."""
     try:
@@ -352,10 +477,10 @@ def render_idsr_reading_guide() -> None:
 **Parcours conseillé**
 
 1. **Filtres + résumé** : vérifier la période, le nombre de cas, décès, maladies, provinces et ZS.
-2. **Complétude** : contrôler d’abord quelles provinces/ZS ont effectivement partagé les données.
-3. **Taux d’attaque / incidence** : comparer le risque entre territoires avec la population comme dénominateur.
-4. **Cartographie** : localiser rapidement les territoires qui concentrent les cas.
-5. **Situation hebdomadaire** : lire la dernière semaine, les hausses et les territoires prioritaires.
+2. **Situation hebdomadaire** : lire la dernière semaine, les hausses et les territoires prioritaires.
+3. **Tableaux standard bulletin** : parcourir la distribution par DPS, les hotspots ZS et les signaux de taux d’attaque.
+4. **Complétude** : contrôler quelles provinces/ZS ont effectivement partagé les données.
+5. **Taux d’attaque / incidence et cartographie** : comparer le risque et localiser les territoires qui concentrent les cas.
 6. **Qualité des données** : vérifier dates, doublons et cohérence des totaux avant diffusion.
 7. **Analyses détaillées et exports** : approfondir par âge, maladie, province, semaine et mois.
 
@@ -552,7 +677,7 @@ def _make_idsr_completeness_heatmap(count_pivot: pd.DataFrame, rel_pivot: pd.Dat
 
 def render_idsr_completeness_section(df: pd.DataFrame, province_col: str, zs_col: str) -> None:
     """Affiche l'analyse de complétude IDSR province × semaine dans une liste déroulante."""
-    with st.expander("02 · 📊 Complétude IDSR — ZS rapportantes par province et semaine", expanded=False):
+    with st.expander("04 · 📊 Complétude IDSR — ZS rapportantes par province et semaine", expanded=False):
         st.markdown("### Tableau de complétude IDSR")
         st.caption(
             "Lecture : chaque cellule indique le nombre de zones de santé ayant rapporté au moins une ligne IDSR. "
@@ -700,20 +825,22 @@ def render_idsr_completeness_section(df: pd.DataFrame, province_col: str, zs_col
             st.markdown("**📋 Données de complétude IDSR**")
             st.markdown("**Nombre de ZS rapportantes par province et semaine**")
             count_view = count_pivot.reset_index().rename(columns={"_idsr_province": "Province"})
-            st.dataframe(count_view, width="stretch", height=420, hide_index=True)
+            count_view_display = _idsr_displayify_columns(count_view)
+            st.dataframe(count_view_display, width="stretch", height=420, hide_index=True)
 
             st.markdown("**Résumé par province**")
             summary_view = summary.sort_values(
                 ["Complétude dernière semaine (%)", "Complétude moyenne (%)", "Province"],
                 ascending=[True, True, True],
             )
-            st.dataframe(summary_view, width="stretch", height=420, hide_index=True)
+            summary_view_display = _idsr_displayify_columns(summary_view)
+            st.dataframe(summary_view_display, width="stretch", height=420, hide_index=True)
 
             dl1, dl2 = st.columns(2)
             with dl1:
                 st.download_button(
                     "⬇️ Télécharger complétude IDSR par semaine (CSV)",
-                    data=count_view.to_csv(index=False).encode("utf-8"),
+                    data=count_view_display.to_csv(index=False).encode("utf-8"),
                     file_name="idsr_completude_zs_par_province_semaine.csv",
                     mime="text/csv",
                     key="idsr_download_completeness_matrix",
@@ -721,7 +848,7 @@ def render_idsr_completeness_section(df: pd.DataFrame, province_col: str, zs_col
             with dl2:
                 st.download_button(
                     "⬇️ Télécharger résumé complétude IDSR (CSV)",
-                    data=summary_view.to_csv(index=False).encode("utf-8"),
+                    data=summary_view_display.to_csv(index=False).encode("utf-8"),
                     file_name="idsr_completude_resume_province.csv",
                     mime="text/csv",
                     key="idsr_download_completeness_summary",
@@ -908,14 +1035,14 @@ def render_idsr_attack_incidence_section(
     mal_col: str,
 ) -> None:
     """Affiche la rubrique IDSR taux d'attaque / incidence avec explication et calculs."""
-    with st.expander("03 · 📈 Taux d’attaque et incidence — calculs et interprétation", expanded=False):
+    with st.expander("05 · 📈 Taux d’attaque et incidence — calculs et interprétation", expanded=False):
         st.markdown("### Taux d’attaque et incidence")
         st.caption(
             "Cette rubrique recalcule les indicateurs à partir des cas et de la population du périmètre filtré. "
             "Elle complète les tendances cas/décès et aide à comparer les provinces ou maladies malgré des tailles de population différentes."
         )
 
-        with st.expander("03.a · 📘 Comprendre les indicateurs", expanded=False):
+        with st.expander("05.a · 📘 Comprendre les indicateurs", expanded=False):
             st.markdown(
                 """
 **Taux d’attaque**  
@@ -1088,13 +1215,14 @@ Le résultat dépend fortement de la qualité de la colonne `Population`. Si la 
             except Exception:
                 st.plotly_chart(fig, width="stretch", key="idsr_attack_incidence_top_chart")
 
-        with st.expander("03.b · 📋 Tableau détaillé des taux", expanded=False):
+        with st.expander("05.b · 📋 Tableau détaillé des taux", expanded=False):
             table_cols = [*group_cols, "Cas", "Population_reference", "Taux_attaque_%", incidence_col, "Lignes"]
             table_view = display_tbl[[c for c in table_cols if c in display_tbl.columns]].copy()
-            st.dataframe(table_view, width="stretch", height=420, hide_index=True)
+            table_view_display = _idsr_displayify_columns(table_view)
+            st.dataframe(table_view_display, width="stretch", height=420, hide_index=True)
             st.download_button(
                 "⬇️ Télécharger taux d’attaque et incidence (CSV)",
-                data=table_view.to_csv(index=False).encode("utf-8"),
+                data=table_view_display.to_csv(index=False).encode("utf-8"),
                 file_name="idsr_taux_attaque_incidence.csv",
                 mime="text/csv",
                 key="idsr_download_attack_incidence",
@@ -1110,7 +1238,7 @@ Le résultat dépend fortement de la qualité de la colonne `Population`. Si la 
             incidence_multiplier=int(incidence_multiplier),
         )
         if not weekly_tbl.empty and incidence_col in weekly_tbl.columns:
-            with st.expander("03.c · 📉 Tendance hebdomadaire de l’incidence", expanded=False):
+            with st.expander("05.c · 📉 Tendance hebdomadaire de l’incidence", expanded=False):
                 fig_week = px.line(
                     weekly_tbl,
                     x="Semaine",
@@ -1124,7 +1252,8 @@ Le résultat dépend fortement de la qualité de la colonne `Population`. Si la 
                     st_plot(fig_week, key="idsr_attack_incidence_weekly_chart")
                 except Exception:
                     st.plotly_chart(fig_week, width="stretch", key="idsr_attack_incidence_weekly_chart")
-                st.dataframe(weekly_tbl, width="stretch", height=300, hide_index=True)
+                weekly_tbl_display = _idsr_displayify_columns(weekly_tbl)
+                st.dataframe(weekly_tbl_display, width="stretch", height=300, hide_index=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -1232,6 +1361,346 @@ def _load_idsr_workbook(file_source: object) -> pd.DataFrame:
     return _load_idsr_workbook_impl(file_source)
 
 
+def _idsr_recent_weeks(df_scope: pd.DataFrame, last_n: int = 4) -> pd.DataFrame:
+    """Retourne les dernières semaines distinctes disponibles, triées chronologiquement."""
+    if (
+        df_scope is None
+        or df_scope.empty
+        or ("TIME_LAB" not in df_scope.columns)
+        or ("TIME_KEY" not in df_scope.columns)
+    ):
+        return pd.DataFrame(columns=["TIME_LAB", "TIME_KEY"])
+
+    ref = df_scope[["TIME_LAB", "TIME_KEY"]].copy()
+    ref["TIME_KEY"] = pd.to_numeric(ref["TIME_KEY"], errors="coerce")
+    ref = ref.dropna(subset=["TIME_LAB", "TIME_KEY"]).drop_duplicates().sort_values("TIME_KEY")
+    if ref.empty:
+        return pd.DataFrame(columns=["TIME_LAB", "TIME_KEY"])
+    return ref.tail(max(int(last_n), 1)).reset_index(drop=True)
+
+
+def _idsr_filter_to_recent_weeks(df_scope: pd.DataFrame, recent_weeks: pd.DataFrame) -> pd.DataFrame:
+    """Filtre un DataFrame IDSR sur une table de semaines TIME_LAB/TIME_KEY."""
+    if df_scope is None or df_scope.empty or recent_weeks is None or recent_weeks.empty:
+        return pd.DataFrame(columns=list(df_scope.columns) if isinstance(df_scope, pd.DataFrame) else [])
+
+    work = df_scope.copy()
+    work["TIME_KEY"] = pd.to_numeric(work.get("TIME_KEY"), errors="coerce")
+    keys = pd.to_numeric(recent_weeks.get("TIME_KEY"), errors="coerce").dropna().tolist()
+    if not keys:
+        return work.iloc[0:0].copy()
+    return work[work["TIME_KEY"].isin(keys)].copy()
+
+
+def _idsr_build_standard_geo_table(
+    df_scope: pd.DataFrame,
+    *,
+    group_cols: list[str],
+    recent_weeks: pd.DataFrame,
+    zs_col: Optional[str] = None,
+) -> pd.DataFrame:
+    """Construit un tableau standard IDSR: cumul + dernières semaines + variation."""
+    if df_scope is None or df_scope.empty or not group_cols:
+        return pd.DataFrame()
+    if any(col not in df_scope.columns for col in group_cols):
+        return pd.DataFrame()
+    if "Total_cas" not in df_scope.columns or "Total_deces" not in df_scope.columns:
+        return pd.DataFrame()
+
+    work = df_scope.copy()
+    work["_time_key_num"] = pd.to_numeric(work.get("TIME_KEY"), errors="coerce")
+    work["Total_cas"] = pd.to_numeric(work.get("Total_cas"), errors="coerce").fillna(0)
+    work["Total_deces"] = pd.to_numeric(work.get("Total_deces"), errors="coerce").fillna(0)
+
+    out = (
+        work.groupby(group_cols, as_index=False)
+        .agg(
+            Cas_cumul=("Total_cas", "sum"),
+            Deces_cumul=("Total_deces", "sum"),
+        )
+    )
+    out["Letalite_cumul_%"] = np.where(
+        out["Cas_cumul"] > 0,
+        (out["Deces_cumul"] / out["Cas_cumul"]) * 100.0,
+        np.nan,
+    )
+
+    if zs_col and zs_col in work.columns and zs_col not in group_cols:
+        cumul_active = (
+            work.loc[work["Total_cas"] > 0]
+            .groupby(group_cols, as_index=False)
+            .agg(ZS_touchees_cumul=(zs_col, "nunique"))
+        )
+        out = out.merge(cumul_active, on=group_cols, how="left")
+
+    for wk in recent_weeks.itertuples(index=False):
+        wk_key = pd.to_numeric(pd.Series([wk.TIME_KEY]), errors="coerce").iloc[0]
+        wk_lab = str(wk.TIME_LAB)
+        wk_frame = work[work["_time_key_num"] == wk_key]
+        wk_agg = (
+            wk_frame.groupby(group_cols, as_index=False)
+            .agg(
+                **{
+                    f"Cas {wk_lab}": ("Total_cas", "sum"),
+                    f"Deces {wk_lab}": ("Total_deces", "sum"),
+                }
+            )
+        )
+        if not wk_agg.empty:
+            wk_agg[f"Letalite {wk_lab} (%)"] = np.where(
+                wk_agg[f"Cas {wk_lab}"] > 0,
+                (wk_agg[f"Deces {wk_lab}"] / wk_agg[f"Cas {wk_lab}"]) * 100.0,
+                np.nan,
+            )
+            out = out.merge(wk_agg, on=group_cols, how="left")
+
+    if zs_col and zs_col in work.columns and zs_col not in group_cols and not recent_weeks.empty:
+        latest_key = pd.to_numeric(pd.Series([recent_weeks.iloc[-1]["TIME_KEY"]]), errors="coerce").iloc[0]
+        latest_lab = str(recent_weeks.iloc[-1]["TIME_LAB"])
+        latest_active = (
+            work[(work["_time_key_num"] == latest_key) & (work["Total_cas"] > 0)]
+            .groupby(group_cols, as_index=False)
+            .agg(**{f"ZS actives {latest_lab}": (zs_col, "nunique")})
+        )
+        out = out.merge(latest_active, on=group_cols, how="left")
+
+    if len(recent_weeks) >= 2:
+        prev_lab = str(recent_weeks.iloc[-2]["TIME_LAB"])
+        latest_lab = str(recent_weeks.iloc[-1]["TIME_LAB"])
+        last_cases_col = f"Cas {latest_lab}"
+        prev_cases_col = f"Cas {prev_lab}"
+        if last_cases_col in out.columns and prev_cases_col in out.columns:
+            out["Variation_cas_abs"] = out[last_cases_col].fillna(0) - out[prev_cases_col].fillna(0)
+            out["Variation_cas_%"] = np.where(
+                out[prev_cases_col].fillna(0) > 0,
+                (out["Variation_cas_abs"] / out[prev_cases_col].fillna(0)) * 100.0,
+                np.nan,
+            )
+
+    out = out.sort_values("Cas_cumul", ascending=False).reset_index(drop=True)
+    return out
+
+
+def _idsr_build_attack_threshold_tables(
+    df_scope: pd.DataFrame,
+    *,
+    province_col: str,
+    zs_col: str,
+    threshold: float = 5.0,
+    multiplier: int = 100000,
+    last_n: int = 3,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Construit les tableaux standard autour du seuil 5 cas / 100 000 hbts."""
+    required = {province_col, zs_col, "TIME_LAB", "TIME_KEY", "Population", "Total_cas"}
+    if df_scope is None or df_scope.empty or not required.issubset(df_scope.columns):
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    work = df_scope.copy()
+    work["TIME_KEY"] = pd.to_numeric(work.get("TIME_KEY"), errors="coerce")
+    work["Population"] = pd.to_numeric(work.get("Population"), errors="coerce")
+    work["Total_cas"] = pd.to_numeric(work.get("Total_cas"), errors="coerce").fillna(0)
+    work = work.dropna(subset=[province_col, zs_col, "TIME_LAB", "TIME_KEY"])
+    if work.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    recent_weeks = _idsr_recent_weeks(work, last_n=last_n)
+    if recent_weeks.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    zs_ref = (
+        work.groupby([province_col, zs_col], as_index=False)
+        .agg(Population_reference=("Population", "max"))
+    )
+    zs_ref = zs_ref.dropna(subset=["Population_reference"])
+    zs_ref = zs_ref[zs_ref["Population_reference"] > 0]
+    if zs_ref.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    weekly_cases = (
+        work.groupby([province_col, zs_col, "TIME_LAB", "TIME_KEY"], as_index=False)
+        .agg(Cas=("Total_cas", "sum"))
+    )
+
+    weeks_grid = recent_weeks.copy()
+    weeks_grid["_grid_key"] = 1
+    zs_grid = zs_ref.copy()
+    zs_grid["_grid_key"] = 1
+    full = weeks_grid.merge(zs_grid, on="_grid_key", how="inner").drop(columns="_grid_key")
+    full = full.merge(
+        weekly_cases,
+        on=[province_col, zs_col, "TIME_LAB", "TIME_KEY"],
+        how="left",
+    )
+    full["Cas"] = pd.to_numeric(full.get("Cas"), errors="coerce").fillna(0)
+    full["Incidence_pour_100000"] = np.where(
+        full["Population_reference"] > 0,
+        (full["Cas"] / full["Population_reference"]) * float(multiplier),
+        np.nan,
+    )
+    full["Au_seuil"] = full["Incidence_pour_100000"] >= float(threshold)
+
+    weekly_summary = (
+        full.groupby(["TIME_LAB", "TIME_KEY"], as_index=False)
+        .agg(
+            ZS_au_seuil=("Au_seuil", "sum"),
+            ZS_evaluees=(zs_col, "nunique"),
+            Cas=("Cas", "sum"),
+        )
+        .sort_values("TIME_KEY")
+        .reset_index(drop=True)
+    )
+
+    mean_3w = (
+        full.groupby([province_col, zs_col], as_index=False)
+        .agg(
+            Population_reference=("Population_reference", "max"),
+            Cas_3_semaines=("Cas", "sum"),
+            Incidence_moy_3_semaines=("Incidence_pour_100000", "mean"),
+            Incidence_max_3_semaines=("Incidence_pour_100000", "max"),
+            Semaines_au_seuil=("Au_seuil", "sum"),
+        )
+        .sort_values(["Incidence_moy_3_semaines", "Cas_3_semaines"], ascending=[False, False])
+        .reset_index(drop=True)
+    )
+
+    latest_key = pd.to_numeric(pd.Series([recent_weeks.iloc[-1]["TIME_KEY"]]), errors="coerce").iloc[0]
+    latest_table = (
+        full[full["TIME_KEY"] == latest_key]
+        [[province_col, zs_col, "Cas", "Incidence_pour_100000", "Au_seuil"]]
+        .merge(
+            mean_3w[[province_col, zs_col, "Cas_3_semaines", "Incidence_moy_3_semaines", "Semaines_au_seuil"]],
+            on=[province_col, zs_col],
+            how="left",
+        )
+        .sort_values(["Incidence_pour_100000", "Cas"], ascending=[False, False])
+        .reset_index(drop=True)
+    )
+    return weekly_summary, mean_3w, latest_table
+
+
+def _idsr_build_hotspot_tables(
+    df_scope: pd.DataFrame,
+    *,
+    province_value: str,
+    province_col: str,
+    zs_col: str,
+    last_n: int = 3,
+) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Construit les éléments standard de lecture hotspot pour une province."""
+    required = {province_col, zs_col, "TIME_LAB", "TIME_KEY", "Total_cas", "Total_deces"}
+    if df_scope is None or df_scope.empty or not required.issubset(df_scope.columns):
+        return {}, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    work = df_scope[df_scope[province_col] == province_value].copy()
+    if work.empty:
+        return {}, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    work["TIME_KEY"] = pd.to_numeric(work.get("TIME_KEY"), errors="coerce")
+    work["Total_cas"] = pd.to_numeric(work.get("Total_cas"), errors="coerce").fillna(0)
+    work["Total_deces"] = pd.to_numeric(work.get("Total_deces"), errors="coerce").fillna(0)
+
+    recent_weeks = _idsr_recent_weeks(work, last_n=last_n)
+    latest_label = str(recent_weeks.iloc[-1]["TIME_LAB"]) if not recent_weeks.empty else "NA"
+    latest_key = (
+        pd.to_numeric(pd.Series([recent_weeks.iloc[-1]["TIME_KEY"]]), errors="coerce").iloc[0]
+        if not recent_weeks.empty
+        else np.nan
+    )
+    prev_key = (
+        pd.to_numeric(pd.Series([recent_weeks.iloc[-2]["TIME_KEY"]]), errors="coerce").iloc[0]
+        if len(recent_weeks) >= 2
+        else np.nan
+    )
+
+    cumulative_cases = float(work["Total_cas"].sum())
+    cumulative_deaths = float(work["Total_deces"].sum())
+    cumulative_cfr = (cumulative_deaths / cumulative_cases * 100.0) if cumulative_cases > 0 else np.nan
+
+    latest_week = work[work["TIME_KEY"] == latest_key].copy() if pd.notna(latest_key) else pd.DataFrame()
+    prev_week = work[work["TIME_KEY"] == prev_key].copy() if pd.notna(prev_key) else pd.DataFrame()
+
+    latest_cases = float(latest_week["Total_cas"].sum()) if not latest_week.empty else np.nan
+    latest_deaths = float(latest_week["Total_deces"].sum()) if not latest_week.empty else np.nan
+    latest_cfr = (latest_deaths / latest_cases * 100.0) if pd.notna(latest_cases) and latest_cases > 0 else np.nan
+    prev_cases = float(prev_week["Total_cas"].sum()) if not prev_week.empty else np.nan
+    delta_pct = (
+        ((latest_cases - prev_cases) / prev_cases) * 100.0
+        if pd.notna(latest_cases) and pd.notna(prev_cases) and prev_cases > 0
+        else np.nan
+    )
+
+    latest_zs = (
+        latest_week.groupby(zs_col, as_index=False)
+        .agg(Cas=("Total_cas", "sum"), Deces=("Total_deces", "sum"))
+        .sort_values("Cas", ascending=False)
+        .reset_index(drop=True)
+        if not latest_week.empty
+        else pd.DataFrame(columns=[zs_col, "Cas", "Deces"])
+    )
+    if not latest_zs.empty:
+        latest_zs["Letalite_%"] = np.where(
+            latest_zs["Cas"] > 0,
+            (latest_zs["Deces"] / latest_zs["Cas"]) * 100.0,
+            np.nan,
+        )
+
+    prev_zs = (
+        prev_week.groupby(zs_col, as_index=False)
+        .agg(Cas_prev=("Total_cas", "sum"))
+        if not prev_week.empty
+        else pd.DataFrame(columns=[zs_col, "Cas_prev"])
+    )
+    latest_zs = latest_zs.merge(prev_zs, on=zs_col, how="left")
+    latest_zs["Cas"] = pd.to_numeric(latest_zs.get("Cas"), errors="coerce")
+    latest_zs["Deces"] = pd.to_numeric(latest_zs.get("Deces"), errors="coerce")
+    latest_zs["Cas_prev"] = pd.to_numeric(latest_zs.get("Cas_prev"), errors="coerce")
+    latest_zs["Variation_abs"] = latest_zs["Cas"].fillna(0) - latest_zs["Cas_prev"].fillna(0)
+    latest_zs["Variation_%"] = np.where(
+        latest_zs["Cas_prev"].fillna(0) > 0,
+        (latest_zs["Variation_abs"] / latest_zs["Cas_prev"].fillna(0)) * 100.0,
+        np.nan,
+    )
+
+    reporting_latest = latest_zs[latest_zs["Cas"] > 0].copy()
+    mean_cases_reporting = reporting_latest["Cas"].mean() if not reporting_latest.empty else np.nan
+    above_average = (
+        reporting_latest[reporting_latest["Cas"] > mean_cases_reporting]
+        .sort_values("Cas", ascending=False)
+        .reset_index(drop=True)
+        if pd.notna(mean_cases_reporting)
+        else pd.DataFrame(columns=latest_zs.columns)
+    )
+
+    cumulative_zs = (
+        work.groupby(zs_col, as_index=False)
+        .agg(Cas_cumul=("Total_cas", "sum"), Deces_cumul=("Total_deces", "sum"))
+        .sort_values("Cas_cumul", ascending=False)
+        .reset_index(drop=True)
+    )
+    silent_zs = cumulative_zs[cumulative_zs["Cas_cumul"].fillna(0) <= 0].copy()
+    detailed_table = _idsr_build_standard_geo_table(
+        work,
+        group_cols=[zs_col],
+        recent_weeks=recent_weeks,
+        zs_col=None,
+    )
+
+    summary = {
+        "latest_label": latest_label,
+        "cases_cumul": cumulative_cases,
+        "deces_cumul": cumulative_deaths,
+        "cfr_cumul": cumulative_cfr,
+        "cases_latest": latest_cases,
+        "deces_latest": latest_deaths,
+        "cfr_latest": latest_cfr,
+        "delta_cases_pct": delta_pct,
+        "reporting_zs_latest": int(len(reporting_latest)),
+        "mean_cases_reporting": mean_cases_reporting,
+        "silent_zs_count": int(len(silent_zs)),
+    }
+    return summary, latest_zs, above_average, silent_zs, detailed_table
+
+
 def render_idsr_tab(ctx: dict) -> None:
     """Render the weekly IDSR analytics tab."""
     globals().update(ctx)
@@ -1248,6 +1717,8 @@ def render_idsr_tab(ctx: dict) -> None:
     - Évolution des cas/décès par semaine
     - CFR recalculé et comparaison avec Taux_letalite (si disponible)
     - Top provinces / ZS
+    - Tableaux standardisés type bulletin IDSR par DPS et hotspot ZS
+    - Taux d’attaque par ZS au cours des 3 dernières semaines
     - Contrôles de cohérence (totaux vs tranches d’âge)
     - Mode secours si Année-Semaine (YW) non exploitable : filtre sur Numéro de semaine uniquement
     """,
@@ -1478,6 +1949,8 @@ def render_idsr_tab(ctx: dict) -> None:
                     df_idsr["Annee_epid"] = pd.to_numeric(_iso["year"], errors="coerce").astype("Int64")
                 if df_idsr["Num_semaine_epid"].isna().all():
                     df_idsr["Num_semaine_epid"] = pd.to_numeric(_iso["week"], errors="coerce").astype("Int64")
+
+        df_idsr = _idsr_fill_missing_year_from_week_consensus(df_idsr)
 
         # YW & YW_KEY (si année + semaine)
         df_idsr["YW"] = (
@@ -2205,7 +2678,7 @@ def render_idsr_tab(ctx: dict) -> None:
                     if weeks.index(w_min) > weeks.index(w_max):
                         w_min, w_max = w_max, w_min
                 else:
-                    st.warning("Aucune semaine exploitable (Num_semaine_epid / Semaine_epid).")
+                    st.warning("Aucun numéro de semaine exploitable n’a été trouvé dans le fichier.")
                     week_filter_mode = None
 
             # ---- Cas COMPILÉ : proposer Année-Semaine (YW) si dispo, sinon Numéro de semaine
@@ -2269,7 +2742,7 @@ def render_idsr_tab(ctx: dict) -> None:
                         week_filter_mode = "WNUM"
                 else:
                     if week_filter_mode is None:
-                        st.warning("Aucune semaine exploitable (YW_KEY / Num_semaine_epid).")
+                        st.warning("Aucune semaine exploitable n’a été trouvée à partir des informations de semaine du fichier.")
                         week_filter_mode = None
 
         # 8) Appliquer filtres
@@ -2407,44 +2880,14 @@ def render_idsr_tab(ctx: dict) -> None:
             st.divider()
             st.markdown("### 02 · Vue d’ensemble guidée")
             st.caption(
-                "Les blocs ci-dessous sont organisés du contrôle de complétude vers l’interprétation épidémiologique, "
-                "puis vers la qualité des données et les exports."
+                "Les blocs ci-dessous suivent un parcours proche d’un bulletin IDSR agrégé: "
+                "situation hebdomadaire, tableaux standards, complétude, risque, qualité, puis détails et exports."
             )
             render_idsr_reading_guide()
-
-            # -----------------------------------------------------------------
-            # 8.c) Complétude IDSR : nombre de ZS rapportantes par province/semaine
-            # -----------------------------------------------------------------
-            render_idsr_completeness_section(
-                df=df9,
-                province_col=COL_PROV_ID,
-                zs_col=COL_ZS_ID if COL_ZS_ID in df9.columns else "Zone_de_sante_notification",
-            )
-            st.divider()
-
-            # -----------------------------------------------------------------
-            # 8.d) Taux d'attaque et incidence : cas rapportés / population
-            # -----------------------------------------------------------------
-            render_idsr_attack_incidence_section(
-                df=df9,
-                province_col=COL_PROV_ID,
-                zs_col=COL_ZS_ID if COL_ZS_ID in df9.columns else None,
-                mal_col=COL_MAL,
-            )
-            st.divider()
-
             render_idsr_phase_header(
-                "04 · Cartographie et concentration géographique",
-                "Localiser les provinces et zones de santé les plus contributives après vérification de la complétude."
+                "03 · Situation épidémiologique hebdomadaire",
+                "Commencer par la tendance agrégée, la dernière semaine disponible et les éléments de lecture opérationnelle."
             )
-            render_idsr_maps_section(
-                df_f=df9,
-                province_col=COL_PROV_ID,
-                zs_col=COL_ZS_ID if COL_ZS_ID in df9.columns else None,
-                cases_col="Total_cas",
-            )
-
-            st.divider()
 
             # -----------------------------------------------------------------
             # 9) Série temporelle : cas/décès/CFR (robuste sur TIME_KEY/LAB)
@@ -2874,7 +3317,318 @@ def render_idsr_tab(ctx: dict) -> None:
                 # Note: cette section est volontairement centrée sur la semaine max,
                 # même si l'utilisateur change semaine min.
                 st.divider()
-                with st.expander("05 · 🚨 Alertes et classements — signaux opérationnels", expanded=False):
+                with st.expander("03.b · 📑 Analyses standardisées IDSR — format bulletin hebdomadaire", expanded=False):
+                    st.caption(
+                        "Cette rubrique reprend le vocabulaire et les sorties les plus usuelles d’un bulletin hebdomadaire IDSR agrégé: "
+                        "distribution par DPS, taux d’attaque au cours des 3 dernières SE et focus hotspot par zone de santé."
+                    )
+
+                    bulletin_scope = df9_base.copy() if ("df9_base" in locals() and not df9_base.empty) else df9.copy()
+                    recent_3_weeks = _idsr_recent_weeks(bulletin_scope, last_n=3)
+
+                    with st.expander("03.b.1 · 🏥 Distribution des cas, décès et létalité par DPS", expanded=False):
+                        if COL_PROV_ID in bulletin_scope.columns and "Total_cas" in bulletin_scope.columns and "Total_deces" in bulletin_scope.columns:
+                            province_bulletin = _idsr_build_standard_geo_table(
+                                bulletin_scope,
+                                group_cols=[COL_PROV_ID],
+                                recent_weeks=recent_3_weeks,
+                                zs_col=COL_ZS_ID if COL_ZS_ID in bulletin_scope.columns else None,
+                            )
+                            if not province_bulletin.empty:
+                                province_display = province_bulletin.rename(columns={
+                                    COL_PROV_ID: "Province",
+                                    "Cas_cumul": "Cas cumul",
+                                    "Deces_cumul": "Décès cumul",
+                                    "Letalite_cumul_%": "Taux de létalité cumul (%)",
+                                    "ZS_touchees_cumul": "ZS touchées (cumul)",
+                                    "Variation_cas_abs": "Variation cas",
+                                    "Variation_cas_%": "Variation cas (%)",
+                                })
+                                st.dataframe(
+                                    province_display,
+                                    width="stretch",
+                                    height=460,
+                                    hide_index=True,
+                                    column_config={
+                                        "Taux de létalité cumul (%)": st.column_config.NumberColumn(format="%.2f%%"),
+                                        "Variation cas (%)": st.column_config.NumberColumn(format="%.1f%%"),
+                                    },
+                                )
+
+                                if not recent_3_weeks.empty:
+                                    last_week_lab_std = str(recent_3_weeks.iloc[-1]["TIME_LAB"])
+                                    total_cumul_cases = pd.to_numeric(province_bulletin.get("Cas_cumul"), errors="coerce").sum(skipna=True)
+                                    top_share_label = None
+                                    if total_cumul_cases > 0:
+                                        top_row_std = province_bulletin.iloc[0]
+                                        top_share = (float(top_row_std["Cas_cumul"]) / float(total_cumul_cases)) * 100.0
+                                        top_share_label = (
+                                            f"La DPS la plus contributive est {str(top_row_std[COL_PROV_ID])} "
+                                            f"avec {_idsr_fmt_int(top_row_std['Cas_cumul'])} cas, soit {_idsr_fmt_pct(top_share)} du cumul observé."
+                                        )
+
+                                    affected_zs_col = f"ZS actives {last_week_lab_std}"
+                                    latest_active_total = (
+                                        pd.to_numeric(province_bulletin.get(affected_zs_col), errors="coerce").fillna(0).sum()
+                                        if affected_zs_col in province_bulletin.columns
+                                        else np.nan
+                                    )
+                                    st.info(
+                                        _idsr_join_sentences(
+                                            f"Le tableau reprend le cumul du périmètre filtré et la situation des 3 dernières semaines jusqu’à {last_week_lab_std}.",
+                                            top_share_label or "",
+                                            (
+                                                f"Au total, {_idsr_fmt_int(latest_active_total)} zones de santé avec cas sont visibles sur la dernière semaine."
+                                                if pd.notna(latest_active_total)
+                                                else ""
+                                            ),
+                                        )
+                                    )
+                            else:
+                                st.info("Aucune synthèse standard par DPS n’a pu être calculée sur le périmètre courant.")
+                        else:
+                            st.info("La distribution standard par DPS est indisponible: colonnes Province/Total_cas/Total_deces absentes.")
+
+                    with st.expander("03.b.2 · 📈 Taux d’attaque par ZS au cours des 3 dernières semaines", expanded=False):
+                        if {"Population", "Total_cas", "TIME_LAB", "TIME_KEY", COL_PROV_ID, COL_ZS_ID}.issubset(set(bulletin_scope.columns)):
+                            threshold_default = 5.0
+                            threshold_value = st.number_input(
+                                "Seuil de taux d’attaque (cas / 100 000 hbts)",
+                                min_value=0.0,
+                                max_value=500.0,
+                                value=threshold_default,
+                                step=1.0,
+                                key="idsr_threshold_3w_signal",
+                            )
+                            weekly_threshold, mean_3w_table, latest_threshold = _idsr_build_attack_threshold_tables(
+                                bulletin_scope,
+                                province_col=COL_PROV_ID,
+                                zs_col=COL_ZS_ID,
+                                threshold=float(threshold_value),
+                                multiplier=100000,
+                                last_n=3,
+                            )
+                            if not weekly_threshold.empty and not latest_threshold.empty:
+                                latest_week_threshold = str(weekly_threshold.iloc[-1]["TIME_LAB"])
+                                weekly_threshold_display = weekly_threshold.drop(
+                                    columns=["TIME_KEY"],
+                                    errors="ignore",
+                                ).rename(columns={
+                                    "TIME_LAB": "Semaine",
+                                    "ZS_au_seuil": "ZS au seuil",
+                                    "ZS_evaluees": "ZS évaluées",
+                                    "Cas": "Cas",
+                                })
+                                st.dataframe(
+                                    weekly_threshold_display,
+                                    width="stretch",
+                                    hide_index=True,
+                                )
+
+                                n_latest = int(weekly_threshold.iloc[-1]["ZS_au_seuil"])
+                                n_mean_3w = int((mean_3w_table["Incidence_moy_3_semaines"] >= float(threshold_value)).sum())
+                                st.info(
+                                    f"À {latest_week_threshold}, {n_latest:,} ZS dépassent le seuil de {threshold_value:.1f} cas / 100 000 hbts. "
+                                    f"En moyenne sur les 3 dernières semaines, {n_mean_3w:,} ZS restent au-dessus de ce seuil."
+                                )
+
+                                c_sig1, c_sig2 = st.columns(2)
+                                with c_sig1:
+                                    latest_display = latest_threshold.rename(columns={
+                                        COL_PROV_ID: "Province",
+                                        COL_ZS_ID: "Zone de santé",
+                                        "Cas": f"Cas {latest_week_threshold}",
+                                        "Incidence_pour_100000": f"Incidence {latest_week_threshold}",
+                                        "Au_seuil": "Au seuil",
+                                        "Cas_3_semaines": "Cas 3 SE",
+                                        "Incidence_moy_3_semaines": "Incidence moyenne 3 SE",
+                                        "Semaines_au_seuil": "Semaines au seuil",
+                                    })
+                                    latest_display = latest_display[latest_display["Au seuil"]].copy()
+                                    st.dataframe(
+                                        latest_display,
+                                        width="stretch",
+                                        height=360,
+                                        hide_index=True,
+                                        column_config={
+                                            f"Incidence {latest_week_threshold}": st.column_config.NumberColumn(format="%.2f"),
+                                            "Incidence moyenne 3 SE": st.column_config.NumberColumn(format="%.2f"),
+                                        },
+                                    )
+                                with c_sig2:
+                                    mean_display = mean_3w_table.rename(columns={
+                                        COL_PROV_ID: "Province",
+                                        COL_ZS_ID: "Zone de santé",
+                                        "Population_reference": "Population référence",
+                                        "Cas_3_semaines": "Cas 3 SE",
+                                        "Incidence_moy_3_semaines": "Incidence moyenne 3 SE",
+                                        "Incidence_max_3_semaines": "Incidence max 3 SE",
+                                        "Semaines_au_seuil": "Semaines au seuil",
+                                    })
+                                    mean_display = mean_display[mean_display["Incidence moyenne 3 SE"] >= float(threshold_value)].copy()
+                                    st.dataframe(
+                                        mean_display,
+                                        width="stretch",
+                                        height=360,
+                                        hide_index=True,
+                                        column_config={
+                                            "Incidence moyenne 3 SE": st.column_config.NumberColumn(format="%.2f"),
+                                            "Incidence max 3 SE": st.column_config.NumberColumn(format="%.2f"),
+                                        },
+                                    )
+                            else:
+                                st.info("Le tableau de taux d’attaque sur 3 semaines n’a pas pu être calculé: population de référence, ZS ou historique récent insuffisants.")
+                        else:
+                            st.info("L’analyse du taux d’attaque sur 3 semaines nécessite Population, Province, ZS, Total_cas, TIME_LAB et TIME_KEY.")
+
+                    with st.expander("03.b.3 · 🔎 Analyse hotspot par DPS et zones de santé", expanded=False):
+                        if COL_PROV_ID in bulletin_scope.columns and COL_ZS_ID in bulletin_scope.columns:
+                            prov_options_hotspot = (
+                                bulletin_scope.groupby(COL_PROV_ID, as_index=False)
+                                .agg(Cas=("Total_cas", "sum"))
+                                .sort_values("Cas", ascending=False)
+                            )
+                            if not prov_options_hotspot.empty:
+                                province_choices = prov_options_hotspot[COL_PROV_ID].astype(str).tolist()
+                                focus_province = st.selectbox(
+                                    "DPS à détailler",
+                                    options=province_choices,
+                                    index=0,
+                                    key="idsr_hotspot_focus_province",
+                                )
+                                hotspot_summary, _, hotspot_above_avg, hotspot_silent, hotspot_detail = _idsr_build_hotspot_tables(
+                                    bulletin_scope,
+                                    province_value=focus_province,
+                                    province_col=COL_PROV_ID,
+                                    zs_col=COL_ZS_ID,
+                                    last_n=3,
+                                )
+                                if hotspot_summary:
+                                    h1, h2, h3, h4 = st.columns(4)
+                                    h1.metric("Cas cumul", _idsr_fmt_int(hotspot_summary.get("cases_cumul")))
+                                    h2.metric("Décès cumul", _idsr_fmt_int(hotspot_summary.get("deces_cumul")))
+                                    h3.metric("Taux de létalité cumul", _idsr_fmt_pct(hotspot_summary.get("cfr_cumul"), 2))
+                                    h4.metric(
+                                        f"Cas {hotspot_summary.get('latest_label', 'NA')}",
+                                        _idsr_fmt_int(hotspot_summary.get("cases_latest")),
+                                        delta=(
+                                            None
+                                            if pd.isna(hotspot_summary.get("delta_cases_pct"))
+                                            else f"{float(hotspot_summary.get('delta_cases_pct')):+.1f}% vs semaine-1"
+                                        ),
+                                    )
+
+                                    st.info(
+                                        _idsr_join_sentences(
+                                            f"Pour {focus_province}, la dernière semaine lue est {hotspot_summary.get('latest_label', 'NA')} avec {_idsr_fmt_int(hotspot_summary.get('cases_latest'))} cas et {_idsr_fmt_int(hotspot_summary.get('deces_latest'))} décès.",
+                                            (
+                                                f"La moyenne est de {float(hotspot_summary.get('mean_cases_reporting')):.1f} cas par ZS parmi {int(hotspot_summary.get('reporting_zs_latest', 0)):,} ZS ayant notifié des cas cette semaine."
+                                                if pd.notna(hotspot_summary.get("mean_cases_reporting"))
+                                                else ""
+                                            ),
+                                            (
+                                                f"{int(hotspot_summary.get('silent_zs_count', 0)):,} ZS observées dans le périmètre n’ont signalé aucun cas sur le cumul analysé."
+                                                if int(hotspot_summary.get("silent_zs_count", 0)) > 0
+                                                else "Aucune ZS observée dans ce périmètre n’est restée totalement silencieuse sur le cumul analysé."
+                                            ),
+                                        )
+                                    )
+
+                                    c_hot1, c_hot2 = st.columns(2)
+                                    with c_hot1:
+                                        st.markdown("**ZS au-dessus de la moyenne de la DPS sur la dernière semaine**")
+                                        if not hotspot_above_avg.empty:
+                                            st.dataframe(
+                                                hotspot_above_avg.rename(columns={
+                                                    COL_ZS_ID: "Zone de santé",
+                                                    "Cas": "Cas",
+                                                    "Deces": "Décès",
+                                                    "Letalite_%": "Taux de létalité (%)",
+                                                    "Variation_abs": "Variation cas",
+                                                    "Variation_%": "Variation cas (%)",
+                                                }),
+                                                width="stretch",
+                                                height=320,
+                                                hide_index=True,
+                                                column_config={
+                                                    "Taux de létalité (%)": st.column_config.NumberColumn(format="%.2f%%"),
+                                                    "Variation cas (%)": st.column_config.NumberColumn(format="%.1f%%"),
+                                                },
+                                            )
+                                        else:
+                                            st.caption("Aucune ZS n’est strictement au-dessus de la moyenne de la DPS sur la dernière semaine.")
+                                    with c_hot2:
+                                        st.markdown("**ZS silencieuses sur la période analysée**")
+                                        if not hotspot_silent.empty:
+                                            st.dataframe(
+                                                hotspot_silent.rename(columns={
+                                                    COL_ZS_ID: "Zone de santé",
+                                                    "Cas_cumul": "Cas cumul",
+                                                    "Deces_cumul": "Décès cumul",
+                                                }),
+                                                width="stretch",
+                                                height=320,
+                                                hide_index=True,
+                                            )
+                                        else:
+                                            st.caption("Aucune ZS silencieuse n’a été identifiée parmi les ZS observées dans ce périmètre.")
+
+                                    st.markdown("**Tableau standard des ZS hotspot: cumul et 3 dernières semaines**")
+                                    if not hotspot_detail.empty:
+                                        st.dataframe(
+                                            hotspot_detail.rename(columns={
+                                                COL_ZS_ID: "Zone de santé",
+                                                "Cas_cumul": "Cas cumul",
+                                                "Deces_cumul": "Décès cumul",
+                                                "Letalite_cumul_%": "Taux de létalité cumul (%)",
+                                                "Variation_cas_abs": "Variation cas",
+                                                "Variation_cas_%": "Variation cas (%)",
+                                            }),
+                                            width="stretch",
+                                            height=420,
+                                            hide_index=True,
+                                            column_config={
+                                                "Taux de létalité cumul (%)": st.column_config.NumberColumn(format="%.2f%%"),
+                                                "Variation cas (%)": st.column_config.NumberColumn(format="%.1f%%"),
+                                            },
+                                        )
+                                    else:
+                                        st.info("Aucun tableau hotspot standard n’a pu être généré pour cette province.")
+                                else:
+                                    st.info("Le focus hotspot n’a pas pu être calculé pour cette province.")
+                            else:
+                                st.info("Aucune province exploitable n’est disponible pour le focus hotspot.")
+                        else:
+                            st.info("Le focus hotspot nécessite les colonnes Province et Zone de santé.")
+
+                st.divider()
+                render_idsr_completeness_section(
+                    df=df9,
+                    province_col=COL_PROV_ID,
+                    zs_col=COL_ZS_ID if COL_ZS_ID in df9.columns else "Zone_de_sante_notification",
+                )
+                st.divider()
+                render_idsr_attack_incidence_section(
+                    df=df9,
+                    province_col=COL_PROV_ID,
+                    zs_col=COL_ZS_ID if COL_ZS_ID in df9.columns else None,
+                    mal_col=COL_MAL,
+                )
+                st.divider()
+                render_idsr_phase_header(
+                    "Cartographie et concentration géographique",
+                    "Localiser rapidement les DPS et zones de santé qui concentrent les cas après lecture de la situation et du taux d’attaque."
+                )
+                render_idsr_maps_section(
+                    df_f=df9,
+                    province_col=COL_PROV_ID,
+                    zs_col=COL_ZS_ID if COL_ZS_ID in df9.columns else None,
+                    cases_col="Total_cas",
+                )
+
+                st.divider()
+
+                with st.expander("06 · 🚨 Alertes et classements opérationnels", expanded=False):
 
                     if (COL_PROV_ID in df9.columns) and (len(weekly_sorted) >= 2):
                         last_t = weekly_sorted.iloc[-1]["TIME_LAB"]
@@ -2900,9 +3654,13 @@ def render_idsr_tab(ctx: dict) -> None:
                         )
                         prov_delta = prov_delta[prov_delta["Cas"] >= min_cases].sort_values("Delta_cas", ascending=False)
 
-                        with st.expander("05.a · 📈 Provinces en hausse", expanded=False):
+                        with st.expander("06.a · 📈 Provinces en hausse", expanded=False):
                             n_up = st.slider("Nombre d’unités à afficher", 5, 50, 15, step=5, key="tab9_n_up_prov")
-                            st.dataframe(prov_delta.head(n_up), width="stretch", height=420, hide_index=True)
+                            prov_delta_display = _idsr_displayify_columns(
+                                prov_delta.head(n_up),
+                                extra_labels={COL_PROV_ID: "Province de notification"},
+                            )
+                            st.dataframe(prov_delta_display, width="stretch", height=420, hide_index=True)
                     else:
                         st.info("Le classement des provinces en hausse est indisponible : variable Province absente ou historique insuffisant.")
 
@@ -2917,9 +3675,13 @@ def render_idsr_tab(ctx: dict) -> None:
                             top_prov["CFR_%"] = np.where(top_prov["Cas"] > 0, (top_prov["Deces"] / top_prov["Cas"]) * 100, np.nan)
                             top_prov = top_prov.sort_values("Cas", ascending=False)
 
-                            with st.expander("05.b · 🏥 Provinces les plus touchées", expanded=False):
+                            with st.expander("06.b · 🏥 DPS les plus touchées", expanded=False):
                                 n_prov = st.slider("Nombre de provinces à afficher", 10, 200, 20, step=10, key="tab9_n_top_prov")
-                                st.dataframe(top_prov.head(n_prov), width="stretch", height=420, hide_index=True)
+                                top_prov_display = _idsr_displayify_columns(
+                                    top_prov.head(n_prov),
+                                    extra_labels={COL_PROV_ID: "Province de notification"},
+                                )
+                                st.dataframe(top_prov_display, width="stretch", height=420, hide_index=True)
                         else:
                             top_prov = None
                             st.info("Le classement des provinces est indisponible : variables requises manquantes.")
@@ -2933,18 +3695,25 @@ def render_idsr_tab(ctx: dict) -> None:
                             top_zs["CFR_%"] = np.where(top_zs["Cas"] > 0, (top_zs["Deces"] / top_zs["Cas"]) * 100, np.nan)
                             top_zs = top_zs.sort_values("Cas", ascending=False)
 
-                            with st.expander("05.c · 🗺️ Zones de santé les plus touchées", expanded=False):
+                            with st.expander("06.c · 🗺️ Zones de santé les plus touchées", expanded=False):
                                 n_zs = st.slider("Nombre de ZS à afficher", 10, 300, 20, step=10, key="tab9_n_top_zs")
-                                st.dataframe(top_zs.head(n_zs), width="stretch", height=420, hide_index=True)
+                                top_zs_display = _idsr_displayify_columns(
+                                    top_zs.head(n_zs),
+                                    extra_labels={
+                                        COL_PROV_ID: "Province de notification",
+                                        COL_ZS_ID: "Zone de santé de notification",
+                                    },
+                                )
+                                st.dataframe(top_zs_display, width="stretch", height=420, hide_index=True)
                         else:
                             top_zs = None
                             st.info("Le classement des zones de santé est indisponible : variables requises manquantes.")
 
-                st.markdown("### Qualité des données")
+                st.markdown("### 07 · Contrôle qualité des données")
                 st.caption(
-                    "Cette partie aide à vérifier la cohérence temporelle, les doublons et les écarts entre totaux déclarés et tranches d’âge."
+                    "Cette partie aide à sécuriser le bulletin en vérifiant la cohérence temporelle, les doublons et les écarts entre totaux déclarés et tranches d’âge."
                 )
-                with st.expander("06.a · 🗓️ Qualité des dates — concordance date/semaine", expanded=False):
+                with st.expander("07.a · 🗓️ Qualité des dates — concordance date/semaine", expanded=False):
                     if "QC_Date_vs_Semaine" in df9.columns:
                         qc_date_counts = df9["QC_Date_vs_Semaine"].value_counts(dropna=False)
                         st.write(qc_date_counts)
@@ -2986,23 +3755,31 @@ def render_idsr_tab(ctx: dict) -> None:
                             st.caption("Aucune ligne ne correspond au filtre sélectionné.")
                         else:
                             st.caption(f"Lignes affichées : {len(qc_date_view):,}")
-                            st.dataframe(
+                            qc_date_display = _idsr_displayify_columns(
                                 qc_date_view[qc_date_show_cols],
+                                extra_labels={
+                                    COL_MAL: "Maladie",
+                                    COL_PROV_ID: "Province de notification",
+                                    COL_ZS_ID: "Zone de santé de notification",
+                                },
+                            )
+                            st.dataframe(
+                                qc_date_display,
                                 width="stretch",
                                 height=280,
                                 hide_index=True,
                             )
                             st.download_button(
                                 "⬇️ Télécharger lignes QC date/semaine (CSV)",
-                                data=qc_date_view[qc_date_show_cols].to_csv(index=False).encode("utf-8"),
+                                data=qc_date_display.to_csv(index=False).encode("utf-8"),
                                 file_name="idsr_qc_date_vs_semaine.csv",
                                 mime="text/csv",
                                 key="tab9_dl_qc_date_scope_csv",
                             )
                     else:
-                        st.info("Le contrôle qualité temporel est indisponible : dates sources absentes.")
+                        st.info("Le contrôle qualité temporel est indisponible : aucune date source exploitable n’est disponible.")
 
-                with st.expander("06.b · 🧬 Doublons possibles — revue métier", expanded=False):
+                with st.expander("07.b · 🧬 Doublons possibles — revue métier", expanded=False):
                     if len(dup_scope_key_cols) < 4:
                         st.info("Recherche de doublons indisponible : colonnes clés semaine/province/ZS/maladie insuffisantes.")
                     elif dup_scope_summary.empty:
@@ -3067,6 +3844,8 @@ def render_idsr_tab(ctx: dict) -> None:
                             "Variables_en_ecart": "Variables en écart",
                             "Exact_rows": "Lignes exactes",
                         })
+                        dup_summary_display = _idsr_displayify_columns(dup_summary_display)
+                        dup_summary_export = _idsr_displayify_columns(dup_summary_export)
 
                         st.dataframe(
                             dup_summary_display[
@@ -3128,6 +3907,7 @@ def render_idsr_tab(ctx: dict) -> None:
                                 COL_MAL: "Maladie",
                                 "Variables_en_ecart": "Variables en écart",
                             })
+                            contradiction_display = _idsr_displayify_columns(contradiction_display)
                             st.dataframe(
                                 contradiction_display,
                                 width="stretch",
@@ -3150,6 +3930,7 @@ def render_idsr_tab(ctx: dict) -> None:
                                 "Variables_en_ecart": "Variables en écart",
                                 "Distinct_metric_rows": "Versions métriques",
                             })
+                            dup_detail_display = _idsr_displayify_columns(dup_detail_display)
                             st.dataframe(
                                 dup_detail_display[
                                     [
@@ -3189,7 +3970,7 @@ def render_idsr_tab(ctx: dict) -> None:
                             )
 
                         dup_summary_csv = dup_summary_export.to_csv(index=False).encode("utf-8")
-                        dup_detail_csv = dup_scope_detail.rename(columns={
+                        dup_detail_csv = _idsr_displayify_columns(dup_scope_detail.rename(columns={
                             "_dup_week": "Semaine",
                             COL_PROV_ID: "Province",
                             COL_ZS_ID: "Zone de santé",
@@ -3197,12 +3978,12 @@ def render_idsr_tab(ctx: dict) -> None:
                             "Type_doublon": "Type de doublon",
                             "Variables_en_ecart": "Variables en écart",
                             "Distinct_metric_rows": "Versions métriques",
-                        }).to_csv(index=False).encode("utf-8")
+                        })).to_csv(index=False).encode("utf-8")
 
                         dup_buffer = BytesIO()
                         with pd.ExcelWriter(dup_buffer, engine="openpyxl") as writer:
                             dup_summary_export.to_excel(writer, sheet_name="Doublons_resume", index=False)
-                            dup_scope_detail.rename(columns={
+                            _idsr_displayify_columns(dup_scope_detail.rename(columns={
                                 "_dup_week": "Semaine",
                                 COL_PROV_ID: "Province",
                                 COL_ZS_ID: "Zone de santé",
@@ -3210,9 +3991,9 @@ def render_idsr_tab(ctx: dict) -> None:
                                 "Type_doublon": "Type de doublon",
                                 "Variables_en_ecart": "Variables en écart",
                                 "Distinct_metric_rows": "Versions métriques",
-                            }).to_excel(writer, sheet_name="Doublons_detail", index=False)
+                            })).to_excel(writer, sheet_name="Doublons_detail", index=False)
                             if not dup_contradictions.empty:
-                                dup_contradictions.rename(columns={
+                                _idsr_displayify_columns(dup_contradictions.rename(columns={
                                     "_dup_week": "Semaine",
                                     COL_PROV_ID: "Province",
                                     COL_ZS_ID: "Zone de santé",
@@ -3220,7 +4001,7 @@ def render_idsr_tab(ctx: dict) -> None:
                                     "Type_doublon": "Type de doublon",
                                     "Variables_en_ecart": "Variables en écart",
                                     "Distinct_metric_rows": "Versions métriques",
-                                }).to_excel(writer, sheet_name="Doublons_contrad", index=False)
+                                })).to_excel(writer, sheet_name="Doublons_contrad", index=False)
 
                         d1, d2, d3 = st.columns(3)
                         with d1:
@@ -3251,7 +4032,7 @@ def render_idsr_tab(ctx: dict) -> None:
             # -----------------------------------------------------------------
             # 12) Contrôles cohérence totaux vs tranches d’âge
             # -----------------------------------------------------------------
-            with st.expander("06.c · ✅ Cohérence des totaux et des tranches d’âge", expanded=False):
+            with st.expander("07.c · ✅ Cohérence des totaux et des tranches d’âge", expanded=False):
                 show_qc_tables = st.checkbox(
                     "Afficher les tableaux détaillés QC (peut être lourd)",
                     value=False,
@@ -3316,20 +4097,26 @@ def render_idsr_tab(ctx: dict) -> None:
                                 css.append(f"font-weight: {weight}")
                             styles[i] = "; ".join(css)
 
-                    if row.get("diff_cas", 0) != 0:
-                        set_cell("diff_cas", bg="#fff3cd", fg="#111", weight="700")
-                    if row.get("diff_deces", 0) != 0:
-                        set_cell("diff_deces", bg="#ffe5e5", fg="#111", weight="700")
+                    diff_cas_col = "Écart cas (total - âges)" if "Écart cas (total - âges)" in cols else "diff_cas"
+                    diff_deces_col = "Écart décès (total - âges)" if "Écart décès (total - âges)" in cols else "diff_deces"
+                    qc_global_col = "Contrôle qualité global" if "Contrôle qualité global" in cols else "QC_Global"
+                    qc_cas_col = "Contrôle qualité des cas" if "Contrôle qualité des cas" in cols else "QC_Cas"
+                    qc_deces_col = "Contrôle qualité des décès" if "Contrôle qualité des décès" in cols else "QC_Deces"
 
-                    if row.get("QC_Global") == "❌ KO":
-                        set_cell("QC_Global", bg="#f2f2f2", fg="#111", weight="700")
+                    if row.get(diff_cas_col, 0) != 0:
+                        set_cell(diff_cas_col, bg="#fff3cd", fg="#111", weight="700")
+                    if row.get(diff_deces_col, 0) != 0:
+                        set_cell(diff_deces_col, bg="#ffe5e5", fg="#111", weight="700")
+
+                    if row.get(qc_global_col) == "❌ KO":
+                        set_cell(qc_global_col, bg="#f2f2f2", fg="#111", weight="700")
                     else:
-                        set_cell("QC_Global", fg="#111", weight="700")
+                        set_cell(qc_global_col, fg="#111", weight="700")
 
-                    if "QC_Cas" in cols:
-                        set_cell("QC_Cas", fg="#111", weight="700")
-                    if "QC_Deces" in cols:
-                        set_cell("QC_Deces", fg="#111", weight="700")
+                    if qc_cas_col in cols:
+                        set_cell(qc_cas_col, fg="#111", weight="700")
+                    if qc_deces_col in cols:
+                        set_cell(qc_deces_col, fg="#111", weight="700")
 
                     return styles
 
@@ -3397,17 +4184,25 @@ def render_idsr_tab(ctx: dict) -> None:
                 qc_cols = ["QC_Global", "QC_Cas", "QC_Deces"]
                 qc_cols = [c for c in qc_cols if c in table_to_show.columns]
                 final_cols = qc_cols + cols_show
+                qc_table_display = _idsr_displayify_columns(
+                    table_to_show[final_cols],
+                    extra_labels={
+                        COL_MAL: "Maladie",
+                        COL_PROV_ID: "Province de notification",
+                        COL_ZS_ID: "Zone de santé de notification",
+                    },
+                )
 
                 if show_qc_tables:
                     with st.expander("🧾 Voir le détail des lignes OK/KO", expanded=False):
                         st.dataframe(
-                        table_to_show[final_cols].style.apply(style_qc, axis=1),
+                        qc_table_display.style.apply(style_qc, axis=1),
                         width="stretch",
                         height=520,
                         hide_index=True
                     )
                 
-            st.markdown("### 07 · Analyses détaillées")
+            st.markdown("### 08 · Analyses détaillées")
             st.caption(
                 "Les rubriques suivantes approfondissent la lecture par âge, maladie et territoire. "
                 "Elles complètent la vue d’ensemble sans la remplacer."
@@ -3420,7 +4215,7 @@ def render_idsr_tab(ctx: dict) -> None:
             # 14) IDSR – Spécifications des sorties
             # ---------------------------------------------------------------------
             # 14.1) Histogramme des cas + courbe de létalité (CFR%)
-            with st.expander("07.a · 📈 Évolution hebdomadaire des cas, décès et létalité", expanded=True):
+            with st.expander("08.a · 📈 Évolution hebdomadaire des cas, décès et létalité", expanded=True):
                 if 'weekly_sorted' in locals() and isinstance(weekly_sorted, pd.DataFrame) and not weekly_sorted.empty:
                     _wk = weekly_sorted.copy()
                     # Libellé unique Année-Semaine (évite doublons W01/W02 quand plusieurs années)
@@ -3477,8 +4272,35 @@ def render_idsr_tab(ctx: dict) -> None:
                     st.info("Aucune donnée hebdomadaire agrégée n’est disponible après filtrage.")
 
             # 14.2) Camembert par tranche d'âge + tableau associé
-            with st.expander("07.b · 👶 Répartition des cas par âge", expanded=False):
+            with st.expander("08.b · 👶 Répartition des cas, décès et létalité par âge", expanded=False):
                 if not df9.empty:
+                    age_scope_source = df9.copy()
+                    age_scope_label = "Périmètre filtré"
+                    age_period_mode = st.radio(
+                        "Période d’analyse",
+                        ["Périmètre filtré", "4 dernières semaines", "Dernière semaine disponible"],
+                        horizontal=True,
+                        key="idsr_age_period_mode",
+                    )
+                    if age_period_mode == "4 dernières semaines":
+                        age_recent_weeks = _idsr_recent_weeks(
+                            df9_base.copy() if ("df9_base" in locals() and not df9_base.empty) else df9.copy(),
+                            last_n=4,
+                        )
+                        age_scope_candidate = _idsr_filter_to_recent_weeks(
+                            df9_base.copy() if ("df9_base" in locals() and not df9_base.empty) else df9.copy(),
+                            age_recent_weeks,
+                        )
+                        if not age_scope_candidate.empty:
+                            age_scope_source = age_scope_candidate
+                            if not age_recent_weeks.empty:
+                                age_scope_label = f"{age_recent_weeks.iloc[0]['TIME_LAB']} -> {age_recent_weeks.iloc[-1]['TIME_LAB']}"
+                    elif age_period_mode == "Dernière semaine disponible" and "df_last_week" in locals() and not df_last_week.empty:
+                        age_scope_source = df_last_week.copy()
+                        age_scope_label = str(last_lab_focus) if "last_lab_focus" in locals() else "Dernière semaine"
+
+                    st.caption(f"Période lue: {age_scope_label}")
+
                     # Colonnes attendues (agrégé IDSR) : Cas_* et Deces_* par tranche
                     age_cases_map = {
                         "Cas_tnn": "<1 mois",
@@ -3496,10 +4318,10 @@ def render_idsr_tab(ctx: dict) -> None:
                     }
                     rows_age = []
                     for c_col, label in age_cases_map.items():
-                        if c_col in df9.columns:
-                            cas = pd.to_numeric(df9[c_col], errors="coerce").sum(skipna=True)
-                            d_col = [k for k, v in age_deaths_map.items() if v == label and k in df9.columns]
-                            dec = pd.to_numeric(df9[d_col[0]], errors="coerce").sum(skipna=True) if d_col else np.nan
+                        if c_col in age_scope_source.columns:
+                            cas = pd.to_numeric(age_scope_source[c_col], errors="coerce").sum(skipna=True)
+                            d_col = [k for k, v in age_deaths_map.items() if v == label and k in age_scope_source.columns]
+                            dec = pd.to_numeric(age_scope_source[d_col[0]], errors="coerce").sum(skipna=True) if d_col else np.nan
                             rows_age.append({"Tranche d'âge": label, "Cas": cas, "Décès": dec})
                     df_age = pd.DataFrame(rows_age)
                     if not df_age.empty:
@@ -3544,10 +4366,10 @@ def render_idsr_tab(ctx: dict) -> None:
                     st.info("Aucune donnée n’est disponible après filtrage pour produire la répartition par âge.")
 
 
-            # 14.2.b) Analyses descriptives IDSR inspirées des listes linéaires
-            with st.expander("07.c · 👥 Détail par maladie, âge et semaine", expanded=False):
+            # 14.2.b) Analyses descriptives IDSR strictement basées sur l'agrégé
+            with st.expander("08.c · 👥 Profils agrégés par maladie, âge et semaine", expanded=False):
                 st.caption(
-                    "Ces analyses détaillent la distribution par maladie, âge et semaine. "
+                    "Ces analyses restent strictement basées sur l’agrégé IDSR et détaillent la distribution par maladie, âge et semaine. "
                     "Les approfondissements géographiques ont été recentrés dans la cartographie et les classements pour alléger la lecture."
                 )
 
@@ -3582,8 +4404,9 @@ def render_idsr_tab(ctx: dict) -> None:
                         fig_mal = apply_plotly_value_annotations(fig_mal, annot_vals)
                         st.plotly_chart(fig_mal, width="stretch", key="idsr_profile_maladie")
                     with c_m2:
+                        df_mal_profile_display = _idsr_displayify_columns(df_mal_profile.assign(**{"CFR_%": df_mal_profile["CFR_%"].round(2)}))
                         st.dataframe(
-                            df_mal_profile.assign(**{"CFR_%": df_mal_profile["CFR_%"].round(2)}),
+                            df_mal_profile_display,
                             width="stretch",
                             height=420,
                             hide_index=True,
@@ -3648,7 +4471,7 @@ def render_idsr_tab(ctx: dict) -> None:
                                 )
                                 .reset_index()
                             )
-                            st.dataframe(age_mal_tab, width="stretch", height=460, hide_index=True)
+                            st.dataframe(_idsr_displayify_columns(age_mal_tab), width="stretch", height=460, hide_index=True)
                     else:
                         st.info("Les colonnes d’âge existent mais ne contiennent pas de volume exploitable après filtrage.")
                 else:
@@ -3689,19 +4512,19 @@ def render_idsr_tab(ctx: dict) -> None:
                                 fill_value=0,
                                 observed=False,
                             ).reset_index()
-                            st.dataframe(wk_mal_wide, width="stretch", height=420, hide_index=True)
+                            st.dataframe(_idsr_displayify_columns(wk_mal_wide), width="stretch", height=420, hide_index=True)
                     else:
                         st.info("Aucune série hebdomadaire exploitable n’est disponible pour les maladies après filtrage.")
                 else:
                     st.info("La dynamique hebdomadaire par maladie est indisponible : colonnes TIME_LAB/TIME_KEY/Maladie/Total_cas absentes.")
 
-            st.markdown("### 08 · Tableaux et exports")
+            st.markdown("### 09 · Tableaux standard et exports")
             st.caption(
-                "Utilisez ces tableaux pour la lecture détaillée, les vérifications territoriales et les exports analytiques."
+                "Utilisez ces tableaux pour la lecture détaillée, les vérifications territoriales et la préparation des sorties de bulletin."
             )
 
             # 14.3) Tableau d’évolution par province et semaine épidémiologique
-            with st.expander("08.a · 📋 Tableau par province et semaine", expanded=False):
+            with st.expander("09.a · 📋 Tableau standard par DPS et semaine", expanded=False):
 
                 # Objectif : Provinces en lignes, Année-Semaine en colonnes, sous-colonnes Cas/Décès/Létalité (%)
                 if (not df9.empty) and (COL_PROV_ID in df9.columns):
@@ -3731,7 +4554,7 @@ def render_idsr_tab(ctx: dict) -> None:
                     # Colonne semaine (unique) : privilégier Année-Semaine si dispo, sinon TIME_KEY, sinon TIME_LAB
                     week_series, _order_key_col = choose_week_column(tmp_pw)
                     if week_series.empty:
-                        st.info("Variables manquantes pour produire le tableau province × semaine (YW/TIME_KEY/TIME_LAB).")
+                        st.info("Variables manquantes pour produire le tableau standard par DPS et semaine : libellé de semaine ou ordre chronologique indisponible.")
                     else:
                         # Construire pivot Cas/Décès/Létalité (%)
                         pivot = build_cases_deaths_cfr_pivot(
@@ -3760,7 +4583,7 @@ def render_idsr_tab(ctx: dict) -> None:
                     st.info("Aucune donnée n’est disponible après filtrage pour produire le tableau province × semaine.")
 
             # 14.4) Tableau croisé – totaux mensuels (Province / ZS)
-            with st.expander("08.b · 📋 Tableau mensuel par province et zone de santé", expanded=False):
+            with st.expander("09.b · 📋 Tableau mensuel par DPS et zone de santé", expanded=False):
 
                 if df9.empty:
                     st.info("Aucune donnée n’est disponible après application des filtres analytiques.")
@@ -3794,7 +4617,7 @@ def render_idsr_tab(ctx: dict) -> None:
                     tmp_m["_dt"] = _get_date_series(tmp_m)
 
                     if tmp_m["_dt"].isna().all():
-                        st.warning("Impossible de construire les mois : aucune date exploitable n’a été détectée (Date_debut_semaine_iso / Date_debut_semaine / DEBUTSEM).")
+                        st.warning("Impossible de construire les mois : aucune date de début de semaine exploitable n’a été détectée.")
                     else:
                         # ---------------------------------------------------------
                         # 1bis) (Optionnel) filtrer dates absurdes pour éviter 1965/2037
@@ -3916,6 +4739,14 @@ def render_idsr_tab(ctx: dict) -> None:
                                 ]
                                 pivot["Données"] = pd.Categorical(pivot["Données"], categories=order_data, ordered=True)
                                 pivot = pivot.sort_values(idx_cols + ["Données"]).reset_index(drop=True)
+                                pivot = _idsr_displayify_columns(
+                                    pivot,
+                                    extra_labels={
+                                        col_mal: "Maladie",
+                                        col_prov: "Province de notification",
+                                        col_zs: "Zone de santé de notification" if col_zs is not None else None,
+                                    },
+                                )
 
                                 # -----------------------------------------------------
                                 # 5) IMPORTANT: rendre les colonnes uniques (Streamlit/PyArrow)

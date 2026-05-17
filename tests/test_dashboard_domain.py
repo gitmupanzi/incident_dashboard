@@ -63,9 +63,19 @@ from dashboard_app.overview import (
 from dashboard_app.tabs.idsr import (
     _build_idsr_completeness_matrices,
     _build_idsr_period_labels,
+    _idsr_build_attack_threshold_tables,
+    _idsr_build_hotspot_tables,
+    _idsr_build_standard_geo_table,
+    _idsr_build_year_week_key_series,
+    _idsr_build_year_week_label_series,
+    _idsr_fill_missing_year_from_week_consensus,
     _load_idsr_workbook,
+    _idsr_recent_weeks,
+    harmonize_idsr_columns,
     idsr_frame_looks_valid,
+    idsr_year_from_debutsem,
     list_available_idsr_files,
+    normalize_idsr_debutsem_column,
 )
 from dashboard_app.tabs.irep import (
     _irep_clean_province_series,
@@ -879,6 +889,26 @@ class NarrativePeriodTest(unittest.TestCase):
 
 
 class IdsrLoadingTest(unittest.TestCase):
+    def _load_real_idsr_bulletin_scope(self):
+        fixture_path = PROJECT_ROOT / "tests" / "IDSR.xlsx"
+        if not fixture_path.exists():
+            self.skipTest("Le fichier de test IDSR.xlsx n'est pas disponible dans tests/.")
+
+        df = _load_idsr_workbook(fixture_path)
+        scope = harmonize_idsr_columns(df.copy())
+        scope = normalize_idsr_debutsem_column(scope)
+        scope["Num_semaine_epid"] = pd.to_numeric(scope.get("Num_semaine_epid"), errors="coerce").astype("Int64")
+
+        year_num = pd.to_numeric(pd.Series(scope.get("Annee_epid"), index=scope.index), errors="coerce")
+        if year_num.isna().all():
+            scope["Annee_epid"] = idsr_year_from_debutsem(scope.get("DEBUTSEM"))
+            year_num = pd.to_numeric(pd.Series(scope.get("Annee_epid"), index=scope.index), errors="coerce")
+
+        week_num = pd.to_numeric(pd.Series(scope.get("Num_semaine_epid"), index=scope.index), errors="coerce")
+        scope["TIME_LAB"] = _idsr_build_year_week_label_series(year_num, week_num)
+        scope["TIME_KEY"] = _idsr_build_year_week_key_series(year_num, week_num)
+        return scope
+
     def test_idsr_frame_validator_accepts_aggregated_shape(self):
         df = pd.DataFrame(
             {
@@ -892,6 +922,19 @@ class IdsrLoadingTest(unittest.TestCase):
         )
 
         self.assertTrue(idsr_frame_looks_valid(df))
+
+    def test_missing_year_is_filled_when_a_week_maps_to_one_observed_year(self):
+        df = pd.DataFrame(
+            {
+                "Annee_epid": pd.Series([2026, pd.NA, 2025, pd.NA], dtype="Int64"),
+                "Num_semaine_epid": pd.Series([18, 18, 17, 19], dtype="Int64"),
+            }
+        )
+
+        out = _idsr_fill_missing_year_from_week_consensus(df)
+
+        self.assertEqual(int(out.loc[1, "Annee_epid"]), 2026)
+        self.assertTrue(pd.isna(out.loc[3, "Annee_epid"]))
 
     def test_load_idsr_workbook_rejects_non_idsr_workbook(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -934,6 +977,88 @@ class IdsrLoadingTest(unittest.TestCase):
             out = list_available_idsr_files([idsr_path, ll_path])
 
             self.assertEqual(out, [idsr_path])
+
+    def test_load_idsr_workbook_accepts_real_fixture_from_tests_folder(self):
+        fixture_path = PROJECT_ROOT / "tests" / "IDSR.xlsx"
+        if not fixture_path.exists():
+            self.skipTest("Le fichier de test IDSR.xlsx n'est pas disponible dans tests/.")
+
+        df = _load_idsr_workbook(fixture_path)
+
+        self.assertFalse(df.empty)
+        self.assertTrue(idsr_frame_looks_valid(df))
+        self.assertGreaterEqual(len(df), 1)
+        self.assertTrue(
+            {"PROV", "ZS", "NUMSEM", "DEBUTSEM", "TOTALCAS", "TOTALDECES"}.issubset(df.columns)
+        )
+
+    def test_real_fixture_supports_bulletin_standard_tables(self):
+        scope = self._load_real_idsr_bulletin_scope()
+
+        recent_weeks = _idsr_recent_weeks(scope, last_n=3)
+        self.assertFalse(recent_weeks.empty)
+        self.assertIn("TIME_LAB", recent_weeks.columns)
+        self.assertIn("TIME_KEY", recent_weeks.columns)
+
+        province_table = _idsr_build_standard_geo_table(
+            scope,
+            group_cols=["Province_notification"],
+            recent_weeks=recent_weeks,
+            zs_col="Zone_de_sante_notification",
+        )
+
+        self.assertFalse(province_table.empty)
+        latest_label = str(recent_weeks.iloc[-1]["TIME_LAB"])
+        self.assertTrue(
+            {
+                "Province_notification",
+                "Cas_cumul",
+                "Deces_cumul",
+                f"Cas {latest_label}",
+                f"Deces {latest_label}",
+            }.issubset(province_table.columns)
+        )
+
+    def test_real_fixture_supports_bulletin_attack_and_hotspot_helpers(self):
+        scope = self._load_real_idsr_bulletin_scope()
+
+        weekly_threshold, mean_3w, latest_threshold = _idsr_build_attack_threshold_tables(
+            scope,
+            province_col="Province_notification",
+            zs_col="Zone_de_sante_notification",
+            last_n=3,
+        )
+
+        self.assertFalse(weekly_threshold.empty)
+        self.assertFalse(mean_3w.empty)
+        self.assertFalse(latest_threshold.empty)
+        self.assertTrue({"TIME_LAB", "ZS_au_seuil", "ZS_evaluees", "Cas"}.issubset(weekly_threshold.columns))
+        self.assertTrue(
+            {
+                "Province_notification",
+                "Zone_de_sante_notification",
+                "Incidence_moy_3_semaines",
+                "Semaines_au_seuil",
+            }.issubset(mean_3w.columns)
+        )
+
+        province_value = str(scope["Province_notification"].dropna().astype(str).iloc[0])
+        summary, latest_zs, above_avg, silent_zs, detail = _idsr_build_hotspot_tables(
+            scope,
+            province_value=province_value,
+            province_col="Province_notification",
+            zs_col="Zone_de_sante_notification",
+            last_n=3,
+        )
+
+        self.assertIn("latest_label", summary)
+        self.assertIn("reporting_zs_latest", summary)
+        self.assertFalse(latest_zs.empty)
+        self.assertFalse(detail.empty)
+        self.assertIn("Zone_de_sante_notification", latest_zs.columns)
+        self.assertIn("Zone_de_sante_notification", detail.columns)
+        self.assertIsInstance(above_avg, pd.DataFrame)
+        self.assertIsInstance(silent_zs, pd.DataFrame)
 
 
 class AppLoaderValidationTest(unittest.TestCase):
