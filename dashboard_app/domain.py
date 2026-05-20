@@ -1267,6 +1267,591 @@ def inject_professional_dashboard_css() -> None:
         font-size: 0.92rem;
         opacity: 0.92;
     }
+
+    .cousp-hero-grid {
+        display: grid;
+        grid-template-columns: 78px minmax(0, 1fr) minmax(230px, 0.42fr);
+        gap: 1rem;
+        align-items: center;
+        position: relative;
+        z-index: 1;
+    }
+
+    .cousp-hero-flag {
+        width: 68px;
+        height: 68px;
+        border-radius: 18px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.05rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        background: linear-gradient(180deg, rgba(255,255,255,0.24) 0%, rgba(255,255,255,0.10) 100%);
+        border: 1px solid rgba(255,255,255,0.22);
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.10);
+    }
+
+    .cousp-hero-copy {
+        min-width: 0;
+    }
+
+    .cousp-hero-meta {
+        justify-self: end;
+        min-width: 0;
+        padding: 0.95rem 1rem;
+        border-radius: 18px;
+        background: rgba(255,255,255,0.10);
+        border: 1px solid rgba(255,255,255,0.16);
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+    }
+
+    .cousp-hero-meta-label {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        opacity: 0.82;
+        font-weight: 700;
+    }
+
+    .cousp-hero-meta-value {
+        margin-top: 0.32rem;
+        font-size: 1.05rem;
+        font-weight: 800;
+        line-height: 1.2;
+    }
+
+    .cousp-hero-meta-sub {
+        margin-top: 0.32rem;
+        font-size: 0.88rem;
+        opacity: 0.92;
+        line-height: 1.35;
+    }
+
+    .cousp-context-chip {
+        background: rgba(255, 255, 255, 0.92);
+        padding: 0.95rem 1.05rem;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .cousp-context-chip::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 4px;
+        background: linear-gradient(180deg, #2b74ca 0%, #0f438f 100%);
+    }
+
+    .cousp-context-chip .label,
+    .cousp-context-chip .value {
+        padding-left: 0.25rem;
+    }
+
+    .cousp-context-chip .label {
+        color: #4f6381;
+    }
+
+    .cousp-kpi-card {
+        color: var(--cousp-blue-dark);
+        box-shadow: var(--cousp-shadow);
+        border: 1px solid rgba(18, 53, 106, 0.09);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, var(--card-soft, rgba(247, 250, 255, 0.96)) 100%);
+        min-height: 132px;
+        --card-accent: #2b74ca;
+        --card-soft: rgba(234, 243, 255, 0.72);
+    }
+
+    .cousp-kpi-card::before {
+        content: "";
+        position: absolute;
+        inset: 0 0 auto 0;
+        height: 5px;
+        background: linear-gradient(90deg, var(--card-accent) 0%, rgba(255,255,255,0.92) 100%);
+    }
+
+    .cousp-kpi-card::after {
+        inset: auto -14px -18px auto;
+        width: 88px;
+        height: 88px;
+        background: linear-gradient(180deg, color-mix(in srgb, var(--card-accent) 18%, transparent) 0%, color-mix(in srgb, var(--card-accent) 4%, transparent) 100%);
+    }
+
+    .cousp-kpi-card.blue,
+    .cousp-kpi-card.navy,
+    .cousp-kpi-card.orange,
+    .cousp-kpi-card.green,
+    .cousp-kpi-card.amber,
+    .cousp-kpi-card.purple,
+    .cousp-kpi-card.red,
+    .cousp-kpi-card.danger,
+    .cousp-kpi-card.slate {
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, var(--card-soft, rgba(247, 250, 255, 0.96)) 100%) !important;
+        color: var(--cousp-blue-dark) !important;
+    }
+
+    .cousp-kpi-card.blue { --card-accent: #2b74ca; --card-soft: rgba(231, 241, 255, 0.88); }
+    .cousp-kpi-card.navy { --card-accent: #314468; --card-soft: rgba(237, 241, 248, 0.88); }
+    .cousp-kpi-card.orange { --card-accent: #e78a1f; --card-soft: rgba(255, 244, 228, 0.92); }
+    .cousp-kpi-card.green { --card-accent: #179256; --card-soft: rgba(233, 249, 241, 0.92); }
+    .cousp-kpi-card.amber { --card-accent: #f29b38; --card-soft: rgba(255, 246, 231, 0.92); }
+    .cousp-kpi-card.purple { --card-accent: #7b4dff; --card-soft: rgba(242, 237, 255, 0.92); }
+    .cousp-kpi-card.red { --card-accent: #ff4f4f; --card-soft: rgba(255, 238, 238, 0.92); }
+    .cousp-kpi-card.danger { --card-accent: #ea3c3c; --card-soft: rgba(255, 238, 238, 0.94); }
+    .cousp-kpi-card.slate { --card-accent: #6b768d; --card-soft: rgba(241, 244, 249, 0.94); }
+
+    .cousp-kpi-card.compact {
+        min-height: 102px;
+        padding: 0.85rem 0.9rem 0.82rem;
+        background: #ffffff !important;
+        border: 1px solid color-mix(in srgb, var(--card-accent) 22%, rgba(18, 53, 106, 0.08)) !important;
+        box-shadow: 0 8px 18px rgba(18, 53, 106, 0.08);
+        border-radius: 16px;
+    }
+
+    .cousp-kpi-card.compact::before {
+        inset: auto 0 0 0;
+        height: 3px;
+        background: var(--card-accent);
+    }
+
+    .cousp-kpi-card.compact::after {
+        display: none;
+    }
+
+    .cousp-kpi-title {
+        color: #58708f;
+        opacity: 1;
+        font-size: 0.72rem;
+        line-height: 1.2;
+        letter-spacing: 0.11em;
+        font-weight: 800;
+        margin-bottom: 0.34rem;
+    }
+
+    .cousp-kpi-value {
+        color: var(--card-accent);
+        font-size: clamp(1.7rem, 2.8vw, 2.35rem);
+        line-height: 1.02;
+        font-weight: 800;
+        margin-bottom: 0.42rem;
+    }
+
+    .cousp-kpi-subtitle {
+        color: #314968;
+        opacity: 1;
+        font-size: 0.84rem;
+        line-height: 1.22;
+        font-weight: 500;
+    }
+
+    .cousp-kpi-grid .cousp-kpi-card.span-2 .cousp-kpi-value {
+        font-size: clamp(1.85rem, 3vw, 2.45rem);
+    }
+
+    .cousp-kpi-card.compact .cousp-kpi-title {
+        letter-spacing: 0.11em;
+        font-size: 0.62rem;
+        line-height: 1.16;
+        margin-bottom: 0.26rem;
+    }
+
+    .cousp-kpi-card.compact .cousp-kpi-value {
+        font-size: clamp(1.06rem, 1.55vw, 1.55rem);
+        line-height: 1.0;
+        margin-bottom: 0.26rem;
+    }
+
+    .cousp-kpi-card.compact .cousp-kpi-subtitle {
+        font-size: 0.72rem;
+        line-height: 1.15;
+    }
+
+    .cousp-kpi-grid-compact {
+        grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+        gap: 0.62rem;
+        margin-bottom: 0.68rem;
+    }
+
+    .cousp-kpi-grid-summary {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 0.7rem;
+        margin-bottom: 0.8rem;
+    }
+
+    @media (max-width: 1280px) {
+        .cousp-kpi-value,
+        .cousp-kpi-grid .cousp-kpi-card.span-2 .cousp-kpi-value {
+            font-size: clamp(1.55rem, 2.6vw, 2.15rem);
+        }
+
+        .cousp-kpi-card.compact .cousp-kpi-value {
+            font-size: clamp(1rem, 1.45vw, 1.4rem);
+        }
+    }
+
+    @media (max-width: 768px) {
+        .cousp-kpi-title {
+            font-size: 0.68rem;
+        }
+
+        .cousp-kpi-subtitle {
+            font-size: 0.8rem;
+        }
+
+        .cousp-kpi-card.compact .cousp-kpi-title {
+            font-size: 0.6rem;
+        }
+
+        .cousp-kpi-card.compact .cousp-kpi-subtitle {
+            font-size: 0.68rem;
+        }
+    }
+
+    .cousp-chain-panel {
+        background: rgba(255, 255, 255, 0.92);
+        border-radius: 22px;
+        border: 1px solid var(--cousp-border);
+        box-shadow: var(--cousp-shadow);
+        padding: 1rem 1.05rem 1.05rem;
+        margin-bottom: 0.95rem;
+    }
+
+    .cousp-chain-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+        gap: 0.75rem;
+    }
+
+    .cousp-chain-card {
+        background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(247,250,255,0.95) 100%);
+        border-radius: 18px;
+        border: 1px solid rgba(18, 53, 106, 0.08);
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.45);
+        padding: 0.9rem 0.95rem;
+        position: relative;
+        min-height: 112px;
+    }
+
+    .cousp-chain-card::after {
+        content: "";
+        position: absolute;
+        inset: auto 0 0 0;
+        height: 4px;
+        border-radius: 0 0 18px 18px;
+        background: var(--chain-accent, #2b74ca);
+    }
+
+    .cousp-chain-card.blue { --chain-accent: #2b74ca; }
+    .cousp-chain-card.orange { --chain-accent: #f08c24; }
+    .cousp-chain-card.amber { --chain-accent: #f0a33b; }
+    .cousp-chain-card.green { --chain-accent: #27a063; }
+    .cousp-chain-card.purple { --chain-accent: #7b4dff; }
+    .cousp-chain-card.red { --chain-accent: #e84b4b; }
+    .cousp-chain-card.slate { --chain-accent: #5d6d86; }
+
+    .cousp-chain-label {
+        color: #526882;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        font-weight: 700;
+    }
+
+    .cousp-chain-value {
+        margin-top: 0.42rem;
+        color: var(--chain-accent, #2b74ca);
+        font-size: 2rem;
+        line-height: 1;
+        font-weight: 800;
+    }
+
+    .cousp-chain-subtitle {
+        margin-top: 0.42rem;
+        color: #304866;
+        font-size: 0.88rem;
+        line-height: 1.25;
+    }
+
+    .cousp-chain-stepper {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(124px, 1fr));
+        gap: 0.65rem;
+        margin-top: 0.85rem;
+    }
+
+    .cousp-chain-step {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        color: var(--cousp-blue-dark);
+        font-size: 0.86rem;
+        font-weight: 700;
+    }
+
+    .cousp-chain-step .dot {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        display: inline-flex;
+        flex: 0 0 auto;
+    }
+
+    .cousp-chain-step .dot.blue { background: #2b74ca; }
+    .cousp-chain-step .dot.orange { background: #f08c24; }
+    .cousp-chain-step .dot.amber { background: #f0a33b; }
+    .cousp-chain-step .dot.green { background: #27a063; }
+    .cousp-chain-step .dot.purple { background: #7b4dff; }
+    .cousp-chain-step .dot.red { background: #e84b4b; }
+    .cousp-chain-step .dot.slate { background: #5d6d86; }
+
+    .cousp-kv-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.7rem;
+    }
+
+    .cousp-kv-item {
+        background: rgba(255,255,255,0.94);
+        border: 1px solid rgba(18, 53, 106, 0.09);
+        border-radius: 18px;
+        padding: 0.8rem 0.85rem;
+        box-shadow: var(--cousp-shadow);
+    }
+
+    .cousp-kv-label {
+        color: #546a84;
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        font-weight: 700;
+    }
+
+    .cousp-kv-value {
+        margin-top: 0.28rem;
+        color: var(--cousp-blue);
+        font-size: 1.55rem;
+        font-weight: 800;
+        line-height: 1.1;
+    }
+
+    .cousp-kv-sub {
+        margin-top: 0.24rem;
+        color: #354d6b;
+        font-size: 0.84rem;
+        line-height: 1.3;
+    }
+
+    .cousp-mini-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .cousp-mini-table th,
+    .cousp-mini-table td {
+        padding: 0.58rem 0.18rem;
+        text-align: left;
+        border-bottom: 1px solid rgba(18, 53, 106, 0.08);
+        font-size: 0.9rem;
+    }
+
+    .cousp-mini-table th {
+        color: #59708b;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        font-weight: 700;
+    }
+
+    .cousp-mini-table td strong {
+        display: block;
+        color: var(--cousp-blue-dark);
+        line-height: 1.25;
+    }
+
+    .cousp-mini-table td span {
+        color: #5f738d;
+        font-size: 0.8rem;
+    }
+
+    .cousp-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.24rem 0.58rem;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        line-height: 1;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+    }
+
+    .cousp-badge.blue {
+        color: #0f438f;
+        background: #e4efff;
+    }
+
+    .cousp-badge.green {
+        color: #1f7b4c;
+        background: #e6f6ec;
+    }
+
+    .cousp-badge.warning {
+        color: #a55b06;
+        background: #fff0de;
+    }
+
+    .cousp-badge.danger {
+        color: #b13636;
+        background: #ffe8e8;
+    }
+
+    .cousp-progress-list {
+        display: grid;
+        gap: 0.72rem;
+    }
+
+    .cousp-progress-row {
+        display: grid;
+        gap: 0.32rem;
+    }
+
+    .cousp-progress-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.85rem;
+        color: var(--cousp-blue-dark);
+        font-size: 0.9rem;
+    }
+
+    .cousp-progress-top strong {
+        font-size: 0.86rem;
+    }
+
+    .cousp-progress-track {
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        background: #e6edf7;
+        overflow: hidden;
+    }
+
+    .cousp-progress-fill {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: #2b74ca;
+    }
+
+    .cousp-progress-fill.blue { background: linear-gradient(90deg, #2b74ca 0%, #73aef5 100%); }
+    .cousp-progress-fill.orange { background: linear-gradient(90deg, #f08c24 0%, #f5b35d 100%); }
+    .cousp-progress-fill.red { background: linear-gradient(90deg, #e84b4b 0%, #f08f8f 100%); }
+
+    .cousp-action-row {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 0.72rem;
+        align-items: start;
+        padding: 0.2rem 0;
+    }
+
+    .cousp-action-row + .cousp-action-row {
+        margin-top: 0.68rem;
+        padding-top: 0.82rem;
+        border-top: 1px solid rgba(18, 53, 106, 0.08);
+    }
+
+    .cousp-action-copy strong {
+        display: block;
+        color: var(--cousp-blue-dark);
+        line-height: 1.25;
+    }
+
+    .cousp-action-copy span {
+        display: block;
+        margin-top: 0.2rem;
+        color: #536983;
+        font-size: 0.88rem;
+        line-height: 1.35;
+    }
+
+    .cousp-briefing-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.72rem;
+        margin-bottom: 0.85rem;
+    }
+
+    .cousp-briefing-metric {
+        border-radius: 18px;
+        background: rgba(255,255,255,0.98);
+        border: 1px solid rgba(18, 53, 106, 0.08);
+        padding: 0.78rem 0.85rem;
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.45);
+    }
+
+    .cousp-briefing-metric span {
+        display: block;
+        color: #576f8b;
+        font-size: 0.73rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        font-weight: 700;
+    }
+
+    .cousp-briefing-metric strong {
+        display: block;
+        margin-top: 0.28rem;
+        color: var(--cousp-blue-dark);
+        font-size: 1.34rem;
+        line-height: 1.12;
+    }
+
+    .cousp-briefing-metric small {
+        display: block;
+        margin-top: 0.24rem;
+        color: #546b85;
+        font-size: 0.82rem;
+        line-height: 1.3;
+    }
+
+    .cousp-summary-footnote {
+        color: #465d79;
+        font-size: 0.88rem;
+        line-height: 1.45;
+    }
+
+    @media (max-width: 1120px) {
+        .cousp-hero-grid {
+            grid-template-columns: 70px 1fr;
+        }
+
+        .cousp-hero-meta {
+            grid-column: 1 / -1;
+            justify-self: stretch;
+        }
+
+        .cousp-briefing-grid,
+        .cousp-kv-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    @media (max-width: 720px) {
+        .cousp-hero {
+            padding: 1.1rem 1rem;
+        }
+
+        .cousp-hero-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .cousp-hero-flag {
+            width: 62px;
+            height: 62px;
+        }
+    }
 </style>
 """,
         unsafe_allow_html=True,
@@ -1303,6 +1888,54 @@ def render_footer() -> None:
   <div>
     <strong>Ministere de la Sante</strong>
     <span>Tous droits reserves</span>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def _legacy_render_professional_header() -> None:
+    """Affiche le bandeau principal du tableau de bord."""
+    updated_at = datetime.now().strftime("%d/%m/%Y %H:%M")
+    st.markdown(
+        f"""
+<div class="cousp-hero">
+  <div class="cousp-hero-grid">
+    <div class="cousp-hero-flag">RDC</div>
+    <div class="cousp-hero-copy">
+      <div class="cousp-hero-badge">COUSP RDC</div>
+      <h1>TABLEAU DE BORD DES INCIDENTS ÉPIDÉMIOLOGIQUES</h1>
+      <p>République Démocratique du Congo · Ministère de la Santé Publique · Surveillance intégrée</p>
+    </div>
+    <div class="cousp-hero-meta">
+      <div class="cousp-hero-meta-label">Dernière mise à jour</div>
+      <div class="cousp-hero-meta-value">{updated_at}</div>
+      <div class="cousp-hero-meta-sub">Lecture opérationnelle standardisée des line lists, données laboratoire et agrégats hebdomadaires.</div>
+    </div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def _legacy_render_footer() -> None:
+    """Affiche un pied de page professionnel et institutionnel."""
+    st.markdown(
+        """
+<div class="cousp-footer">
+  <div>
+    <strong>COUSP RDC</strong>
+    <span>Surveillance épidémiologique nationale et coordination opérationnelle</span>
+  </div>
+  <div>
+    <strong>Données standardisées pour décisions rapides</strong>
+    <span>Lecture consolidée, qualité des données et priorisation des actions de terrain</span>
+  </div>
+  <div>
+    <strong>Ministère de la Santé Publique</strong>
+    <span>Tableau de bord institutionnel de suivi et d'analyse</span>
   </div>
 </div>
 """,

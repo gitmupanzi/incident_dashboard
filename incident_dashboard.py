@@ -286,6 +286,323 @@ show_sidebar_summary = st.sidebar.checkbox(
 # =========================
 IDSR_MODE = (disease_key == "idsr")
 
+def render_overview_dashboard_v2(
+    df_: pd.DataFrame,
+    files_used: list[str],
+    disease_key: str,
+    use_custom_viz_flag: bool,
+    annotate_values_flag: bool,
+    x_tick_step: int,
+) -> None:
+    """Version enrichie de la page d'accueil inspirée d'un briefing institutionnel."""
+    if df_.empty:
+        st.info("Aucune donnée filtrée n'est disponible pour la synthèse d'accueil.")
+        return
+
+    payload = build_dashboard_kpi_payload(df_)
+    render_context_row(files_used, disease_key, df_, payload)
+    render_dashboard_kpis(payload)
+    render_standards_note()
+
+    weekly = payload.get("weekly", pd.DataFrame())
+    map_state_key = "overview_v2_show_maps"
+    if map_state_key not in st.session_state:
+        st.session_state[map_state_key] = False
+    show_overview_maps = bool(st.session_state.get(map_state_key, False))
+    overview_province_map_mode = "Statique"
+    overview_map_mode_label = list(MAP_ANNOTATION_MODE_OPTIONS.keys())[0]
+    overview_map_threshold = 1
+
+    with st.expander("Options des cartes de synthèse", expanded=False):
+        st.caption("Par défaut, les cartes ne sont pas chargées pour accélérer l'ouverture du tableau de bord.")
+        action_col1, action_col2 = st.columns([0.8, 1.2])
+        with action_col1:
+            if show_overview_maps:
+                if st.button("Masquer les cartes", key="overview_hide_maps_v2"):
+                    st.session_state[map_state_key] = False
+                    st.rerun()
+            else:
+                if st.button("Afficher les cartes", key="overview_show_maps_v2"):
+                    st.session_state[map_state_key] = True
+                    st.rerun()
+        with action_col2:
+            st.write(f"État actuel : **{'cartes chargées' if show_overview_maps else 'cartes masquées'}**")
+
+        if show_overview_maps:
+            overview_province_map_mode = st.radio(
+                "Carte province de synthèse",
+                ["Statique", "Interactive"],
+                index=0,
+                horizontal=True,
+                key="overview_province_map_mode_v2",
+            )
+            overview_map_mode_label = st.selectbox(
+                "Annotations sur les cartes de synthèse",
+                options=list(MAP_ANNOTATION_MODE_OPTIONS.keys()),
+                index=0,
+                key="overview_map_annotation_mode_v2",
+            )
+            overview_map_threshold = st.number_input(
+                "Seuil d'affichage des annotations (valeur >)",
+                min_value=0,
+                max_value=100000,
+                value=1,
+                step=1,
+                key="overview_map_annotation_threshold_v2",
+            )
+
+    overview_map_mode = MAP_ANNOTATION_MODE_OPTIONS[overview_map_mode_label]
+    fig_map_prov = None
+    gdf_map_prov = None
+    df_match_prov = None
+    note_map_prov = "Cartographie non chargée."
+    value_col_prov = None
+    group_col_prov = None
+    fig_map_zs = None
+    note_map_zs = "Cartographie non chargée."
+    if show_overview_maps:
+        province_map_payload = prepare_overview_map_data(df_, level="province", match_threshold=0.90)
+        gdf_map_prov, df_match_prov, note_map_prov, value_col_prov, group_col_prov, _ = province_map_payload
+        if overview_province_map_mode == "Statique":
+            fig_map_prov, note_map_prov = build_static_map_overview(
+                df_,
+                level="province",
+                annotation_mode=overview_map_mode,
+                annotation_threshold=float(overview_map_threshold),
+            )
+        fig_map_zs, note_map_zs = build_static_map_overview(
+            df_,
+            level="zone",
+            annotation_mode=overview_map_mode,
+            annotation_threshold=float(overview_map_threshold),
+        )
+
+    c1, c2, c3 = st.columns([1.05, 1.35, 1.35])
+    with c1:
+        st.markdown("<div class='cousp-panel-title'>Indicateurs clés de la semaine</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div class='cousp-summary-box'><div class='summary-lead'>Bloc de synthèse opérationnelle</div></div>",
+            unsafe_allow_html=True,
+        )
+        w1, w2 = st.columns(2)
+        latest = payload.get("latest", {})
+        previous = payload.get("previous", {})
+        with w1:
+            st.metric(
+                "Cas semaine",
+                format_metric_value(latest.get("Cas", np.nan)),
+                format_pct_delta(latest.get("Cas", np.nan), previous.get("Cas", np.nan)),
+            )
+            st.metric(
+                "CFR semaine",
+                format_metric_value(latest.get("Létalité (%)", np.nan), decimals=2, suffix="%"),
+                format_pct_delta(latest.get("Létalité (%)", np.nan), previous.get("Létalité (%)", np.nan)),
+            )
+        with w2:
+            st.metric(
+                "Décès semaine",
+                format_metric_value(latest.get("Décès", np.nan)),
+                format_pct_delta(latest.get("Décès", np.nan), previous.get("Décès", np.nan)),
+            )
+            st.metric(
+                f"Admission <= {get_session_int('seuil_jours', 2)} jours",
+                format_metric_value(payload.get("promptitude_pct"), decimals=1, suffix="%"),
+                f"n={payload.get('promptitude_n', 0)}",
+            )
+
+        st.write(f"Province la plus notifiée : **{payload.get('top_province', 'non disponible')}**")
+        st.write(f"Zone de santé la plus notifiée : **{payload.get('top_zs', 'non disponible')}**")
+        st.write(
+            f"Fenêtre couverte : **{format_range_label_for_display(payload.get('week_span', '-'))}** avec **{format_metric_value(payload.get('cases', 0))}** cas analysés."
+        )
+        render_delay_snapshot_panel(payload)
+
+    with c2:
+        if not show_overview_maps:
+            st.info("Cartes non chargées. Utilisez `Options des cartes de synthèse` pour les afficher.")
+        elif overview_province_map_mode == "Interactive":
+            render_interactive_map_overview(
+                "Carte interactive par province",
+                gdf_join=gdf_map_prov,
+                df_map=df_match_prov,
+                note=note_map_prov,
+                value_col=value_col_prov,
+                source_df=df_,
+                source_label_col=group_col_prov,
+                chart_key="overview_province_map_v2",
+                clicked_state_key="map_clicked_province",
+                filter_state_key="prov_sel",
+                height=540,
+            )
+        else:
+            render_static_map_overview("Carte statique par province", fig_map_prov, note_map_prov)
+
+    with c3:
+        if not show_overview_maps:
+            st.info("Cartes non chargées. Utilisez `Options des cartes de synthèse` pour les afficher.")
+        else:
+            render_static_map_overview("Carte statique par zone de santé", fig_map_zs, note_map_zs)
+
+    d1, d2 = st.columns(2)
+    with d1:
+        st.markdown("<div class='cousp-panel-title'>Surveillance temporelle hebdomadaire</div>", unsafe_allow_html=True)
+        if weekly.empty:
+            st.info("Série hebdomadaire indisponible.")
+        else:
+            fig_surveillance = build_weekly_cases_deaths_combo(
+                weekly_df=weekly,
+                x_col="label",
+                cases_col="Cas",
+                deaths_col="Décès",
+                titre=" ",
+                x_titre="Semaine épidémiologique",
+                y_titre_cas="Nombre de cas",
+                y_titre_deces="Nombre de décès",
+                rotation=0,
+                annot_bars=annotate_values_flag,
+                annot_line=annotate_values_flag,
+            )
+            if fig_surveillance is not None and x_tick_step > 1 and len(weekly) > x_tick_step:
+                fig_surveillance.update_xaxes(
+                    tickmode="array",
+                    tickvals=weekly["label"].iloc[:: max(int(x_tick_step), 1)],
+                    ticktext=weekly["label"].iloc[:: max(int(x_tick_step), 1)],
+                )
+            st_plot(fig_surveillance, key="overview_weekly_surveillance_v2", annotate_values=annotate_values_flag)
+
+    with d2:
+        st.markdown("<div class='cousp-panel-title'>Tendance hebdomadaire des cas et de la létalité observée</div>", unsafe_allow_html=True)
+        if weekly.empty:
+            st.info("Tendance hebdomadaire indisponible.")
+        else:
+            week_col = resolve_week_column(df_)
+            fig_combo = build_weekly_cases_cfr_combo(
+                df=df_,
+                week_col=week_col,
+                death_col="is_death",
+                titre="",
+                rotation=45,
+                annot_bars=annotate_values_flag,
+                annot_line=annotate_values_flag,
+                pas_x=int(x_tick_step) if week_col in [COL_WNUM, "YW"] else None,
+                taille_fig=(1400, 550),
+            )
+            st_plot(fig_combo, key="overview_weekly_combo_v2", annotate_values=annotate_values_flag)
+
+    p1, p2, p3 = st.columns([1.3, 0.95, 1.15])
+    with p1:
+        st.markdown("<div class='cousp-panel-title'>Distribution géographique des notifications</div>", unsafe_allow_html=True)
+        geo_col = COL_PROV if COL_PROV in df_.columns and df_[COL_PROV].notna().any() else COL_ZS
+        if geo_col in df_.columns and df_[geo_col].notna().any():
+            geo_tbl = build_frequency_table(df_, geo_col, top_n=10).sort_values("n", ascending=True)
+            fig_geo = px.bar(
+                geo_tbl,
+                x="n",
+                y=geo_col,
+                orientation="h",
+                text="n" if annotate_values_flag else None,
+                color="n",
+                color_continuous_scale=["#dbe8f9", "#2b74ca"],
+                labels={geo_col: "Lieu", "n": "Nombre de cas"},
+            )
+            fig_geo.update_layout(coloraxis_showscale=False, title=" ")
+            st_plot(fig_geo, key="overview_geo_distribution_v2", annotate_values=annotate_values_flag)
+        else:
+            st.info("Aucune variable géographique exploitable n'a été détectée.")
+
+    with p2:
+        st.markdown("<div class='cousp-panel-title'>Répartition par sexe</div>", unsafe_allow_html=True)
+        if COL_SEX in df_.columns and df_[COL_SEX].notna().any():
+            sex_tbl = build_frequency_table(df_, COL_SEX)
+            fig_sex = px.pie(
+                sex_tbl,
+                names=COL_SEX,
+                values="n",
+                hole=0.62,
+                color=COL_SEX,
+                color_discrete_map=SEX_COLOR_MAP,
+            )
+            st_plot(fig_sex, key="overview_sex_pie_v2", annotate_values=annotate_values_flag)
+        else:
+            st.info("La variable Sexe est absente ou vide.")
+
+    with p3:
+        st.markdown("<div class='cousp-panel-title'>Répartition par âge</div>", unsafe_allow_html=True)
+        years = infer_age_years_generic(df_)
+        if years.notna().any():
+            age_hist = pd.DataFrame({"Age_en_ans": years.dropna()})
+            fig_age = px.histogram(
+                age_hist,
+                x="Age_en_ans",
+                nbins=18,
+                color_discrete_sequence=["#2d7d46"],
+                title=" ",
+            )
+            st_plot(fig_age, key="overview_age_hist_v2", annotate_values=annotate_values_flag)
+        else:
+            age_col = pick_age_col(df_)
+            if age_col is None:
+                st.info("Aucune information d'âge exploitable n'est disponible.")
+            else:
+                age_tbl = build_frequency_table(df_, age_col)
+                fig_age = px.bar(age_tbl, x=age_col, y="n", color_discrete_sequence=["#2d7d46"])
+                fig_age.update_layout(xaxis_tickangle=-35)
+                st_plot(fig_age, key="overview_age_bar_v2", annotate_values=annotate_values_flag)
+
+    p4, p5 = st.columns([1.55, 1.0])
+    with p4:
+        st.markdown("<div class='cousp-panel-title'>Pyramide âge-sexe</div>", unsafe_allow_html=True)
+        df_pyr = df_.copy()
+        df_pyr["Tranche_age_5ans_dashboard"] = derive_age_5yr_generic(df_pyr)
+        if use_custom_viz_flag and HAS_CUSTOM_VIZ and COL_SEX in df_pyr.columns and df_pyr["Tranche_age_5ans_dashboard"].notna().any():
+            fig_pyr = plot_pyramide_symetrique(
+                df=df_pyr,
+                col_categorie="Tranche_age_5ans_dashboard",
+                col_groupe=COL_SEX,
+                valeurs_neg=["Masculin", "Homme", "M"],
+                titre=None,
+                seuil_min=0,
+                croissant=True,
+                afficher_signe_negatif_dans_label=False,
+            )
+            if fig_pyr is not None:
+                fig_pyr.update_layout(
+                    height=430,
+                    margin=dict(t=18, b=44, l=72, r=56),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+                    uniformtext_minsize=8,
+                    uniformtext_mode="hide",
+                    barmode="relative",
+                )
+                fig_pyr.update_xaxes(automargin=True)
+                fig_pyr.update_yaxes(automargin=True)
+            st_plot(fig_pyr, key="overview_pyramid_v2", height=430, annotate_values=False)
+        else:
+            st.info("Pyramide indisponible : variables Age/Sexe insuffisantes.")
+
+    with p5:
+        st.markdown("<div class='cousp-panel-title'>Distribution par tranche d'âge</div>", unsafe_allow_html=True)
+        df_age_group = df_.copy()
+        age_group_col = pick_age_col(df_age_group)
+        if age_group_col is None:
+            df_age_group["Tranche_age_4cat_dashboard"] = derive_age_4cat_generic(df_age_group)
+            age_group_col = "Tranche_age_4cat_dashboard"
+
+        if age_group_col in df_age_group.columns and df_age_group[age_group_col].notna().any():
+            age_group_tbl = build_frequency_table(df_age_group, age_group_col)
+            fig_age_group = px.bar(
+                age_group_tbl,
+                x=age_group_col,
+                y="n",
+                text="n" if annotate_values_flag else None,
+                color_discrete_sequence=["#d97b16"],
+                title=" ",
+            )
+            fig_age_group.update_layout(xaxis_tickangle=-35)
+            st_plot(fig_age_group, key="overview_age_group_v2", annotate_values=annotate_values_flag)
+        else:
+            st.info("Les classes d'âge ne sont pas disponibles.")
+
 if not IDSR_MODE:
     source_ready = False
     source_message = ""
@@ -987,7 +1304,7 @@ else:
 # =========================
 # TABS
 # =========================
-def render_overview_dashboard(
+def _legacy_render_overview_dashboard(
     df_: pd.DataFrame,
     files_used: list[str],
     disease_key: str,
@@ -1268,7 +1585,7 @@ def render_overview_dashboard(
             st.info("Les classes d'âge ne sont pas disponibles.")
 
 if not IDSR_MODE:
-    render_overview_dashboard(
+    render_overview_dashboard_v2(
         df_=df_f,
         files_used=files_used,
         disease_key=disease_key,

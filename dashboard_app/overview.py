@@ -1,3 +1,5 @@
+import html
+
 from dashboard_app.domain import (
     AGE_UNIT_DAY_PATTERN,
     AGE_UNIT_MONTH_PATTERN,
@@ -184,7 +186,7 @@ from dashboard_app.domain import (
 from dashboard_app.core import _normalize_metric_alias_columns
 
 def tab_help(title: str, md: str, expanded: bool = False):
-    with st.expander(f"ℹ️ {title}", expanded=expanded):
+    with st.expander(f"ℹ {title}", expanded=expanded):
         st.markdown(md)
 
 
@@ -635,6 +637,11 @@ def build_weekly_overview_table(df_: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["order_key", "label", "Cas", "Décès", "Létalité (%)"])
 
     weekly = df_.copy()
+    weekly["_death_flag"] = (
+        pd.to_numeric(weekly["is_death"], errors="coerce").fillna(0).astype(int)
+        if "is_death" in weekly.columns
+        else 0
+    )
     if week_col == "YW":
         weekly = weekly[weekly["YW"].notna()].copy()
         weekly["order_key"] = weekly["YW"].astype(str)
@@ -654,7 +661,7 @@ def build_weekly_overview_table(df_: pd.DataFrame) -> pd.DataFrame:
 
     grouped = (
         weekly.groupby(["order_key", "label"], as_index=False)
-        .agg(Cas=("label", "size"), Décès=("is_death", "sum"))
+        .agg(Cas=("label", "size"), Décès=("_death_flag", "sum"))
         .sort_values("order_key")
     )
     grouped["Létalité (%)"] = np.where(grouped["Cas"] > 0, grouped["Décès"] / grouped["Cas"] * 100.0, np.nan)
@@ -667,6 +674,72 @@ def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
     kpi = compute_indicators(df_)
     weekly = build_weekly_overview_table(df_)
     weekly = _normalize_metric_alias_columns(weekly)
+    classification_counts = _build_classification_counts(df_)
+    issue_counts = _build_issue_counts(df_)
+    lab_counts = _build_lab_counts(df_, kpi)
+    quality_focus = _build_quality_focus_metrics(df_)
+    delay_focus = _build_delay_focus_metrics(df_)
+    hotspots = _build_hotspots_table(df_)
+    priority_actions = _build_priority_actions(df_)
+
+    surveillance_chain = [
+        {
+            "label": "Notifications",
+            "value": int(kpi["n_cases"]),
+            "subtitle": "Cas filtrés",
+            "theme": "blue",
+            "color": "#2b74ca",
+        },
+        {
+            "label": "Suspects",
+            "value": int(classification_counts.get("Suspect", 0)),
+            "subtitle": "Classification standardisée",
+            "theme": "orange",
+            "color": "#f29b38",
+        },
+        {
+            "label": "Probables",
+            "value": int(classification_counts.get("Probable", 0)),
+            "subtitle": "Classification standardisée",
+            "theme": "amber",
+            "color": "#f2a53a",
+        },
+        {
+            "label": "Confirmés",
+            "value": int(classification_counts.get("Confirmé", 0)),
+            "subtitle": "Cas confirmés",
+            "theme": "green",
+            "color": "#27a063",
+        },
+        {
+            "label": "Prélevés",
+            "value": int(lab_counts.get("preleves", 0)),
+            "subtitle": "Prélèvement documenté",
+            "theme": "purple",
+            "color": "#7b4dff",
+        },
+        {
+            "label": "Positifs labo",
+            "value": int(lab_counts.get("positifs", 0)),
+            "subtitle": "Résultats positifs",
+            "theme": "red",
+            "color": "#e84b4b",
+        },
+        {
+            "label": "Décès",
+            "value": int(issue_counts.get("Décédé", 0)),
+            "subtitle": "Issue documentée",
+            "theme": "slate",
+            "color": "#5d6d86",
+        },
+        {
+            "label": "Guéris",
+            "value": int(issue_counts.get("Guéri", 0)),
+            "subtitle": "Issue documentée",
+            "theme": "green",
+            "color": "#1f8d57",
+        },
+    ]
 
     provinces_epid = get_provinces_epid()
     total_provinces = len(EPIDEMIE)
@@ -716,6 +789,14 @@ def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
         "analysis_period": analysis_period,
         "top_province": _safe_top_label(df_, COL_PROV),
         "top_zs": _safe_top_label(df_, COL_ZS),
+        "classification_counts": classification_counts,
+        "issue_counts": issue_counts,
+        "lab_counts": lab_counts,
+        "quality_focus": quality_focus,
+        "delay_focus": delay_focus,
+        "hotspots": hotspots,
+        "priority_actions": priority_actions,
+        "surveillance_chain": surveillance_chain,
     }
 
 
@@ -755,41 +836,640 @@ def render_context_row(files_used: list[str], disease_key: str, df_: pd.DataFram
 def build_dashboard_kpi_card_html(title: str, value: str, subtitle: str, theme: str, span: int = 1) -> str:
     """Construit une carte KPI HTML pour la bande de synthèse principale."""
     span_class = " span-2" if int(span) >= 2 else ""
+    title_html = html.escape(str(title))
+    value_html = html.escape(str(value))
+    subtitle_html = html.escape(str(subtitle))
     return f"""
 <div class="cousp-kpi-card {theme}{span_class}">
-  <div class="cousp-kpi-title">{title}</div>
-  <div class="cousp-kpi-value">{value}</div>
-  <div class="cousp-kpi-subtitle">{subtitle}</div>
+  <div class="cousp-kpi-title">{title_html}</div>
+  <div class="cousp-kpi-value">{value_html}</div>
+  <div class="cousp-kpi-subtitle">{subtitle_html}</div>
 </div>
 """
+
+
+def _get_surveillance_value(payload: Dict[str, Any], label_key: str, default: Optional[int] = None) -> Optional[int]:
+    """Retourne la valeur d'un indicateur de chaîne de surveillance si présent."""
+    label_norm = _norm_key(str(label_key))
+    for item in payload.get("surveillance_chain", []):
+        item_label = _norm_key(str(item.get("label", "")))
+        if label_norm == item_label:
+            raw_value = item.get("value")
+            if raw_value is None:
+                return default
+            try:
+                return int(raw_value)
+            except Exception:
+                return default
+    return default
+
+
+def _estimate_alive_issue_count(payload: Dict[str, Any]) -> int:
+    """Estime les vivants à partir des issues documentées si disponibles."""
+    issue_counts = payload.get("issue_counts", {}) or {}
+    if not issue_counts:
+        return max(int(payload.get("cases", 0) or 0) - int(payload.get("deaths", 0) or 0), 0)
+
+    alive_tokens = ("guer", "vivan", "trait", "sort", "en cours", "alive", "surviv")
+    unknown_tokens = ("non document", "inconnu", "unknown", "missing")
+    death_tokens = ("deced", "deces", "decede", "decede", "mort", "death", "dead")
+
+    alive_total = 0
+    documented_non_death = 0
+    for key, value in issue_counts.items():
+        key_norm = _norm_key(str(key))
+        value_int = int(value or 0)
+        if any(token in key_norm for token in death_tokens):
+            continue
+        if any(token in key_norm for token in unknown_tokens):
+            continue
+        documented_non_death += value_int
+        if any(token in key_norm for token in alive_tokens):
+            alive_total += value_int
+
+    if alive_total > 0:
+        return alive_total
+    if documented_non_death > 0:
+        return documented_non_death
+    return max(int(payload.get("cases", 0) or 0) - int(payload.get("deaths", 0) or 0), 0)
 
 
 def render_dashboard_kpis(payload: Dict[str, Any]) -> None:
     """Affiche la ligne horizontale des KPI principaux."""
     payload = {**payload, "week_span": format_range_label_for_display(payload.get("week_span", "-"))}
     cards = [
-        ("Total cas", format_metric_value(payload.get("cases", 0)), "Périmètre filtré", "blue", 1),
-        ("Total décès", format_metric_value(payload.get("deaths", 0)), "Périmètre filtré", "navy", 1),
-        ("CFR (%)", format_metric_value(payload.get("cfr"), decimals=2), "Létalité observée", "orange", 1),
-        ("Semaine min → max", payload.get("week_span", "-"), "Fenêtre analytique", "blue", 2),
-        (
-            "Provinces épidémiques",
-            f"{payload.get('reported_epid_provinces', 0)} / {payload.get('total_provinces_epid', 0)}",
-            "-" if pd.isna(payload.get("coverage_epid_pct")) else f"{payload.get('coverage_epid_pct', 0):.1f}% de couverture",
-            "green",
-            1,
-        ),
+        ("Total cas", format_metric_value(payload.get("cases", 0)), "Périmètre filtré", "blue compact", 1),
+        ("Total décès", format_metric_value(payload.get("deaths", 0)), "Périmètre filtré", "navy compact", 1),
+        ("CFR (%)", format_metric_value(payload.get("cfr"), decimals=2), "Létalité observée", "orange compact", 1),
+        ("Période", payload.get("week_span", "-"), "Fenêtre analytique", "blue compact", 2),
         (
             "Couverture nationale",
             f"{payload.get('reported_provinces', 0)} / {payload.get('total_provinces', 0)}",
             "-" if pd.isna(payload.get("coverage_nat_pct")) else f"{payload.get('coverage_nat_pct', 0):.1f}% de couverture",
-            "green",
+            "green compact",
             1,
         ),
-        ("Zones de santé touchées", format_metric_value(payload.get("reported_zs", 0)), "Notifications consolidées", "green", 1),
+        ("ZS touchées", format_metric_value(payload.get("reported_zs", 0)), "Notifications consolidées", "green compact", 1),
+        ("Probables", format_metric_value(_get_surveillance_value(payload, "Cas probables", 0)), "Classification disponible", "orange compact", 1),
+        ("Suspects", format_metric_value(_get_surveillance_value(payload, "Cas suspects", 0)), "Classification disponible", "amber compact", 1),
+        ("Positifs", format_metric_value(_get_surveillance_value(payload, "Cas positifs", 0)), "Résultats labo", "red compact", 1),
+        ("Négatifs", format_metric_value(_get_surveillance_value(payload, "Cas negatifs", 0)), "Résultats labo", "green compact", 1),
+        ("Invalides", format_metric_value(_get_surveillance_value(payload, "Resultats invalides", 0)), "Analyses non concluantes", "slate compact", 1),
+        ("Guéris", format_metric_value(_estimate_alive_issue_count(payload)), "Vivants documentés", "green compact", 1),
     ]
     cards_html = "".join(build_dashboard_kpi_card_html(*card) for card in cards)
-    st.markdown(f"<div class='cousp-kpi-grid'>{cards_html}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='cousp-kpi-grid cousp-kpi-grid-compact'>{cards_html}</div>", unsafe_allow_html=True)
+
+
+def _clean_count_series(series: pd.Series, fallback_label: str = "Non documenté") -> pd.Series:
+    """Normalise une série textuelle pour des comptages robustes."""
+    return (
+        series.astype("string")
+        .fillna(fallback_label)
+        .str.strip()
+        .replace({"": fallback_label})
+    )
+
+
+def _extract_lab_result_series(df_: pd.DataFrame) -> pd.Series:
+    """Retourne la meilleure série de résultats labo normalisés disponible."""
+    if COL_TDRR in df_.columns and df_[COL_TDRR].notna().any():
+        return _tdr_result_norm(df_[COL_TDRR])
+    if "Resultat_labo" in df_.columns and df_["Resultat_labo"].notna().any():
+        return _tdr_result_norm(df_["Resultat_labo"])
+    return pd.Series(pd.NA, index=df_.index, dtype="string")
+
+
+def _build_classification_counts(df_: pd.DataFrame) -> dict[str, int]:
+    """Compte les grandes classes épidémiologiques standardisées."""
+    if "Classification_finale_std" in df_.columns and df_["Classification_finale_std"].notna().any():
+        series = _clean_count_series(df_["Classification_finale_std"])
+    elif COL_CLASS in df_.columns:
+        series = _clean_count_series(df_[COL_CLASS])
+    else:
+        return {}
+    counts = series.value_counts(dropna=False)
+    return {str(key): int(value) for key, value in counts.items()}
+
+
+def _build_issue_counts(df_: pd.DataFrame) -> dict[str, int]:
+    """Compte les issues standardisées disponibles."""
+    if "Issue_std" in df_.columns and df_["Issue_std"].notna().any():
+        series = _clean_count_series(df_["Issue_std"])
+    elif COL_ISSUE in df_.columns:
+        series = _clean_count_series(df_[COL_ISSUE])
+    else:
+        return {}
+    counts = series.value_counts(dropna=False)
+    return {str(key): int(value) for key, value in counts.items()}
+
+
+def _build_lab_counts(df_: pd.DataFrame, kpi: Dict[str, Any]) -> dict[str, int]:
+    """Construit les principaux volumes de la chaîne laboratoire."""
+    result_series = _extract_lab_result_series(df_)
+    result_norm = _clean_count_series(result_series, fallback_label="Non documenté")
+    valid_mask = result_norm.isin(TDR_POS_SET.union(TDR_NEG_SET))
+    invalid_mask = result_norm.isin({"indetermine", "invalide", "invalid", "inba", "bande absente"})
+    waiting_mask = result_norm.isin({"en attente", "non teste"})
+    positive_mask = result_norm.isin(TDR_POS_SET)
+    negative_mask = result_norm.isin(TDR_NEG_SET)
+    received_count = int(pd.to_datetime(df_[DATE_RECEP], errors="coerce").notna().sum()) if DATE_RECEP in df_.columns else 0
+
+    return {
+        "preleves": int(kpi.get("prelev_num", 0) or 0),
+        "recus": received_count,
+        "tests_documentes": int(kpi.get("tdr_num", 0) or 0),
+        "resultats_valides": int(valid_mask.sum()),
+        "analyses": int((valid_mask | invalid_mask).sum()),
+        "positifs": int(positive_mask.sum()),
+        "negatifs": int(negative_mask.sum()),
+        "invalides": int(invalid_mask.sum()),
+        "en_attente": int(waiting_mask.sum()),
+    }
+
+
+def _build_alert_proxy_counts(df_: pd.DataFrame, classification_counts: dict[str, int]) -> dict[str, Any]:
+    """Construit des proxies simples de chaîne d'alerte pour les line lists."""
+    notified_alerts = int(len(df_))
+    if "Classification_finale_std" in df_.columns and df_["Classification_finale_std"].notna().any():
+        classification_series = _clean_count_series(df_["Classification_finale_std"])
+    elif COL_CLASS in df_.columns and df_[COL_CLASS].notna().any():
+        classification_series = _clean_count_series(df_[COL_CLASS])
+    else:
+        classification_series = None
+
+    verified_alerts = None
+    if classification_series is not None:
+        verified_alerts = int((~classification_series.isin(["Non cas", "Non documenté"])).sum())
+
+    return {
+        "notified_alerts": notified_alerts,
+        "verified_alerts": verified_alerts,
+        "has_classification": classification_series is not None,
+    }
+
+
+def _build_quality_focus_metrics(df_: pd.DataFrame) -> list[dict[str, Any]]:
+    """Prépare quelques indicateurs simples de qualité pour l'accueil."""
+    n_total = max(int(len(df_)), 1)
+
+    age_years = infer_age_years_generic(df_)
+    age_missing_pct = float(age_years.isna().mean() * 100.0) if len(age_years) else 0.0
+
+    if COL_SEX in df_.columns:
+        sex_missing = df_[COL_SEX].isna() | df_[COL_SEX].astype("string").str.strip().eq("")
+        sex_missing_pct = float(sex_missing.mean() * 100.0)
+    else:
+        sex_missing_pct = 100.0
+
+    if COL_ZS in df_.columns:
+        geo_missing = df_[COL_ZS].isna() | df_[COL_ZS].astype("string").str.strip().eq("")
+        geo_missing_pct = float(geo_missing.mean() * 100.0)
+    else:
+        geo_missing_pct = 100.0
+
+    suspect_mask = (
+        df_["Classification_finale_std"].astype("string").eq("Suspect")
+        if "Classification_finale_std" in df_.columns
+        else pd.Series(False, index=df_.index)
+    )
+    if COL_PREL in df_.columns and suspect_mask.any():
+        prelev_yes = _is_yes_series(df_[COL_PREL])
+        suspects_without_sample_pct = float(((suspect_mask & ~prelev_yes).sum() / max(int(suspect_mask.sum()), 1)) * 100.0)
+    else:
+        suspects_without_sample_pct = 0.0
+
+    result_norm = _extract_lab_result_series(df_)
+    prelev_yes_global = _is_yes_series(df_[COL_PREL]) if COL_PREL in df_.columns else pd.Series(False, index=df_.index)
+    if len(result_norm):
+        result_available = result_norm.isin(TDR_POS_SET.union(TDR_NEG_SET).union({"indetermine"}))
+        prelev_without_result_pct = float(((prelev_yes_global & ~result_available).sum() / max(int(prelev_yes_global.sum()), 1)) * 100.0) if prelev_yes_global.any() else 0.0
+    else:
+        prelev_without_result_pct = 0.0
+
+    duplicate_pct = float(df_["duplicate_potential"].fillna(False).mean() * 100.0) if "duplicate_potential" in df_.columns else 0.0
+    chrono_pct = float(df_["chronologie_invalide"].fillna(False).mean() * 100.0) if "chronologie_invalide" in df_.columns else 0.0
+
+    metrics = [
+        {"label": "Cas sans âge", "value": round(age_missing_pct, 1), "theme": "blue"},
+        {"label": "Cas sans sexe", "value": round(sex_missing_pct, 1), "theme": "blue"},
+        {"label": "Cas sans zone de santé", "value": round(geo_missing_pct, 1), "theme": "blue"},
+        {"label": "Suspects sans prélèvement", "value": round(suspects_without_sample_pct, 1), "theme": "orange"},
+        {"label": "Prélèvements sans résultat", "value": round(prelev_without_result_pct, 1), "theme": "orange"},
+        {"label": "Doublons potentiels", "value": round(duplicate_pct, 1), "theme": "red"},
+        {"label": "Chronologie invalide", "value": round(chrono_pct, 1), "theme": "red"},
+    ]
+    return metrics
+
+
+def _build_delay_focus_metrics(df_: pd.DataFrame) -> list[dict[str, Any]]:
+    """Sélectionne quelques délais clés pour le résumé opérationnel."""
+    labels = {
+        "Début → notification": "Notification",
+        "Notification → investigation": "Investigation",
+        "Début → prélèvement": "Prélèvement",
+        "Prélèvement → résultat": "Résultat",
+    }
+    delay_summary = build_standard_delay_summary(df_)
+    if delay_summary.empty:
+        return []
+
+    selected = delay_summary[delay_summary["Type_delai"].isin(labels.keys())].copy()
+    if selected.empty:
+        selected = delay_summary.head(4).copy()
+
+    rows: list[dict[str, Any]] = []
+    for _, row in selected.iterrows():
+        rows.append(
+            {
+                "label": labels.get(str(row["Type_delai"]), str(row["Type_delai"])),
+                "full_label": str(row["Type_delai"]),
+                "median_days": float(row["Médiane_j"]),
+                "n": int(row["n"]),
+            }
+        )
+    return rows
+
+
+def _build_hotspot_level(cases: int, deaths: int, confirmed: int, max_cases: int) -> tuple[str, str]:
+    """Déduit un niveau simple pour la table des zones actives."""
+    if confirmed > 0 or deaths > 0:
+        return "Urgence", "danger"
+    if cases >= max(10, int(max_cases * 0.55)):
+        return "Sous surveillance", "warning"
+    if cases >= max(5, int(max_cases * 0.25)):
+        return "Active", "blue"
+    return "Stable", "green"
+
+
+def _build_hotspots_table(df_: pd.DataFrame, top_n: int = 5) -> tuple[pd.DataFrame, dict[str, str]]:
+    """Construit un top des aires / zones / provinces les plus actives."""
+    if COL_AS in df_.columns and df_[COL_AS].notna().any():
+        level_col = COL_AS
+        title = "Top 5 aires de santé actives"
+        subtitle = "Classement dynamique selon le volume de notifications et de confirmations."
+    elif COL_ZS in df_.columns and df_[COL_ZS].notna().any():
+        level_col = COL_ZS
+        title = "Top 5 zones de santé actives"
+        subtitle = "Classement dynamique selon le volume de notifications et de confirmations."
+    else:
+        level_col = COL_PROV
+        title = "Top 5 provinces actives"
+        subtitle = "Classement dynamique selon le volume de notifications et de confirmations."
+
+    if level_col not in df_.columns:
+        return pd.DataFrame(columns=["Lieu", "Province", "Zone de santé", "Cas", "Décès", "Confirmés", "Niveau", "Niveau_theme"]), {
+            "title": "Top territoires actifs",
+            "subtitle": "Ventilation géographique non disponible.",
+        }
+
+    work = df_.copy()
+    work["_cases"] = 1
+    work["_deaths"] = work["is_death"].fillna(False).astype(int) if "is_death" in work.columns else 0
+    if "Classification_finale_std" in work.columns:
+        work["_confirmed"] = (
+            work["Classification_finale_std"]
+            .astype("string")
+            .eq("Confirmé")
+            .fillna(False)
+            .astype(int)
+        )
+    else:
+        work["_confirmed"] = 0
+
+    aggregations: dict[str, Any] = {
+        "Cas": ("_cases", "sum"),
+        "Décès": ("_deaths", "sum"),
+        "Confirmés": ("_confirmed", "sum"),
+    }
+    if COL_PROV in work.columns:
+        aggregations["Province"] = (COL_PROV, lambda s: next((str(v).strip() for v in s if pd.notna(v) and str(v).strip()), "-"))
+    if level_col == COL_AS and COL_ZS in work.columns:
+        aggregations["Zone de santé"] = (COL_ZS, lambda s: next((str(v).strip() for v in s if pd.notna(v) and str(v).strip()), "-"))
+
+    table = (
+        work.groupby(level_col, dropna=False)
+        .agg(**aggregations)
+        .reset_index()
+        .rename(columns={level_col: "Lieu"})
+    )
+    if table.empty:
+        return pd.DataFrame(columns=["Lieu", "Province", "Zone de santé", "Cas", "Décès", "Confirmés", "Niveau", "Niveau_theme"]), {
+            "title": title,
+            "subtitle": subtitle,
+        }
+
+    table["Lieu"] = table["Lieu"].fillna("Non documenté").astype(str).str.strip().replace({"": "Non documenté"})
+    if "Province" not in table.columns:
+        table["Province"] = "-"
+    if "Zone de santé" not in table.columns:
+        table["Zone de santé"] = "-"
+
+    table = table.sort_values(["Cas", "Confirmés", "Décès"], ascending=[False, False, False]).head(max(int(top_n), 1)).reset_index(drop=True)
+    max_cases = int(table["Cas"].max()) if not table.empty else 0
+    levels = table.apply(lambda row: _build_hotspot_level(int(row["Cas"]), int(row["Décès"]), int(row["Confirmés"]), max_cases), axis=1)
+    table["Niveau"] = [level[0] for level in levels]
+    table["Niveau_theme"] = [level[1] for level in levels]
+    return table[["Lieu", "Province", "Zone de santé", "Cas", "Décès", "Confirmés", "Niveau", "Niveau_theme"]], {
+        "title": title,
+        "subtitle": subtitle,
+    }
+
+
+def _build_priority_actions(df_: pd.DataFrame) -> list[dict[str, str]]:
+    """Construit une courte liste d'actions prioritaires à afficher à l'accueil."""
+    try:
+        standard_signals = build_standard_signal_table(
+            df_,
+            week_col=resolve_week_column(df_) or "YW",
+            timeliness_threshold_days=float(get_session_int("seuil_jours", 2)),
+        )
+    except Exception:
+        standard_signals = pd.DataFrame()
+
+    if standard_signals.empty:
+        return []
+
+    active = standard_signals[standard_signals["À surveiller"].astype(str).str.strip().eq("Oui")].copy()
+    if active.empty:
+        return []
+
+    actions: list[dict[str, str]] = []
+    for _, row in active.head(4).iterrows():
+        status = str(row.get("Statut", "À suivre")).strip() or "À suivre"
+        priority = "Haute" if status == "Alerte" else "Moyenne" if status == "À suivre" else "Routine"
+        actions.append(
+            {
+                "priority": priority,
+                "theme": "danger" if priority == "Haute" else "warning" if priority == "Moyenne" else "blue",
+                "label": str(row.get("Indicateur", "Point à suivre")).strip() or "Point à suivre",
+                "action": str(row.get("Action proposée", "")).strip() or str(row.get("Ce qu'on observe", "")).strip(),
+            }
+        )
+    return actions
+
+
+def build_surveillance_cascade_figure(payload: Dict[str, Any]) -> Optional[go.Figure]:
+    """Construit un graphique horizontal compact pour la cascade de suivi."""
+    chain = payload.get("surveillance_chain", [])
+    if not chain:
+        return None
+
+    labels = [item["label"] for item in chain]
+    values = [int(item.get("value", 0)) for item in chain]
+    colors = [item.get("color", "#2b74ca") for item in chain]
+
+    fig = go.Figure(
+        go.Bar(
+            x=values[::-1],
+            y=labels[::-1],
+            orientation="h",
+            marker=dict(color=colors[::-1], line=dict(color="rgba(255,255,255,0.65)", width=1.2)),
+            text=[format_metric_value(value) for value in values[::-1]],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="%{y}: %{x}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        height=360,
+        margin=dict(t=10, r=28, b=10, l=12),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(visible=False, showgrid=False, zeroline=False),
+        yaxis=dict(title=None, ticks="", showgrid=False, automargin=True),
+    )
+    return fig
+
+
+def render_surveillance_chain_section(payload: Dict[str, Any]) -> None:
+    """Affiche la chaîne de surveillance sous forme de cartes horizontales."""
+    chain = payload.get("surveillance_chain", [])
+    if not chain:
+        return
+
+    cards_html = []
+    steps_html = []
+    for item in chain:
+        theme = str(item.get("theme", "blue"))
+        label = html.escape(str(item.get("label", "")))
+        value = html.escape(format_metric_value(item.get("value", 0)))
+        subtitle = html.escape(str(item.get("subtitle", "")))
+        cards_html.append(
+            f"""
+<div class="cousp-chain-card {theme}">
+  <div class="cousp-chain-label">{label}</div>
+  <div class="cousp-chain-value">{value}</div>
+  <div class="cousp-chain-subtitle">{subtitle}</div>
+</div>
+"""
+        )
+        steps_html.append(
+            f"""
+<div class="cousp-chain-step">
+  <span class="dot {theme}"></span>
+  <span>{label}</span>
+</div>
+"""
+        )
+
+    st.markdown(
+        f"""
+<div class="cousp-chain-panel">
+  <div class="cousp-panel-title">Chaîne de surveillance</div>
+  <div class="cousp-chain-grid">{''.join(cards_html)}</div>
+  <div class="cousp-chain-stepper">{''.join(steps_html)}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_hotspots_panel(payload: Dict[str, Any]) -> None:
+    """Affiche le top des zones ou provinces les plus actives."""
+    table = payload.get("hotspots")
+    st.markdown("<div class='cousp-panel-title'>Top territoires actifs</div>", unsafe_allow_html=True)
+    if table is None or not isinstance(table, pd.DataFrame) or table.empty:
+        st.info("Aucune ventilation géographique exploitable n'est disponible pour le top des territoires.")
+        return
+
+    rows = []
+    for _, row in table.iterrows():
+        place = html.escape(str(row.get("Lieu", "-")))
+        province = html.escape(str(row.get("Province", "-")))
+        cases = format_metric_value(row.get("Cas", 0))
+        confirmed = format_metric_value(row.get("Confirmés", 0))
+        theme = html.escape(str(row.get("Niveau_theme", "blue")))
+        level = html.escape(str(row.get("Niveau", "Active")))
+        rows.append(
+            f"""
+<tr>
+  <td><strong>{place}</strong><span>{province}</span></td>
+  <td>{cases}</td>
+  <td>{confirmed}</td>
+  <td><span class="cousp-badge {theme}">{level}</span></td>
+</tr>
+"""
+        )
+
+    st.markdown(
+        f"""
+<div class="cousp-summary-box">
+  <table class="cousp-mini-table">
+    <thead>
+      <tr>
+        <th>Lieu</th>
+        <th>Cas</th>
+        <th>Confirmés</th>
+        <th>Niveau</th>
+      </tr>
+    </thead>
+    <tbody>{''.join(rows)}</tbody>
+  </table>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_quality_snapshot_panel(payload: Dict[str, Any]) -> None:
+    """Affiche des barres de progression pour quelques indicateurs qualité."""
+    metrics = payload.get("quality_focus", [])
+    st.markdown("<div class='cousp-panel-title'>Qualité des données</div>", unsafe_allow_html=True)
+    if not metrics:
+        st.info("Aucun indicateur qualité n'est disponible sur le périmètre filtré.")
+        return
+
+    rows = []
+    for item in metrics[:6]:
+        label = html.escape(str(item.get("label", "")))
+        value = float(item.get("value", 0.0))
+        theme = html.escape(str(item.get("theme", "blue")))
+        rows.append(
+            f"""
+<div class="cousp-progress-row">
+  <div class="cousp-progress-top">
+    <span>{label}</span>
+    <strong>{value:.1f}%</strong>
+  </div>
+  <div class="cousp-progress-track">
+    <span class="cousp-progress-fill {theme}" style="width: {min(max(value, 0.0), 100.0):.1f}%;"></span>
+  </div>
+</div>
+"""
+        )
+
+    st.markdown(
+        f"""
+<div class="cousp-summary-box">
+  <div class="cousp-progress-list">{''.join(rows)}</div>
+  <div class="cousp-summary-footnote">Objectif recommandé : maintenir ces indicateurs au niveau le plus bas possible.</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_delay_snapshot_panel(payload: Dict[str, Any]) -> None:
+    """Affiche quelques délais opérationnels clés."""
+    delays = payload.get("delay_focus", [])
+    st.markdown("<div class='cousp-panel-title'>Délais opérationnels</div>", unsafe_allow_html=True)
+    if not delays:
+        st.info("Aucun délai standard n'est disponible dans les données filtrées.")
+        return
+
+    rows = []
+    for item in delays:
+        label = html.escape(str(item.get("label", "")))
+        full_label = html.escape(str(item.get("full_label", "")))
+        median_days = float(item.get("median_days", 0.0))
+        n_obs = int(item.get("n", 0))
+        rows.append(
+            f"""
+<div class="cousp-kv-item">
+  <div class="cousp-kv-label">{label}</div>
+  <div class="cousp-kv-value">{median_days:.1f} j</div>
+  <div class="cousp-kv-sub">{full_label} · n={n_obs}</div>
+</div>
+"""
+        )
+
+    st.markdown(f"<div class='cousp-kv-grid'>{''.join(rows)}</div>", unsafe_allow_html=True)
+
+
+def render_priority_actions_panel(payload: Dict[str, Any]) -> None:
+    """Affiche les principaux points à traiter à court terme."""
+    actions = payload.get("priority_actions", [])
+    st.markdown("<div class='cousp-panel-title'>Actions prioritaires</div>", unsafe_allow_html=True)
+    if not actions:
+        st.info("Aucune action prioritaire automatique n'est remontée avec les seuils actifs.")
+        return
+
+    rows = []
+    for item in actions:
+        label = html.escape(str(item.get("label", "")))
+        action = html.escape(str(item.get("action", "")))
+        priority = html.escape(str(item.get("priority", "Moyenne")))
+        theme = html.escape(str(item.get("theme", "blue")))
+        rows.append(
+            f"""
+<div class="cousp-action-row">
+  <span class="cousp-badge {theme}">{priority}</span>
+  <div class="cousp-action-copy">
+    <strong>{label}</strong>
+    <span>{action}</span>
+  </div>
+</div>
+"""
+        )
+
+    st.markdown(f"<div class='cousp-summary-box'>{''.join(rows)}</div>", unsafe_allow_html=True)
+
+
+def render_briefing_panel(payload: Dict[str, Any]) -> None:
+    """Affiche une lecture opérationnelle rapide de la période active."""
+    st.markdown("<div class='cousp-panel-title'>Briefing opérationnel</div>", unsafe_allow_html=True)
+
+    latest = payload.get("latest", {})
+    previous = payload.get("previous", {})
+    promptitude = format_metric_value(payload.get("promptitude_pct"), decimals=1, suffix="%")
+    cards = [
+        ("Cas semaine", format_metric_value(latest.get("Cas", np.nan)), format_pct_delta(latest.get("Cas", np.nan), previous.get("Cas", np.nan))),
+        ("Décès semaine", format_metric_value(latest.get("Décès", np.nan)), format_pct_delta(latest.get("Décès", np.nan), previous.get("Décès", np.nan))),
+        ("CFR semaine", format_metric_value(latest.get("Létalité (%)", np.nan), decimals=2, suffix="%"), format_pct_delta(latest.get("Létalité (%)", np.nan), previous.get("Létalité (%)", np.nan))),
+        (f"Admission <= {get_session_int('seuil_jours', 2)} j", promptitude, f"n={int(payload.get('promptitude_n', 0) or 0)}"),
+    ]
+
+    metrics_html = []
+    for label, value, subtitle in cards:
+        metrics_html.append(
+            f"""
+<div class="cousp-briefing-metric">
+  <span>{html.escape(label)}</span>
+  <strong>{html.escape(value)}</strong>
+  <small>{html.escape(subtitle)}</small>
+</div>
+"""
+        )
+
+    top_province = html.escape(str(payload.get("top_province", "non disponible")))
+    top_zs = html.escape(str(payload.get("top_zs", "non disponible")))
+    week_span = html.escape(format_range_label_for_display(payload.get("week_span", "-")))
+    case_total = html.escape(format_metric_value(payload.get("cases", 0)))
+
+    st.markdown(
+        f"""
+<div class="cousp-summary-box">
+  <div class="cousp-briefing-grid">{''.join(metrics_html)}</div>
+  <div class="cousp-summary-footnote">
+    Province la plus notifiée : <strong>{top_province}</strong><br/>
+    Zone de santé la plus notifiée : <strong>{top_zs}</strong><br/>
+    Fenêtre couverte : <strong>{week_span}</strong> avec <strong>{case_total}</strong> cas analysés.
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def build_geo_pair_label(province_value: Any, zone_value: Any) -> str:
@@ -1275,7 +1955,7 @@ def render_detailed_maps_tab(
         up_col1, up_col2 = st.columns(2)
         with up_col1:
             geo_prov_upl = st.file_uploader(
-                "📍 Provinces",
+                " Provinces",
                 type=["geojson", "json"],
                 key="geojson_prov",
             )
@@ -1285,7 +1965,7 @@ def render_detailed_maps_tab(
                 st.caption("Aucun GeoJSON provinces par défaut détecté.")
         with up_col2:
             geo_zs_upl = st.file_uploader(
-                "📍 Zones de santé",
+                " Zones de santé",
                 type=["geojson", "json"],
                 key="geojson_zs",
             )
@@ -1296,7 +1976,7 @@ def render_detailed_maps_tab(
 
         col_reset1, col_reset2 = st.columns([1, 3])
         with col_reset1:
-            if st.button("↩️ Réinitialiser", key="reset_geojson_uploads"):
+            if st.button("↩ Réinitialiser", key="reset_geojson_uploads"):
                 st.session_state["geojson_prov"] = None
                 st.session_state["geojson_zs"] = None
                 st.rerun()
@@ -1568,7 +2248,7 @@ def render_idsr_maps_section(
         up_col1, up_col2 = st.columns(2)
         with up_col1:
             geo_prov_upl = st.file_uploader(
-                "📍 Provinces IDSR",
+                " Provinces IDSR",
                 type=["geojson", "json"],
                 key="idsr_geojson_prov",
             )
@@ -1578,7 +2258,7 @@ def render_idsr_maps_section(
                 st.caption("Aucun GeoJSON provinces par défaut détecté.")
         with up_col2:
             geo_zs_upl = st.file_uploader(
-                "📍 Zones de santé IDSR",
+                " Zones de santé IDSR",
                 type=["geojson", "json"],
                 key="idsr_geojson_zs",
             )
@@ -1589,7 +2269,7 @@ def render_idsr_maps_section(
 
         col_reset1, col_reset2 = st.columns([1, 3])
         with col_reset1:
-            if st.button("↩️ Réinitialiser", key="idsr_reset_geojson_uploads"):
+            if st.button("↩ Réinitialiser", key="idsr_reset_geojson_uploads"):
                 st.session_state["idsr_geojson_prov"] = None
                 st.session_state["idsr_geojson_zs"] = None
                 st.rerun()
@@ -1701,3 +2381,171 @@ def render_idsr_maps_section(
             height=560,
             static_title="RDC - Cas agrégés IDSR par province",
         )
+
+# DECISION_ORIENTED_OVERRIDES
+
+def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
+    """Version orientee decision de la synthese d'accueil."""
+    kpi = compute_indicators(df_)
+    weekly = build_weekly_overview_table(df_)
+    weekly = _normalize_metric_alias_columns(weekly)
+    classification_counts = _build_classification_counts(df_)
+    issue_counts = _build_issue_counts(df_)
+    lab_counts = _build_lab_counts(df_, kpi)
+    alert_proxy = _build_alert_proxy_counts(df_, classification_counts)
+    quality_focus = _build_quality_focus_metrics(df_)
+    delay_focus = _build_delay_focus_metrics(df_)
+    hotspots, hotspots_meta = _build_hotspots_table(df_)
+    priority_actions = _build_priority_actions(df_)
+
+    analyses_available = lab_counts.get("analyses", 0) > 0
+    has_classification = bool(alert_proxy.get("has_classification"))
+    confirmed_count = next(
+        (
+            int(value)
+            for key, value in classification_counts.items()
+            if "confirm" in str(key).strip().lower()
+        ),
+        0,
+    )
+    if confirmed_count == 0 and analyses_available:
+        confirmed_count = int(lab_counts.get("positifs", 0))
+
+    surveillance_chain = [
+        {"label": "Alertes notifiees", "value": int(alert_proxy.get("notified_alerts", 0)), "subtitle": "Notifications issues de la line list", "theme": "blue", "color": "#2b74ca", "available": True},
+        {"label": "Alertes verifiees", "value": alert_proxy.get("verified_alerts"), "subtitle": "Proxy base sur la classification finale", "theme": "green", "color": "#27a063", "available": alert_proxy.get("verified_alerts") is not None},
+        {"label": "Cas probables", "value": int(classification_counts.get("Probable", 0)) if has_classification else None, "subtitle": "Classification standardisee", "theme": "orange", "color": "#f29b38", "available": has_classification},
+        {"label": "Cas suspects", "value": int(classification_counts.get("Suspect", 0)) if has_classification else None, "subtitle": "Classification standardisee", "theme": "amber", "color": "#f2a53a", "available": has_classification},
+        {"label": "Echantillons recus", "value": int(lab_counts.get("recus", 0)) if lab_counts.get("recus", 0) > 0 else int(lab_counts.get("preleves", 0)) if lab_counts.get("preleves", 0) > 0 else None, "subtitle": "Reception labo ou proxy prelevements documentes", "theme": "purple", "color": "#7b4dff", "available": bool(lab_counts.get("recus", 0) > 0 or lab_counts.get("preleves", 0) > 0)},
+        {"label": "Echantillons analyses", "value": int(lab_counts.get("analyses", 0)) if analyses_available else None, "subtitle": "Resultats valides ou invalides disponibles", "theme": "navy", "color": "#425a7d", "available": analyses_available},
+        {"label": "Cas positifs", "value": int(lab_counts.get("positifs", 0)) if analyses_available else None, "subtitle": "Resultats positifs", "theme": "red", "color": "#e84b4b", "available": analyses_available},
+        {"label": "Cas negatifs", "value": int(lab_counts.get("negatifs", 0)) if analyses_available else None, "subtitle": "Resultats negatifs", "theme": "slate", "color": "#5d6d86", "available": analyses_available},
+        {"label": "Resultats invalides", "value": int(lab_counts.get("invalides", 0)) if analyses_available else None, "subtitle": "Analyses non concluantes", "theme": "orange", "color": "#c68423", "available": analyses_available},
+        {"label": "Cas confirmes", "value": confirmed_count if has_classification else int(lab_counts.get("positifs", 0)) if analyses_available else None, "subtitle": "Classification finale ou positivite labo", "theme": "green", "color": "#1f8d57", "available": bool(has_classification or analyses_available)},
+    ]
+
+    provinces_epid = get_provinces_epid()
+    total_provinces = len(EPIDEMIE)
+    total_provinces_epid = len(provinces_epid)
+    reported_provinces = int(df_[COL_PROV].dropna().nunique()) if COL_PROV in df_.columns else 0
+    reported_epid_provinces = int(df_.loc[df_[COL_PROV].isin(provinces_epid), COL_PROV].dropna().nunique()) if COL_PROV in df_.columns else 0
+    reported_zs = int(df_[COL_ZS].dropna().nunique()) if COL_ZS in df_.columns else 0
+
+    week_min = '-'
+    week_max = '-'
+    if not weekly.empty:
+        week_min = str(weekly['label'].iloc[0])
+        week_max = str(weekly['label'].iloc[-1])
+    elif COL_WNUM in df_.columns and pd.to_numeric(df_[COL_WNUM], errors='coerce').notna().any():
+        week_values = pd.to_numeric(df_[COL_WNUM], errors='coerce').dropna().astype(int)
+        week_min = f"SE{int(week_values.min()):02d}"
+        week_max = f"SE{int(week_values.max()):02d}"
+
+    latest = weekly.iloc[-1].to_dict() if not weekly.empty else {}
+    previous = weekly.iloc[-2].to_dict() if len(weekly) > 1 else {}
+    promptitude_pct, promptitude_n = pct_under_threshold(df_.get('delai_onset_to_adm'), get_session_int('seuil_jours', 2))
+    analysis_period = compute_analysis_period_value(df_)
+
+    return {
+        'cases': int(kpi['n_cases']), 'deaths': int(kpi['n_deaths']), 'cfr': float(kpi['cfr_pct']) if not pd.isna(kpi['cfr_pct']) else np.nan,
+        'week_span': f'{week_min} -> {week_max}' if week_min != '-' and week_max != '-' else '-', 'week_min': week_min, 'week_max': week_max,
+        'reported_epid_provinces': reported_epid_provinces, 'total_provinces_epid': total_provinces_epid, 'reported_provinces': reported_provinces, 'total_provinces': total_provinces,
+        'reported_zs': reported_zs, 'coverage_epid_pct': safe_pct(reported_epid_provinces, total_provinces_epid), 'coverage_nat_pct': safe_pct(reported_provinces, total_provinces),
+        'weekly': weekly, 'latest': latest, 'previous': previous, 'promptitude_pct': promptitude_pct, 'promptitude_n': promptitude_n, 'analysis_period': analysis_period,
+        'top_province': _safe_top_label(df_, COL_PROV), 'top_zs': _safe_top_label(df_, COL_ZS), 'classification_counts': classification_counts, 'issue_counts': issue_counts,
+        'lab_counts': lab_counts, 'quality_focus': quality_focus, 'delay_focus': delay_focus, 'hotspots': hotspots, 'hotspots_meta': hotspots_meta,
+        'priority_actions': priority_actions, 'surveillance_chain': surveillance_chain, 'alert_proxy': alert_proxy,
+    }
+
+
+def build_surveillance_cascade_figure(payload: Dict[str, Any]) -> Optional[go.Figure]:
+    chain = [item for item in payload.get('surveillance_chain', []) if item.get('available', True) and item.get('value') is not None]
+    if not chain:
+        return None
+    labels = [str(item['label']) for item in chain]
+    values = [int(item['value']) for item in chain]
+    colors = [item.get('color', '#2b74ca') for item in chain]
+    fig = go.Figure(go.Bar(x=values[::-1], y=labels[::-1], orientation='h', marker=dict(color=colors[::-1], line=dict(color='rgba(255,255,255,0.65)', width=1.2)), text=[format_metric_value(value) for value in values[::-1]], textposition='outside', cliponaxis=False, hovertemplate='%{y}: %{x}<extra></extra>'))
+    fig.update_layout(height=400, margin=dict(t=10, r=28, b=10, l=12), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis=dict(visible=False, showgrid=False, zeroline=False), yaxis=dict(title=None, ticks='', showgrid=False, automargin=True))
+    return fig
+
+
+def render_surveillance_chain_section(payload: Dict[str, Any]) -> None:
+    chain = payload.get('surveillance_chain', [])
+    if not chain:
+        return
+    cards_html = []
+    steps_html = []
+    for item in chain:
+        theme = str(item.get('theme', 'blue'))
+        label = html.escape(str(item.get('label', '')))
+        raw_value = item.get('value')
+        value = html.escape(format_metric_value(raw_value) if raw_value is not None else '-')
+        subtitle = html.escape(str(item.get('subtitle', '')))
+        cards_html.append(f"""
+<div class=\"cousp-chain-card {theme}\">
+  <div class=\"cousp-chain-label\">{label}</div>
+  <div class=\"cousp-chain-value\">{value}</div>
+  <div class=\"cousp-chain-subtitle\">{subtitle}</div>
+</div>
+""")
+        if item.get('available', True) and raw_value is not None:
+            steps_html.append(f"""
+<div class=\"cousp-chain-step\">
+  <span class=\"dot {theme}\"></span>
+  <span>{label}</span>
+</div>
+""")
+    st.markdown(f"""
+<div class=\"cousp-chain-panel\">
+  <div class=\"cousp-panel-title\">Chaine de surveillance</div>
+  <div class=\"cousp-chain-grid\">{''.join(cards_html)}</div>
+  <div class=\"cousp-chain-stepper\">{''.join(steps_html)}</div>
+</div>
+""", unsafe_allow_html=True)
+
+
+def render_hotspots_panel(payload: Dict[str, Any]) -> None:
+    table = payload.get('hotspots')
+    meta = payload.get('hotspots_meta', {}) or {}
+    st.markdown(f"<div class='cousp-panel-title'>{html.escape(str(meta.get('title', 'Top territoires actifs')))}</div>", unsafe_allow_html=True)
+    if table is None or not isinstance(table, pd.DataFrame) or table.empty:
+        st.info("Aucune ventilation geographique exploitable n'est disponible pour le top des territoires.")
+        return
+    rows = []
+    for _, row in table.iterrows():
+        place = html.escape(str(row.get('Lieu', '-')))
+        province = html.escape(str(row.get('Province', '-')))
+        zone = html.escape(str(row.get('Zone de santé', '-')))
+        context = zone if zone != '-' else province
+        cases = format_metric_value(row.get('Cas', 0))
+        confirmed = format_metric_value(row.get('Confirmés', 0))
+        theme = html.escape(str(row.get('Niveau_theme', 'blue')))
+        level = html.escape(str(row.get('Niveau', 'Active')))
+        rows.append(f"""
+<tr>
+  <td><strong>{place}</strong><span>{context}</span></td>
+  <td>{cases}</td>
+  <td>{confirmed}</td>
+  <td><span class=\"cousp-badge {theme}\">{level}</span></td>
+</tr>
+""")
+    subtitle = html.escape(str(meta.get('subtitle', '')))
+    subtitle_html = f"<div class='cousp-panel-subtitle'>{subtitle}</div>" if subtitle else ''
+    st.markdown(f"""
+{subtitle_html}
+<div class=\"cousp-summary-box\">
+  <table class=\"cousp-mini-table\">
+    <thead>
+      <tr>
+        <th>Lieu</th>
+        <th>Cas</th>
+        <th>Confirmes</th>
+        <th>Niveau</th>
+      </tr>
+    </thead>
+    <tbody>{''.join(rows)}</tbody>
+  </table>
+</div>
+""", unsafe_allow_html=True)
+
