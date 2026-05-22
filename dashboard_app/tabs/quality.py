@@ -49,10 +49,296 @@ def _quality_build_export_traceability_table(
     return pd.DataFrame(rows)
 
 
+_QUALITY_NA_VALUES = {
+    "", " ", "-", "n/a", "na", "nan", "null", "none",
+    "<na>", "<nat>", "<null>",
+    "inconnu", "non renseigné", "non renseigne", "aucun", "aucune",
+    "aucune information", "aucune donnée", "aucune donnee",
+    "aucune donnée renseignée", "aucune donnee renseignee",
+}
+
+
+def _quality_is_na_like(val: object) -> bool:
+    """Retourne True si val doit être considéré comme manquant."""
+    if val is None or pd.isna(val):
+        return True
+    if isinstance(val, str):
+        return val.strip().casefold() in _QUALITY_NA_VALUES
+    return False
+
+
+def _quality_decision_missing(
+    pct_missing: float,
+    *,
+    colonne_absente: bool,
+    seuil_acceptable: float,
+    seuil_surveillance: float,
+) -> str:
+    if colonne_absente:
+        return "Colonne absente"
+    if pct_missing == 0:
+        return "OK"
+    if pct_missing <= seuil_acceptable:
+        return "Acceptable"
+    if pct_missing <= seuil_surveillance:
+        return "A surveiller"
+    return "Prioritaire"
+
+
+def analyser_missing_colonnes(
+    df: pd.DataFrame,
+    colonnes: Optional[Iterable[str]] = None,
+    *,
+    considerer_na_like: bool = True,
+    seuil_acceptable: float = 5.0,
+    seuil_surveillance: float = 20.0,
+    observations: Optional[dict[str, str]] = None,
+    arrondi: int = 2,
+) -> pd.DataFrame:
+    """
+    Analyse les valeurs manquantes des colonnes choisies.
+
+    Si `colonnes=None`, la fonction analyse directement toutes les colonnes
+    présentes dans le DataFrame fourni.
+    """
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df doit être un DataFrame pandas.")
+    if seuil_acceptable < 0 or seuil_surveillance < 0:
+        raise ValueError("Les seuils de missing doivent être positifs.")
+    if seuil_acceptable > seuil_surveillance:
+        raise ValueError("seuil_acceptable ne peut pas être supérieur à seuil_surveillance.")
+
+    observations = observations or {}
+    total_lignes = len(df)
+
+    if colonnes is None:
+        colonnes_a_analyser = df.columns.tolist()
+    elif isinstance(colonnes, str):
+        colonnes_a_analyser = [colonnes]
+    else:
+        colonnes_a_analyser = list(dict.fromkeys(colonnes))
+
+    colonnes_presentes = {col for col in colonnes_a_analyser if col in df.columns}
+
+    resultats = []
+    for colonne in colonnes_a_analyser:
+        colonne_absente = colonne not in colonnes_presentes
+
+        if colonne_absente:
+            nb_manquantes = total_lignes
+            nb_renseignees = 0
+        else:
+            serie = df[colonne]
+            masque_missing = serie.map(_quality_is_na_like) if considerer_na_like else serie.isna()
+            nb_manquantes = int(masque_missing.sum())
+            nb_renseignees = int(total_lignes - nb_manquantes)
+
+        pct_missing = round((nb_manquantes / total_lignes) * 100, arrondi) if total_lignes > 0 else 0.0
+        decision = _quality_decision_missing(
+            pct_missing,
+            colonne_absente=colonne_absente,
+            seuil_acceptable=seuil_acceptable,
+            seuil_surveillance=seuil_surveillance,
+        )
+
+        resultats.append(
+            {
+                "Variable": colonne,
+                "Présence colonne": "Présente" if not colonne_absente else "Absente",
+                "Total lignes": total_lignes,
+                "Renseignées": nb_renseignees,
+                "Manquantes": nb_manquantes,
+                "% missing": pct_missing,
+                "Décision / observation": observations.get(colonne, decision),
+            }
+        )
+
+    return pd.DataFrame(resultats)
+
+
+def _quality_to_datetime_series(
+    serie: pd.Series,
+    *,
+    min_date: str = "2000-01-01",
+    future_tolerance_days: int = 14,
+) -> pd.Series:
+    """Convertit une série en dates plausibles pour l'analyse de promptitude."""
+    if pd.api.types.is_datetime64_any_dtype(serie):
+        dt = pd.to_datetime(serie, errors="coerce")
+    else:
+        try:
+            dt = pd.to_datetime(serie, errors="coerce", format="mixed")
+        except TypeError:
+            dt = pd.to_datetime(serie, errors="coerce")
+    if dt.empty:
+        return dt
+
+    borne_min = pd.Timestamp(min_date)
+    borne_max = pd.Timestamp(date.today()) + pd.Timedelta(days=future_tolerance_days)
+    dt = dt.where(dt.between(borne_min, borne_max), pd.NaT)
+    return dt
+
+
+def construire_table_promptitude(
+    df: pd.DataFrame,
+    date_pairs: Iterable[tuple[str, str, str]],
+    *,
+    seuil_jours: float = 7.0,
+) -> pd.DataFrame:
+    """
+    Construit un tableau de promptitude entre paires de dates.
+
+    Chaque tuple de `date_pairs` suit le format :
+    (libellé, colonne_date_debut, colonne_date_fin)
+    """
+    lignes = []
+
+    for libelle, col_debut, col_fin in date_pairs:
+        if col_debut not in df.columns or col_fin not in df.columns:
+            continue
+
+        debut = _quality_to_datetime_series(df[col_debut])
+        fin = _quality_to_datetime_series(df[col_fin])
+
+        dispo_debut = debut.notna()
+        dispo_fin = fin.notna()
+        comparables = dispo_debut & dispo_fin
+
+        n_source = int(dispo_debut.sum())
+        n_cible = int(dispo_fin.sum())
+        n_comparables = int(comparables.sum())
+        n_cible_manquante = int((dispo_debut & ~dispo_fin).sum())
+
+        if n_comparables > 0:
+            delais = (fin[comparables] - debut[comparables]).dt.days.astype(float)
+            delais_valides = delais.dropna()
+            pct_seuil = round(float((delais_valides <= seuil_jours).mean() * 100), 2) if not delais_valides.empty else np.nan
+            pct_negatif = round(float((delais_valides < 0).mean() * 100), 2) if not delais_valides.empty else np.nan
+            mediane = round(float(delais_valides.median()), 1) if not delais_valides.empty else np.nan
+            p90 = round(float(delais_valides.quantile(0.90)), 1) if not delais_valides.empty else np.nan
+            delai_max = round(float(delais_valides.max()), 1) if not delais_valides.empty else np.nan
+        else:
+            pct_seuil = np.nan
+            pct_negatif = np.nan
+            mediane = np.nan
+            p90 = np.nan
+            delai_max = np.nan
+
+        lignes.append(
+            {
+                "Étape": libelle,
+                "Date début": col_debut,
+                "Date fin": col_fin,
+                "Lignes avec date début": n_source,
+                "Lignes avec date fin": n_cible,
+                "Lignes comparables": n_comparables,
+                "Date fin manquante (%)": round((n_cible_manquante / n_source) * 100, 2) if n_source > 0 else np.nan,
+                "Médiane délai (jours)": mediane,
+                "P90 délai (jours)": p90,
+                "Délai max (jours)": delai_max,
+                f"% <= {int(seuil_jours)} jours": pct_seuil,
+                "% délais négatifs": pct_negatif,
+            }
+        )
+
+    return pd.DataFrame(lignes)
+
+
+def construire_resume_coherence_par_groupe(
+    df: pd.DataFrame,
+    flags: pd.DataFrame,
+    group_col: str,
+) -> pd.DataFrame:
+    """Résume les incohérences QC par groupe géographique ou temporel."""
+    if (
+        not isinstance(df, pd.DataFrame)
+        or not isinstance(flags, pd.DataFrame)
+        or group_col not in df.columns
+        or flags.empty
+        or "row_id" not in flags.columns
+        or "flag" not in flags.columns
+    ):
+        return pd.DataFrame()
+
+    base = df.reset_index().rename(columns={"index": "row_id"}).copy()
+    base[group_col] = base[group_col].fillna("Inconnu").astype(str)
+
+    total_cases = (
+        base.groupby(group_col, dropna=False)
+        .size()
+        .rename("Cas")
+        .reset_index()
+    )
+
+    flags_detail = flags.merge(base[["row_id", group_col]], on="row_id", how="left")
+    flags_detail[group_col] = flags_detail[group_col].fillna("Inconnu").astype(str)
+
+    rows_flagged = (
+        flags_detail.groupby(group_col)["row_id"]
+        .nunique()
+        .rename("Lignes avec incohérences")
+        .reset_index()
+    )
+
+    total_flags = (
+        flags_detail.groupby(group_col)
+        .size()
+        .rename("Total incohérences")
+        .reset_index()
+    )
+
+    dominant = (
+        flags_detail.groupby([group_col, "flag"])
+        .size()
+        .rename("Occurrences")
+        .reset_index()
+        .sort_values([group_col, "Occurrences"], ascending=[True, False])
+        .drop_duplicates(subset=[group_col])
+        .rename(columns={"flag": "Incohérence dominante", "Occurrences": "Occurrences dominante"})
+    )
+
+    resume = total_cases.merge(rows_flagged, on=group_col, how="left")
+    resume = resume.merge(total_flags, on=group_col, how="left")
+    resume = resume.merge(dominant[[group_col, "Incohérence dominante", "Occurrences dominante"]], on=group_col, how="left")
+
+    for col in ["Lignes avec incohérences", "Total incohérences", "Occurrences dominante"]:
+        resume[col] = pd.to_numeric(resume[col], errors="coerce").fillna(0).astype(int)
+
+    resume["% lignes touchées"] = ((resume["Lignes avec incohérences"] / resume["Cas"]) * 100).round(2)
+    resume["Incohérences / 100 cas"] = ((resume["Total incohérences"] / resume["Cas"]) * 100).round(2)
+    resume = resume.sort_values(
+        ["% lignes touchées", "Total incohérences", "Cas"],
+        ascending=[False, False, False],
+    )
+    return resume
+
+
+def masquer_identifiants_techniques(
+    df: pd.DataFrame,
+    colonnes: Optional[Iterable[str]] = None,
+) -> pd.DataFrame:
+    """Retire des vues les identifiants techniques non utiles à la lecture."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+
+    colonnes_a_masquer = list(colonnes) if colonnes is not None else [
+        "Signal_ID",
+        "ID signal",
+        "row_id",
+        "__source_file__",
+        "source_file",
+        "Source_fichier",
+    ]
+    colonnes_presentes = [col for col in colonnes_a_masquer if col in df.columns]
+    if not colonnes_presentes:
+        return df
+    return df.drop(columns=colonnes_presentes)
+
+
 def render_quality_tab(ctx: dict) -> None:
     """Render the data quality and export tab."""
     globals().update(ctx)
-    render_section_title(4, "Complétude des données et couverture des rapports")
+    render_section_title(4, "Qualité des données, promptitude et cohérence opérationnelle")
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")
     else:
@@ -60,19 +346,21 @@ def render_quality_tab(ctx: dict) -> None:
         tab_help(
             "Comment lire cet onglet",
             """
-            **🎯 Objectif** : vérifier si les provinces attendues transmettent bien leurs données.
-        
-            **📖 Interprétation**
-            - **Manquantes** : absence réelle de cas, retard de transmission ou problème de rapportage.
-            - Le tableau aide à repérer les provinces ou zones qui notifient peu.
-        
-            **⚠️ Points d’attention**
-            - Une province silencieuse pendant une épidémie doit être vérifiée rapidement.
+            **Objectif** : appuyer la revue opérationnelle de la qualité des line lists pour la coordination du COUSP/RDC.
+
+            **Lecture recommandée**
+            - **Couverture de notification** : identifie les provinces attendues mais non observées dans le rapport courant.
+            - **Cohérence** : repère les anomalies de saisie et les enregistrements incompatibles avec les règles métier.
+            - **Complétude** : mesure le niveau de renseignement des variables prioritaires pour l’analyse.
+            - **Promptitude** : apprécie les délais entre détection, notification, investigation et étapes de laboratoire.
+
+            **Point d’attention**
+            - Un signal de qualité ne confirme pas à lui seul une défaillance opérationnelle ; il doit guider la vérification.
             """,
             expanded=False
         )     
         
-        with st.expander("Définir les provinces en épidémie (attendues dans la line list)", expanded=False):
+        with st.expander("Paramétrage des provinces attendues", expanded=False):
 
             # ---- Init states ----
             if "epidemie_state_tab5" not in st.session_state:
@@ -96,7 +384,7 @@ def render_quality_tab(ctx: dict) -> None:
                 # Synchronise le dict à partir de l'état réel du widget
                 st.session_state.epidemie_state_tab5[prov] = bool(st.session_state.get(widget_key, False))
 
-            st.markdown("✅ **Coche** = province considérée **en épidémie** (attendue dans la line list)")
+            st.markdown("Sélectionner les provinces considérées comme attendues dans la line list pour le suivi de couverture.")
 
             provs = sorted(list(EPIDEMIE.keys()))
             cols = st.columns(3)
@@ -126,7 +414,7 @@ def render_quality_tab(ctx: dict) -> None:
             # ✅ Provinces attendues (UI Tab5)
             PROVINCES_EPID = [p for p, ok in st.session_state.epidemie_state_tab5.items() if ok]
        
-        st.subheader("Suivi de la complétude de notification : provinces attendues versus provinces effectivement rapportées")
+        st.subheader("Couverture de notification des provinces attendues")
         
         if COL_PROV not in df_f.columns:
             st.info("La variable Province_notification est absente du fichier analysé.")
@@ -134,10 +422,10 @@ def render_quality_tab(ctx: dict) -> None:
             if COL_WNUM in df_f.columns and df_f[COL_WNUM].notna().any():
                 last_w = int(df_f[COL_WNUM].max())
                 present = sorted(df_f.loc[df_f[COL_WNUM] == last_w, COL_PROV].dropna().unique().tolist())
-                st.caption(f"Calcul sur la semaine max filtrée: SE{last_w:02d}")
+                st.caption(f"Lecture effectuée sur la semaine épidémiologique la plus récente du périmètre filtré : SE{last_w:02d}")
             else:
                 present = sorted(df_f[COL_PROV].dropna().unique().tolist())
-                st.caption("Calcul sur l’ensemble filtré (pas de Num_semaine_epid exploitable).")
+                st.caption("Lecture effectuée sur l’ensemble filtré, faute de semaine épidémiologique exploitable.")
         
             missing = [p for p in PROVINCES_EPID if p not in present]
             nb_att = len(PROVINCES_EPID)
@@ -149,9 +437,9 @@ def render_quality_tab(ctx: dict) -> None:
             c2.metric("Provinces trouvées", str(nb_rec))
             c3.metric("Complétude (%)", f"{compl:.1f}")
             if missing:
-                st.warning("Provinces attendues non reçues : " + ", ".join(missing))
+                st.warning("Provinces attendues non observées dans les données : " + ", ".join(missing))
         
-            with st.expander("Tableau provinces attendues vs reçues"):
+            with st.expander("Tableau de couverture des provinces attendues"):
                 df_comp = pd.DataFrame({
                     "Province attendue": PROVINCES_EPID,
                     "Présente": [p in present for p in PROVINCES_EPID],
@@ -159,7 +447,7 @@ def render_quality_tab(ctx: dict) -> None:
                 })
                 st_dataframe_safe(df_comp)
         
-            with st.expander("Cas par province (complétude / volume)", expanded=True):
+            with st.expander("Volume de cas rapportés par province", expanded=True):
                 prov_counts = df_f[COL_PROV].fillna("Inconnu").value_counts().reset_index()
                 prov_counts.columns = [COL_PROV, "Cas"]
                 figp = px.bar(prov_counts, x=COL_PROV, y="Cas", title=" ")
@@ -168,7 +456,7 @@ def render_quality_tab(ctx: dict) -> None:
                 st.plotly_chart(figp, width="stretch")
         
             # TCD
-            with st.expander("Tableau croisé dynamique – occurrences", expanded=False):
+            with st.expander("Répartition détaillée des occurrences", expanded=False):
                 # --- Scope: même logique que ton calcul "semaine max filtrée"
                 scope_last_week = st.checkbox(
                     "Calculer uniquement sur la semaine max filtrée (même scope que la complétude)",
@@ -628,7 +916,10 @@ def render_quality_tab(ctx: dict) -> None:
 
             if not export_duplicates.empty:
                 st.markdown("**Doublons potentiels**")
-                st_dataframe_safe(export_duplicates.head(100), height=260)
+                st_dataframe_safe(
+                    masquer_identifiants_techniques(export_duplicates.head(100)),
+                    height=260,
+                )
             else:
                 st.caption("Aucun doublon potentiel n’a été identifié.")
 
@@ -654,7 +945,10 @@ def render_quality_tab(ctx: dict) -> None:
 
             if not export_standard_signals.empty:
                 st.markdown("**Points à suivre en priorité**")
-                st_dataframe_safe(export_standard_signals, height=300)
+                st_dataframe_safe(
+                    masquer_identifiants_techniques(export_standard_signals),
+                    height=300,
+                )
 
         st.divider()
         st.markdown("**Suivi des actions**")
@@ -697,7 +991,7 @@ def render_quality_tab(ctx: dict) -> None:
                 hide_index=True,
                 num_rows="fixed",
                 column_config={
-                    "Signal_ID": st.column_config.TextColumn("ID signal", disabled=True),
+                    "Signal_ID": None,
                     "Maladie_source": st.column_config.TextColumn("Maladie", disabled=True),
                     "Perimetre_analyse": st.column_config.TextColumn("Périmètre", disabled=True),
                     "Bloc": st.column_config.TextColumn("Bloc", disabled=True),
@@ -760,7 +1054,10 @@ def render_quality_tab(ctx: dict) -> None:
             )
 
         st.markdown("**Aperçu de la line list filtrée**")
-        st_dataframe_safe(df_f, height=420)
+        st_dataframe_safe(
+            masquer_identifiants_techniques(df_f),
+            height=420,
+        )
 
         export_mode = st.radio(
             "Type d’export",
@@ -770,34 +1067,9 @@ def render_quality_tab(ctx: dict) -> None:
             key="qualite_export_mode",
         )
 
-        dl1, dl2, dl3 = st.columns([1, 1, 1])
-        with dl1:
-            st.download_button(
-                "Télécharger CSV line list",
-                data=df_to_csv_bytes(df_f),
-                file_name=f"{export_base_name}.csv",
-                mime="text/csv",
-                key="dl_quality_export_csv_ll",
-            )
-        with dl2:
-            if not export_qc_flags.empty:
-                st.download_button(
-                    "Télécharger QC flags (CSV)",
-                    data=export_qc_flags.to_csv(index=False).encode("utf-8"),
-                    file_name=f"{export_base_name}_qc_flags.csv",
-                    mime="text/csv",
-                    key="dl_quality_export_csv_qc",
-                )
-        with dl3:
-            if not export_duplicates.empty:
-                st.download_button(
-                    "Télécharger doublons (CSV)",
-                    data=export_duplicates.to_csv(index=False).encode("utf-8"),
-                    file_name=f"{export_base_name}_doublons.csv",
-                    mime="text/csv",
-                    key="dl_quality_export_csv_dup",
-                )
-
+        excel_bytes = None
+        excel_name = None
+        excel_export_error = False
         try:
             buffer = BytesIO()
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -830,15 +1102,65 @@ def render_quality_tab(ctx: dict) -> None:
                 if export_mode == "Pack qualité + line list"
                 else f"{export_base_name}.xlsx"
             )
-            st.download_button(
-                "Télécharger Excel",
-                data=buffer.getvalue(),
-                file_name=excel_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_quality_export_xlsx",
-            )
+            excel_bytes = buffer.getvalue()
         except Exception:
-            st.info("Exportation Excel indisponible (openpyxl manquant ?).")
+            excel_export_error = True
+
+        csv_col, excel_col = st.columns(2)
+        with csv_col:
+            st.download_button(
+                "Télécharger CSV line list",
+                data=df_to_csv_bytes(df_f),
+                file_name=f"{export_base_name}.csv",
+                mime="text/csv",
+                key="dl_quality_export_csv_ll",
+                use_container_width=True,
+            )
+        with excel_col:
+            if excel_bytes is not None and excel_name is not None:
+                st.download_button(
+                    "Télécharger Excel",
+                    data=excel_bytes,
+                    file_name=excel_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_quality_export_xlsx",
+                    use_container_width=True,
+                )
+            elif excel_export_error:
+                st.info("Export Excel indisponible.")
+
+        extra_exports = []
+        if not export_qc_flags.empty:
+            extra_exports.append(
+                (
+                    "Télécharger QC flags (CSV)",
+                    export_qc_flags.to_csv(index=False).encode("utf-8"),
+                    f"{export_base_name}_qc_flags.csv",
+                    "dl_quality_export_csv_qc",
+                )
+            )
+        if not export_duplicates.empty:
+            extra_exports.append(
+                (
+                    "Télécharger doublons (CSV)",
+                    export_duplicates.to_csv(index=False).encode("utf-8"),
+                    f"{export_base_name}_doublons.csv",
+                    "dl_quality_export_csv_dup",
+                )
+            )
+
+        if extra_exports:
+            extra_cols = st.columns(len(extra_exports))
+            for col, (label, data, file_name, key) in zip(extra_cols, extra_exports):
+                with col:
+                    st.download_button(
+                        label,
+                        data=data,
+                        file_name=file_name,
+                        mime="text/csv",
+                        key=key,
+                        use_container_width=True,
+                    )
         
     # =========================
     # TAB 7 — Labo / qualité / signaux
@@ -868,7 +1190,7 @@ def render_quality_tab(ctx: dict) -> None:
             expanded=False
         )
         
-        st.subheader("Qualité des données et alertes utiles pour l'action")
+        st.subheader("Revue opérationnelle de la qualité des données")
         
         # -------- Helpers (robustes) --------
         def _get_pct_from_cascade(casc: pd.DataFrame, key: str) -> float:
@@ -971,13 +1293,13 @@ def render_quality_tab(ctx: dict) -> None:
         
         # Alertes qualité tests (si dispo)
         if not np.isnan(kpi_incoh_res_wo_tdr) or not np.isnan(kpi_status_in_result):
-            with st.expander("📌 Signaux qualité tests (données)", expanded=False):
+            with st.expander("Signaux de qualité des données de laboratoire", expanded=False):
                 if not np.isnan(kpi_incoh_res_wo_tdr):
                     st.write(f"- **% Résultat renseigné mais TDR_realise ≠ Oui / statut test absent**: **{kpi_incoh_res_wo_tdr:.1f}%**")
                 if not np.isnan(kpi_status_in_result):
                     st.write(f"- **% Statut saisi dans la colonne de résultat** (ex: non réalisé/non prélevé): **{kpi_status_in_result:.1f}%**")
         
-        with st.expander("🔎 Détail cascade labo (entonnoir) + incohérences", expanded=False):
+        with st.expander("Cascade de prélèvement et de confirmation", expanded=False):
             st_dataframe_safe(casc_global)
 
         # ==========================================================
@@ -988,17 +1310,17 @@ def render_quality_tab(ctx: dict) -> None:
             if c in df_f.columns and df_f[c].notna().any()
         ]
         if risk_group_options:
-            with st.expander("Priorisation operationnelle par zone/province", expanded=True):
+            with st.expander("Priorisation opérationnelle des zones et provinces", expanded=True):
                 r1, r2, r3 = st.columns([1.15, 0.95, 0.95])
                 with r1:
                     risk_group_col = st.selectbox(
-                        "Niveau de priorisation",
+                        "Niveau géographique",
                         options=risk_group_options,
                         key="operational_risk_group_col",
                     )
                 with r2:
                     risk_recent_weeks = st.number_input(
-                        "Semaines recentes",
+                        "Semaines récentes",
                         min_value=2,
                         max_value=8,
                         value=4,
@@ -1007,7 +1329,7 @@ def render_quality_tab(ctx: dict) -> None:
                     )
                 with r3:
                     risk_topn = st.slider(
-                        "Top priorites",
+                        "Groupes à afficher",
                         min_value=5,
                         max_value=50,
                         value=20,
@@ -1027,8 +1349,8 @@ def render_quality_tab(ctx: dict) -> None:
                 else:
                     risk_view = risk_tbl.head(int(risk_topn)).copy()
                     k_r1, k_r2, k_r3 = st.columns(3)
-                    k_r1.metric("Groupes classes", f"{len(risk_tbl):,}".replace(",", " "))
-                    k_r2.metric("Priorite tres elevee", str(int((risk_tbl["Priorite"] == "Tres elevee").sum())))
+                    k_r1.metric("Groupes évalués", f"{len(risk_tbl):,}".replace(",", " "))
+                    k_r2.metric("Priorité très élevée", str(int((risk_tbl["Priorite"] == "Tres elevee").sum())))
                     k_r3.metric("Score max", f"{pd.to_numeric(risk_tbl['Score_risque'], errors='coerce').max():.1f}")
 
                     left_risk, right_risk = st.columns([1.15, 1.35])
@@ -1042,7 +1364,7 @@ def render_quality_tab(ctx: dict) -> None:
                             y=risk_group_col,
                             orientation="h",
                             color="Priorite",
-                            title="Score de risque operationnel",
+                            title="Score de risque opérationnel",
                         )
                         fig_risk.update_layout(xaxis_title="Score 0-100", yaxis_title=risk_group_col)
                         fig_risk = apply_plotly_value_annotations(fig_risk, annot_vals)
@@ -1050,7 +1372,7 @@ def render_quality_tab(ctx: dict) -> None:
 
                     csv_risk = risk_tbl.to_csv(index=False).encode("utf-8")
                     st.download_button(
-                        "Telecharger score de risque (CSV)",
+                        "Télécharger le score de risque (CSV)",
                         data=csv_risk,
                         file_name="score_risque_operationnel.csv",
                         mime="text/csv",
@@ -1058,32 +1380,9 @@ def render_quality_tab(ctx: dict) -> None:
                     )
 
         # ==========================================================
-        # 0b) Résumé standard qualité / délais / disponibilité des champs
-        # ==========================================================
-        with st.expander("🔎 Résumé standard qualité / délais / disponibilité des champs", expanded=False):
-            qsum = standard_data_quality_summary(df_f)
-            if not qsum.empty:
-                st_dataframe_safe(qsum)
-            dsum = build_standard_delay_summary(df_f)
-            if not dsum.empty:
-                st.markdown("**Résumé standard des délais**")
-                st_dataframe_safe(dsum)
-            dup_tbl = duplicate_candidates_table(df_f)
-            if not dup_tbl.empty:
-                st.markdown("**Doublons potentiels à vérifier**")
-                st_dataframe_safe(dup_tbl.head(100), height=320)
-            fields_matrix = build_recommended_fields_matrix(df_f)
-            if not fields_matrix.empty:
-                st.markdown("**Disponibilité des champs standards recommandés**")
-                bloc_sel = st.selectbox("Filtrer la matrice par bloc", ["Tous"] + sorted(fields_matrix["Bloc"].dropna().unique().tolist()), index=0, key="fields_matrix_bloc")
-                if bloc_sel != "Tous":
-                    fields_matrix = fields_matrix[fields_matrix["Bloc"] == bloc_sel]
-                st_dataframe_safe(fields_matrix, height=360)
-        
-        # ==========================================================
         # 1) QC Flags (incohérences)
         # ==========================================================
-        with st.expander("🔎 Incohérences (QC Flags)", expanded=False):
+        with st.expander("Contrôle de cohérence des enregistrements", expanded=False):
         
         
             flags = qc_flags(df_f)
@@ -1097,7 +1396,7 @@ def render_quality_tab(ctx: dict) -> None:
         
                 # Filtre par flag
                 flag_list = sorted(flags["flag"].dropna().unique().tolist())
-                flag_sel = st.selectbox("Filtrer le détail par type d’incohérence", ["Tous"] + flag_list, index=0)
+                flag_sel = st.selectbox("Type d’incohérence à afficher", ["Tous"] + flag_list, index=0)
         
                 # Détail (merge + colonnes utiles)
                 cols_show = [c for c in [
@@ -1114,16 +1413,57 @@ def render_quality_tab(ctx: dict) -> None:
                 if flag_sel != "Tous":
                     detail = detail[detail["flag"] == flag_sel]
         
-                st.caption("Détail des lignes concernées (filtré, maximum 500 lignes)")
+                st.caption("Détail des enregistrements concernés, limité à 500 lignes.")
                 st.dataframe(detail[["flag"] + cols_show].head(500), width="stretch", height=420)
+
+                coherence_group_choices = [c for c in [COL_PROV, COL_ZS, COL_AS, "YW", COL_WNUM] if c in df_f.columns]
+                if coherence_group_choices:
+                    st.markdown("**Synthèse territoriale des incohérences**")
+                    coherence_group_col = st.selectbox(
+                        "Niveau de synthèse",
+                        coherence_group_choices,
+                        index=0,
+                        key="quality_coherence_group_col",
+                    )
+                    coherence_tbl = construire_resume_coherence_par_groupe(df_f, flags, coherence_group_col)
+                    if not coherence_tbl.empty:
+                        st_dataframe_safe(coherence_tbl, height=360)
+                        st.download_button(
+                            "Télécharger la synthèse de cohérence (CSV)",
+                            data=coherence_tbl.to_csv(index=False).encode("utf-8"),
+                            file_name="quality_coherence_summary.csv",
+                            mime="text/csv",
+                            key="download_quality_coherence_csv",
+                        )
+
+                        topn_coh = st.slider(
+                            "Nombre de groupes prioritaires à afficher",
+                            min_value=5,
+                            max_value=min(50, max(5, len(coherence_tbl))),
+                            value=min(20, len(coherence_tbl)),
+                            step=5,
+                            key="quality_coherence_topn",
+                        )
+                        coherence_plot = coherence_tbl.head(topn_coh).sort_values("% lignes touchées", ascending=True)
+                        fig_coh = px.bar(
+                            coherence_plot,
+                            x="% lignes touchées",
+                            y=coherence_group_col,
+                            orientation="h",
+                            color="Total incohérences",
+                            title="Groupes prioritaires selon le taux d’incohérences"
+                        )
+                        fig_coh.update_layout(xaxis_title="% lignes touchées", yaxis_title=coherence_group_col)
+                        fig_coh = apply_plotly_value_annotations(fig_coh, annot_vals)
+                        st.plotly_chart(fig_coh, width="stretch")
         
         # ==========================================================
         # 2) Complétude des champs clés
         # ==========================================================
-        with st.expander("🔎 Complétude des champs clés", expanded=False):
+        with st.expander("Complétude des variables prioritaires", expanded=False):
             st.caption(
-                "Le score standard reste centré sur les champs attendus d'une line list de surveillance. "
-                "Quand une composante labo dense est détectée, un complément spécifique est affiché séparément."
+                "Le tableau ci-dessous présente, pour les variables prioritaires, la présence de la colonne, "
+                "le volume renseigné, le volume manquant et le niveau de priorité du missing."
             )
 
             champs_cles_base = [
@@ -1143,46 +1483,125 @@ def render_quality_tab(ctx: dict) -> None:
                 for c in [DATE_PREL, DATE_RECEP, DATE_RES, "Resultat_labo"]:
                     if c in df_f.columns and c not in champs_cles:
                         champs_cles.append(c)
-        
-            group_choices = [c for c in [COL_PROV, COL_ZS, "YW", COL_WNUM] if c in df_f.columns]
-            group_for_comp = st.selectbox("Analyser la complétude par", group_choices, index=0 if group_choices else 0)
-        
-            comp = completeness_table(df_f, champs_cles, by=group_for_comp) if group_choices else pd.DataFrame()
-        
-            if comp.empty:
+
+            missing_tbl = analyser_missing_colonnes(
+                df=df_f,
+                colonnes=champs_cles,
+                seuil_acceptable=5.0,
+                seuil_surveillance=20.0,
+            )
+
+            if missing_tbl.empty:
                 render_absence_narrative("quality")
             else:
-                st_dataframe_safe(comp, height=520)
-        
-                # Bar chart plus lisible: top N pires scores
-                topn = st.slider("Nombre de groupes les moins complets à afficher", min_value=10, max_value=80, value=25, step=5)
-                comp_plot = comp.sort_values("score_completude_%").head(topn)
-        
+                k_m1, k_m2, k_m3, k_m4 = st.columns(4)
+                k_m1.metric("Variables suivies", str(len(missing_tbl)))
+                k_m2.metric(
+                    "Variables prioritaires",
+                    str(int((missing_tbl["Décision / observation"] == "Prioritaire").sum()))
+                )
+                k_m3.metric(
+                    "Variables absentes",
+                    str(int((missing_tbl["Présence colonne"] == "Absente").sum()))
+                )
+                k_m4.metric(
+                    "Missing moyen (%)",
+                    f"{pd.to_numeric(missing_tbl['% missing'], errors='coerce').mean():.1f}"
+                )
+
+                decision_options = sorted(missing_tbl["Décision / observation"].dropna().unique().tolist())
+                decision_sel = st.multiselect(
+                    "Niveau de priorité à afficher",
+                    options=decision_options,
+                    default=decision_options,
+                    key="quality_missing_decision_filter",
+                )
+                if decision_sel:
+                    missing_view = missing_tbl[missing_tbl["Décision / observation"].isin(decision_sel)].copy()
+                else:
+                    missing_view = missing_tbl.copy()
+
+                st_dataframe_safe(missing_view, height=520)
+                st.download_button(
+                    "Télécharger le tableau de complétude (CSV)",
+                    data=missing_view.to_csv(index=False).encode("utf-8"),
+                    file_name="quality_missing_colonnes.csv",
+                    mime="text/csv",
+                    key="download_quality_missing_csv",
+                )
+
+                topn = st.slider(
+                    "Nombre de variables prioritaires à afficher",
+                    min_value=5,
+                    max_value=min(80, max(5, len(missing_view))),
+                    value=min(20, len(missing_view)),
+                    step=5,
+                    key="quality_missing_topn",
+                )
+                comp_plot = missing_view.sort_values(["% missing", "Manquantes"], ascending=[False, False]).head(topn)
+
                 figc = px.bar(
                     comp_plot,
-                    x=group_for_comp,
-                    y="score_completude_%",
-                    title=f"Score complétude (%) – {topn} groupes les moins complets (par {group_for_comp})"
+                    x="Variable",
+                    y="% missing",
+                    color="Décision / observation",
+                    title=f"Variables prioritaires selon le taux de missing ({topn})"
                 )
                 figc.update_layout(xaxis_tickangle=-45, yaxis=dict(range=[0, 100]))
                 figc = apply_plotly_value_annotations(figc, annot_vals)
                 st.plotly_chart(figc, width="stretch")
 
-                lab_complement_cols = [
-                    c for c in ["Type_de_prelevement", "Nom_laboratoire", "N_labo", "Nombre_dose_recues", "Date_derniere_vaccination"]
-                    if c in df_f.columns and pd.Series(df_f[c]).notna().any()
-                ]
-                if lab_complement_cols and len(lab_signal_cols) >= 2:
-                    st.markdown("**Complétude complémentaire des champs labo/vaccination**")
-                    comp_lab = completeness_table(df_f, lab_complement_cols, by=group_for_comp)
-                    if not comp_lab.empty:
-                        st_dataframe_safe(comp_lab, height=320)
+        # ==========================================================
+        # 2b) Promptitude des dates clés
+        # ==========================================================
+        with st.expander("Promptitude des étapes clés", expanded=False):
+            promptitude_pairs = [
+                ("Début maladie → admission", "Date_debut_maladie", "Date_admission_au_CT"),
+                ("Début maladie → notification", DATE_ONSET, "Date_notification"),
+                ("Début maladie → investigation", DATE_ONSET, "Date_investigation"),
+                ("Admission → prélèvement", DATE_ADM, DATE_PREL),
+                ("Prélèvement → réception labo", DATE_PREL, DATE_RECEP),
+                ("Réception labo → résultat", DATE_RECEP, DATE_RES),
+            ]
+
+            seuil_prompt = st.number_input(
+                "Seuil opérationnel (jours)",
+                min_value=1.0,
+                max_value=30.0,
+                value=float(seuil_jours),
+                step=1.0,
+                key="quality_promptitude_threshold_days",
+            )
+
+            prompt_tbl = construire_table_promptitude(
+                df_f,
+                promptitude_pairs,
+                seuil_jours=float(seuil_prompt),
+            )
+
+            if prompt_tbl.empty:
+                render_absence_narrative("quality")
+            else:
+                st_dataframe_safe(prompt_tbl, height=360)
+
+                valid_prompt = prompt_tbl.dropna(subset=["Médiane délai (jours)"]).copy()
+                if not valid_prompt.empty:
+                    figp_delay = px.bar(
+                        valid_prompt,
+                        x="Étape",
+                        y="Médiane délai (jours)",
+                        color=f"% <= {int(seuil_prompt)} jours",
+                        title="Délais médians par étape"
+                    )
+                    figp_delay.update_layout(xaxis_tickangle=-35)
+                    figp_delay = apply_plotly_value_annotations(figp_delay, annot_vals)
+                    st.plotly_chart(figp_delay, width="stretch")
         
         
         # ==========================================================
         # 3) Cascade prélèvement → TDR → résultat → positif
         # ==========================================================
-        with st.expander("🔎 Cascade prélèvement → TDR → résultat → positif", expanded=False):
+        with st.expander("Performance de la chaîne laboratoire", expanded=False):
         
             cascad = cascade_metrics(df_f) if n_total else pd.DataFrame()
             if cascad.empty:
@@ -1192,7 +1611,7 @@ def render_quality_tab(ctx: dict) -> None:
         
             # Cascade par province (résumé robuste)
             if COL_PROV in df_f.columns and n_total:
-                st.caption("Cascade par province (résumé)")
+                st.caption("Lecture provinciale synthétique de la chaîne laboratoire")
         
                 rows = []
                 for prov, sub in df_f.groupby(COL_PROV, dropna=False):
@@ -1213,7 +1632,7 @@ def render_quality_tab(ctx: dict) -> None:
                 )
         
                 sort_col = st.selectbox(
-                    "Trier par",
+                    "Indicateur de tri",
                     ["n", "% prélèvement", "% TDR", "% résultat valide", "% positif", "% incoh TDR"],
                     index=0
                 )
@@ -1225,16 +1644,16 @@ def render_quality_tab(ctx: dict) -> None:
         # ==========================================================
         # 4) Alertes tendance (hausse vs baseline simple)
         # ==========================================================
-        with st.expander("🔎 Alertes tendance (hausse vs baseline simple)", expanded=False):
+        with st.expander("Signaux hebdomadaires et alertes de tendance", expanded=False):
             alert_group_choices = [c for c in [COL_PROV, COL_ZS] if c in df_f.columns]
             if not alert_group_choices:
                 render_absence_narrative("geo")
                 alert_group = None
                 alerts = pd.DataFrame()
             else:
-                alert_group = st.selectbox("Regrouper les alertes par", alert_group_choices, index=0)
+                alert_group = st.selectbox("Niveau d'analyse", alert_group_choices, index=0)
                 min_alert_cases = st.number_input(
-                    "Cas minimum pour signal",
+                    "Volume minimal pour signal",
                     min_value=1,
                     max_value=500,
                     value=10,
@@ -1242,7 +1661,7 @@ def render_quality_tab(ctx: dict) -> None:
                     key="quality_alert_min_cases",
                 )
                 alert_ratio_quality = st.number_input(
-                    "Ratio alerte vs baseline",
+                    "Seuil relatif vs baseline",
                     min_value=1.0,
                     max_value=10.0,
                     value=1.5,
