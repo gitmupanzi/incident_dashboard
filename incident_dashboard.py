@@ -1030,6 +1030,7 @@ if not IDSR_MODE:
 
     # ✅ 1) Standardisation commune (Rougeole/Choléra/…)
     raw = standardize_ll_by_disease(raw, disease_key)
+    df_quality_source = raw.copy()
 
     # ✅ 2) Standardisation spécifique choléra (les indicateurs/timeliness/etc.)
     df = standardize_df(raw)
@@ -1258,6 +1259,12 @@ if not IDSR_MODE:
         if class_sel and ("Toutes" not in class_sel):
             df_f = df_f[df_f[COL_CLASS].isin(class_sel)]
 
+    df_f_source = (
+        df_quality_source.loc[df_f.index].copy()
+        if "df_quality_source" in locals() and isinstance(df_quality_source, pd.DataFrame)
+        else df_f.copy()
+    )
+
     age_col = pick_age_col(df_f)
 
     if show_sidebar_summary:
@@ -1290,6 +1297,8 @@ else:
     raw = pd.DataFrame()
     df = pd.DataFrame()
     df_f = pd.DataFrame()
+    df_quality_source = pd.DataFrame()
+    df_f_source = pd.DataFrame()
     files_used = []
     st.info(
         "Mode **IDSR agrégé hebdomadaire** : utilisez l’onglet **IDSR** pour téléverser, "

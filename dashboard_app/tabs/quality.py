@@ -1461,13 +1461,18 @@ def render_quality_tab(ctx: dict) -> None:
         # 2) Complétude de l'ensemble des colonnes
         # ==========================================================
         with st.expander("Complétude de l'ensemble des variables", expanded=False):
+            df_missing_scope = (
+                df_f_source
+                if "df_f_source" in globals() and isinstance(df_f_source, pd.DataFrame) and not df_f_source.empty
+                else df_f
+            )
             st.caption(
-                "Le tableau ci-dessous présente, pour toutes les colonnes du DataFrame filtré, la présence de la colonne, "
-                "le volume renseigné, le volume manquant et le niveau de priorité du missing."
+                "Le tableau ci-dessous présente, pour les colonnes du fichier chargé dans le périmètre filtré, "
+                "la présence de la colonne, le volume renseigné, le volume manquant et le niveau de priorité du missing."
             )
 
             missing_tbl = analyser_missing_colonnes(
-                df=df_f,
+                df=df_missing_scope,
                 seuil_acceptable=5.0,
                 seuil_surveillance=20.0,
             )
