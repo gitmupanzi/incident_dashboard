@@ -1470,10 +1470,39 @@ def render_quality_tab(ctx: dict) -> None:
                 "la présence de la colonne, le volume renseigné, le volume manquant et le niveau de priorité du missing."
             )
 
+            st.markdown("**Paramètres de classification du missing**")
+            st.caption("Modifiez ici les seuils utilisés pour classer le niveau de complétude des colonnes.")
+            seuil_col1, seuil_col2 = st.columns(2)
+            with seuil_col1:
+                seuil_missing_acceptable = st.number_input(
+                    "Seuil acceptable (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=5.0,
+                    step=1.0,
+                    key="quality_missing_threshold_acceptable",
+                )
+            with seuil_col2:
+                seuil_missing_surveillance = st.number_input(
+                    "Seuil de surveillance (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=20.0,
+                    step=1.0,
+                    key="quality_missing_threshold_surveillance",
+                )
+
+            if seuil_missing_acceptable > seuil_missing_surveillance:
+                st.warning(
+                    "Le seuil acceptable ne peut pas dépasser le seuil de surveillance. "
+                    "Les valeurs ont été réalignées automatiquement."
+                )
+                seuil_missing_surveillance = seuil_missing_acceptable
+
             missing_tbl = analyser_missing_colonnes(
                 df=df_missing_scope,
-                seuil_acceptable=5.0,
-                seuil_surveillance=20.0,
+                seuil_acceptable=float(seuil_missing_acceptable),
+                seuil_surveillance=float(seuil_missing_surveillance),
             )
 
             if missing_tbl.empty:
