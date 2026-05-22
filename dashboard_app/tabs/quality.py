@@ -351,7 +351,7 @@ def render_quality_tab(ctx: dict) -> None:
             **Lecture recommandée**
             - **Couverture de notification** : identifie les provinces attendues mais non observées dans le rapport courant.
             - **Cohérence** : repère les anomalies de saisie et les enregistrements incompatibles avec les règles métier.
-            - **Complétude** : mesure le niveau de renseignement des variables prioritaires pour l’analyse.
+            - **Complétude** : mesure le niveau de renseignement de l’ensemble des colonnes utiles à l’analyse.
             - **Promptitude** : apprécie les délais entre détection, notification, investigation et étapes de laboratoire.
 
             **Point d’attention**
@@ -1458,35 +1458,16 @@ def render_quality_tab(ctx: dict) -> None:
                         st.plotly_chart(fig_coh, width="stretch")
         
         # ==========================================================
-        # 2) Complétude des champs clés
+        # 2) Complétude de l'ensemble des colonnes
         # ==========================================================
-        with st.expander("Complétude des variables prioritaires", expanded=False):
+        with st.expander("Complétude de l'ensemble des variables", expanded=False):
             st.caption(
-                "Le tableau ci-dessous présente, pour les variables prioritaires, la présence de la colonne, "
+                "Le tableau ci-dessous présente, pour toutes les colonnes du DataFrame filtré, la présence de la colonne, "
                 "le volume renseigné, le volume manquant et le niveau de priorité du missing."
             )
 
-            champs_cles_base = [
-                COL_PROV, COL_ZS, COL_AS, "YW", COL_WNUM,
-                COL_SEX, COL_AGE, COL_UNIT, DATE_ONSET,
-                COL_PREL, COL_TDR, COL_TDRR,
-                COL_HOSP,
-                COL_ISSUE, COL_CLASS
-            ]
-            champs_cles = list(champs_cles_base)
-
-            lab_signal_cols = [
-                c for c in [DATE_PREL, DATE_RECEP, DATE_RES, "Resultat_labo", "N_labo", "Nom_laboratoire"]
-                if c in df_f.columns and pd.Series(df_f[c]).notna().mean() >= 0.15
-            ]
-            if len(lab_signal_cols) >= 2:
-                for c in [DATE_PREL, DATE_RECEP, DATE_RES, "Resultat_labo"]:
-                    if c in df_f.columns and c not in champs_cles:
-                        champs_cles.append(c)
-
             missing_tbl = analyser_missing_colonnes(
                 df=df_f,
-                colonnes=champs_cles,
                 seuil_acceptable=5.0,
                 seuil_surveillance=20.0,
             )
@@ -1531,7 +1512,7 @@ def render_quality_tab(ctx: dict) -> None:
                 )
 
                 topn = st.slider(
-                    "Nombre de variables prioritaires à afficher",
+                    "Nombre de colonnes à afficher",
                     min_value=5,
                     max_value=min(80, max(5, len(missing_view))),
                     value=min(20, len(missing_view)),
