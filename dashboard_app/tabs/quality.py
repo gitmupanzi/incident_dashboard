@@ -144,7 +144,6 @@ def analyser_missing_colonnes(
         resultats.append(
             {
                 "Variable": colonne,
-                "Présence colonne": "Présente" if not colonne_absente else "Absente",
                 "Total lignes": total_lignes,
                 "Renseignées": nb_renseignees,
                 "Manquantes": nb_manquantes,
@@ -1487,8 +1486,8 @@ def render_quality_tab(ctx: dict) -> None:
                     str(int((missing_tbl["Décision / observation"] == "Prioritaire").sum()))
                 )
                 k_m3.metric(
-                    "Variables absentes",
-                    str(int((missing_tbl["Présence colonne"] == "Absente").sum()))
+                    "Variables sans missing",
+                    str(int((missing_tbl["Décision / observation"] == "OK").sum()))
                 )
                 k_m4.metric(
                     "Missing moyen (%)",
