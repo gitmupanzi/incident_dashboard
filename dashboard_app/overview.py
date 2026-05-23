@@ -2192,7 +2192,7 @@ def render_idsr_maps_section(
     cases_col: str = "Total_cas",
 ) -> None:
     """Render detailed IDSR maps with static/interactive modes."""
-    st.markdown("### Cartographie IDSR détaillée")
+    st.markdown("### 06 · Cartographie IDSR détaillée")
     st.caption("Cartes provinces / zones de santé sur les cas agrégés filtrés, avec modes statique et interactif.")
     if "idsr_show_detailed_maps" not in st.session_state:
         st.session_state["idsr_show_detailed_maps"] = False
@@ -2214,7 +2214,7 @@ def render_idsr_maps_section(
     )
 
     with st.expander(
-        "Cartographie IDSR détaillée",
+        "06 · Cartographie IDSR détaillée",
         expanded=bool(st.session_state.get("idsr_show_detailed_maps", False)),
     ):
         r1, r2, r3 = st.columns(3)

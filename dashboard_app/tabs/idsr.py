@@ -469,6 +469,376 @@ def _idsr_build_year_week_key_series(year_values: Any, week_values: Any) -> pd.S
     return pd.to_numeric(np.where(year.notna() & week.notna(), year * 100 + week, week), errors="coerce")
 
 
+def _idsr_normalize_metric_label(label: object) -> str:
+    """Normalise un libellé de métrique pour retrouver Cas / Décès / Létalité malgré les variantes."""
+    text = "".join(
+        ch for ch in unicodedata.normalize("NFD", str(label))
+        if unicodedata.category(ch) != "Mn"
+    ).lower()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _idsr_interleave_pivot_metrics_by_week(
+    pivot: pd.DataFrame,
+    ordered_weeks: list[str],
+    fill_value: float = 0,
+) -> pd.DataFrame:
+    """Réordonne un pivot MultiIndex en Semaine -> Cas / Décès / Létalité."""
+    if pivot is None or pivot.empty:
+        return pivot
+    if not isinstance(pivot.columns, pd.MultiIndex) or pivot.columns.nlevels < 2:
+        return pivot
+
+    level0_values = list(dict.fromkeys(pivot.columns.get_level_values(0)))
+    level1_values = list(dict.fromkeys(pivot.columns.get_level_values(1)))
+    week_order = [w for w in ordered_weeks if w in level1_values]
+    if not week_order:
+        return pivot
+
+    metric_buckets = {"cas": None, "deces": None, "letalite": None}
+    extra_metrics: list[object] = []
+    for metric in level0_values:
+        metric_norm = _idsr_normalize_metric_label(metric)
+        if metric_buckets["cas"] is None and metric_norm.startswith("cas"):
+            metric_buckets["cas"] = metric
+        elif metric_buckets["deces"] is None and metric_norm.startswith("deces"):
+            metric_buckets["deces"] = metric
+        elif metric_buckets["letalite"] is None and metric_norm.startswith("letalite"):
+            metric_buckets["letalite"] = metric
+        else:
+            extra_metrics.append(metric)
+
+    metric_order = [metric_buckets[key] for key in ["cas", "deces", "letalite"] if metric_buckets[key] is not None]
+    metric_order.extend([metric for metric in extra_metrics if metric not in metric_order])
+    if not metric_order:
+        return pivot
+
+    return (
+        pivot.swaplevel(0, 1, axis=1)
+        .reindex(columns=pd.MultiIndex.from_product([week_order, metric_order]), fill_value=fill_value)
+    )
+
+
+def _idsr_flatten_interleaved_pivot_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Aplatit les colonnes d'un pivot intercalé en conservant l'ordre visuel semaine -> métriques."""
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    flat_cols: list[str] = []
+    for col in out.columns:
+        if isinstance(col, tuple):
+            left = str(col[0]).strip()
+            right = str(col[1]).strip()
+            if right in {"", "None"}:
+                flat_cols.append(left)
+            elif left in {"", "None"}:
+                flat_cols.append(right)
+            else:
+                flat_cols.append(f"{left} | {right}")
+        else:
+            flat_cols.append(str(col))
+
+    out.columns = make_unique(flat_cols)
+    return out
+
+
+def _idsr_build_weekly_standard_table(
+    df_scope: pd.DataFrame,
+    *,
+    idx_cols: list[str],
+    week_series: pd.Series,
+    ordered_weeks: list[str],
+    col_cases: str = "Total_cas",
+    col_deaths: str = "Total_deces",
+) -> pd.DataFrame:
+    """Construit un tableau large robuste: une semaine, puis Cas / Décès / Létalité."""
+    if df_scope is None or df_scope.empty or not idx_cols:
+        return pd.DataFrame()
+    if any(col not in df_scope.columns for col in idx_cols):
+        return pd.DataFrame()
+    if col_cases not in df_scope.columns or col_deaths not in df_scope.columns:
+        return pd.DataFrame()
+
+    work = df_scope.copy()
+    work["_idsr_week_label"] = pd.Series(week_series, index=work.index).astype(str).map(fmt_yw_label)
+    work[col_cases] = pd.to_numeric(work.get(col_cases), errors="coerce").fillna(0)
+    work[col_deaths] = pd.to_numeric(work.get(col_deaths), errors="coerce").fillna(0)
+    work = work.dropna(subset=idx_cols)
+    work = work[work["_idsr_week_label"].astype(str).str.strip() != ""]
+    if work.empty:
+        return pd.DataFrame()
+
+    weekly = (
+        work.groupby([*idx_cols, "_idsr_week_label"], as_index=False)
+        .agg(
+            Cas=(col_cases, "sum"),
+            Deces=(col_deaths, "sum"),
+        )
+    )
+    weekly["Letalite_pct"] = np.where(
+        weekly["Cas"] > 0,
+        (weekly["Deces"] / weekly["Cas"]) * 100.0,
+        np.nan,
+    )
+
+    available_weeks = list(dict.fromkeys(weekly["_idsr_week_label"].tolist()))
+    week_order = [w for w in ordered_weeks if w in available_weeks]
+    if not week_order:
+        week_order = sorted(available_weeks)
+
+    base = work[idx_cols].drop_duplicates().reset_index(drop=True)
+    out = base.copy()
+
+    metric_specs = [
+        ("Cas", "Cas"),
+        ("Deces", "Décès"),
+        ("Letalite_pct", "Létalité (%)"),
+    ]
+    for week_label in week_order:
+        week_frame = weekly[weekly["_idsr_week_label"] == week_label].copy()
+        for src_col, display_label in metric_specs:
+            metric_frame = week_frame[idx_cols + [src_col]].rename(
+                columns={src_col: f"{week_label} | {display_label}"}
+            )
+            out = out.merge(metric_frame, on=idx_cols, how="left")
+
+    letalite_cols = [c for c in out.columns if c.endswith("| Létalité (%)")]
+    if letalite_cols:
+        out[letalite_cols] = out[letalite_cols].apply(pd.to_numeric, errors="coerce").round(2)
+    return out
+
+
+def render_idsr_monthly_standard_table(
+    df_scope: pd.DataFrame,
+    *,
+    mal_col: str,
+    prov_col: str,
+    zs_col: Optional[str] = None,
+    level_key: str = "idsr_month_level",
+    csv_key: str = "tab9_dl_monthly_pivot",
+    xlsx_key: str = "tab9_dl_monthly_pivot_xlsx",
+) -> None:
+    """Affiche le tableau mensuel IDSR au niveau province ou province + ZS."""
+    if df_scope is None or df_scope.empty:
+        st.info("Aucune donnée n’est disponible après application des filtres analytiques.")
+        return
+
+    def _get_date_series(_df: pd.DataFrame) -> pd.Series:
+        if "Date_debut_semaine_iso" in _df.columns:
+            s = parse_idsr_date_series(_df["Date_debut_semaine_iso"])
+            if s.notna().any():
+                return s
+        if "Date_debut_semaine" in _df.columns:
+            s = parse_idsr_date_series(_df["Date_debut_semaine"])
+            if s.notna().any():
+                return s
+        if "DEBUTSEM" in _df.columns:
+            s = parse_idsr_date_series(_df["DEBUTSEM"])
+            if s.notna().any():
+                return s
+        return pd.Series(pd.NaT, index=_df.index)
+
+    tmp_m = df_scope.copy()
+    tmp_m["_dt"] = _get_date_series(tmp_m)
+
+    if tmp_m["_dt"].isna().all():
+        st.warning("Impossible de construire les mois : aucune date de début de semaine exploitable n’a été détectée.")
+        return
+
+    dt_min = pd.Timestamp("2000-01-01")
+    dt_max = pd.Timestamp.today() + pd.Timedelta(days=366)
+    tmp_m = tmp_m[tmp_m["_dt"].between(dt_min, dt_max)]
+    if tmp_m.empty:
+        st.warning("Toutes les dates disponibles sont hors de la plage attendue (2000 → année courante + 1). Veuillez vérifier DEBUTSEM/Date_debut_semaine.")
+        return
+
+    tmp_m["_month"] = tmp_m["_dt"].dt.to_period("M").dt.to_timestamp()
+    mois_fr = {
+        1: "janv.", 2: "févr.", 3: "mars", 4: "avr.", 5: "mai", 6: "juin",
+        7: "juil.", 8: "août", 9: "sept.", 10: "oct.", 11: "nov.", 12: "déc."
+    }
+    tmp_m["_month_lab"] = tmp_m["_dt"].dt.month.map(mois_fr) + "-" + tmp_m["_dt"].dt.strftime("%Y")
+
+    level_m = st.radio(
+        "Niveau d’affichage",
+        ["Provincial", "Zonal (Province + ZS)"],
+        horizontal=True,
+        key=level_key,
+    )
+
+    col_mal = "Maladie" if "Maladie" in tmp_m.columns else mal_col
+    col_prov = prov_col
+    col_zs = zs_col if (zs_col is not None and zs_col in tmp_m.columns) else None
+
+    idx_cols = [col_mal, col_prov]
+    if level_m.startswith("Zonal") and (col_zs is not None):
+        idx_cols = [col_mal, col_prov, col_zs]
+    elif level_m.startswith("Zonal"):
+        st.info("La colonne Zone de santé est absente : affichage provincial uniquement.")
+
+    metrics = [
+        ("Population", "Population exposée", "max"),
+        ("Cas_0_11mois", "Cas suspects 0 à 11mois", "sum"),
+        ("Cas_12_59mois", "Cas suspects 12mois à 5ans", "sum"),
+        ("Cas_5_14ans", "Cas suspects 5 à 14ans", "sum"),
+        ("Cas_15plus", "Cas suspects Adultes", "sum"),
+        ("Total_deces", "Nombre de décès", "sum"),
+    ]
+    metrics_ok = [(c, lab, agg) for (c, lab, agg) in metrics if c in tmp_m.columns]
+    if not metrics_ok:
+        st.info("Aucune colonne indicateur trouvée (Population / Cas_* / Total_deces).")
+        return
+
+    for c, _, _ in metrics_ok:
+        tmp_m[c] = pd.to_numeric(tmp_m[c], errors="coerce")
+
+    pieces = []
+    group_base = idx_cols + ["_month", "_month_lab"]
+    for c, lab, agg in metrics_ok:
+        g = tmp_m[group_base + [c]].copy()
+        if agg == "max":
+            out = g.groupby(group_base, as_index=False)[c].max()
+        else:
+            out = g.groupby(group_base, as_index=False)[c].sum(min_count=1)
+        out = out.rename(columns={c: "Valeur"})
+        out["Données"] = lab
+        pieces.append(out)
+
+    long_df = pd.concat(pieces, ignore_index=True)
+    pivot = (
+        long_df.pivot_table(
+            index=idx_cols + ["Données"],
+            columns="_month",
+            values="Valeur",
+            aggfunc="sum",
+            fill_value=0,
+            observed=False,
+        )
+        .reset_index()
+    )
+
+    month_map = (
+        long_df.dropna(subset=["_month"])
+        .drop_duplicates(subset=["_month"])[["_month", "_month_lab"]]
+        .sort_values("_month")
+        .set_index("_month")["_month_lab"]
+        .to_dict()
+    )
+
+    new_cols = []
+    for col in pivot.columns:
+        if isinstance(col, pd.Timestamp):
+            new_cols.append(month_map.get(pd.Timestamp(col), pd.Timestamp(col).strftime("%b-%Y")))
+        else:
+            new_cols.append(col)
+    pivot.columns = new_cols
+
+    order_data = [
+        "Population exposée",
+        "Cas suspects 0 à 11mois",
+        "Cas suspects 12mois à 5ans",
+        "Cas suspects 5 à 14ans",
+        "Cas suspects Adultes",
+        "Nombre de décès",
+    ]
+    pivot["Données"] = pd.Categorical(pivot["Données"], categories=order_data, ordered=True)
+    pivot = pivot.sort_values(idx_cols + ["Données"]).reset_index(drop=True)
+    pivot = _idsr_displayify_columns(
+        pivot,
+        extra_labels={
+            col_mal: "Maladie",
+            col_prov: "Province de notification",
+            col_zs: "Zone de santé de notification" if col_zs is not None else None,
+        },
+    )
+
+    pivot.columns = make_unique([str(c) for c in pivot.columns])
+    st.dataframe(pivot, width="stretch", height=520, hide_index=True)
+
+    csv_m = pivot.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Télécharger (mensuel) – CSV",
+        data=csv_m,
+        file_name="idsr_tableau_mensuel.csv",
+        mime="text/csv",
+        key=csv_key,
+    )
+
+    xlsx_buffer = BytesIO()
+    with pd.ExcelWriter(xlsx_buffer, engine="openpyxl") as writer:
+        pivot.to_excel(writer, sheet_name="Tableau_mensuel", index=False)
+    xlsx_buffer.seek(0)
+
+    st.download_button(
+        "⬇️ Télécharger (mensuel) – XLSX",
+        data=xlsx_buffer,
+        file_name="idsr_tableau_mensuel.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=xlsx_key,
+    )
+
+
+def render_idsr_weekly_cases_cfr_chart(
+    weekly_sorted: pd.DataFrame,
+    annot_vals: bool = False,
+    chart_key: str = "idsr_hist_cas_cfr",
+) -> None:
+    """Affiche la tendance hebdomadaire cas + létalité sans dupliquer la logique ailleurs."""
+    if weekly_sorted is None or not isinstance(weekly_sorted, pd.DataFrame) or weekly_sorted.empty:
+        st.info("Aucune donnée hebdomadaire agrégée n’est disponible après filtrage.")
+        return
+
+    _wk = weekly_sorted.copy()
+    if "YW" in _wk.columns:
+        _wk["_X_LAB"] = _wk["YW"].astype(str)
+    elif "TIME_LAB" in _wk.columns:
+        _wk["_X_LAB"] = _wk["TIME_LAB"].astype(str)
+    elif "TIME_KEY" in _wk.columns:
+        _wk["_X_LAB"] = _wk["TIME_KEY"].astype(str)
+    else:
+        _wk["_X_LAB"] = pd.Series(dtype="object")
+
+    _wk["_X_LAB"] = _wk["_X_LAB"].map(fmt_yw_label)
+    if ("_X_LAB" not in _wk.columns) or ("Cas" not in _wk.columns):
+        st.info("Variables insuffisantes pour tracer l’évolution hebdomadaire (TIME_LAB/Cas).")
+        return
+
+    _wk["CFR_calc_%"] = pd.to_numeric(_wk.get("CFR_calc_%"), errors="coerce").astype(float)
+    _wk = _wk.replace({pd.NA: np.nan})
+    _wk["_cfr_text"] = _wk["CFR_calc_%"].map(lambda x: "" if pd.isna(x) else f"{x:.2f} %")
+
+    fig_cas_cfr = go.Figure()
+    fig_cas_cfr.add_trace(go.Bar(
+        x=_wk["_X_LAB"],
+        y=pd.to_numeric(_wk["Cas"], errors="coerce").fillna(0).astype(float),
+        name="Cas",
+        yaxis="y1",
+    ))
+    fig_cas_cfr.add_trace(go.Scatter(
+        x=_wk["_X_LAB"],
+        y=_wk["CFR_calc_%"].astype(float),
+        name="Létalité (CFR%)",
+        mode="lines+markers+text",
+        yaxis="y2",
+        text=_wk["_cfr_text"],
+        textposition="top center",
+    ))
+    fig_cas_cfr.update_layout(
+        template="plotly_white",
+        xaxis_title="Semaine épidémiologique",
+        yaxis=dict(title="Nombre de cas"),
+        yaxis2=dict(title="Létalité (%)", overlaying="y", side="right", rangemode="tozero"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        bargap=0.04,
+        bargroupgap=0.02,
+        margin=dict(t=70, b=60, l=60, r=60),
+        height=420,
+    )
+    fig_cas_cfr = apply_plotly_value_annotations(fig_cas_cfr, annot_vals)
+    st.plotly_chart(fig_cas_cfr, width="stretch", key=chart_key)
+
+
 def render_idsr_reading_guide() -> None:
     """Affiche un plan de lecture simple pour éviter que l'utilisateur se perde dans l'onglet IDSR."""
     with st.expander("🧭 Guide de lecture de l’onglet IDSR", expanded=True):
@@ -3314,29 +3684,56 @@ def render_idsr_tab(ctx: dict) -> None:
                 else:
                     st.info("Écart non calculable : variables manquantes ou données insuffisantes.")
 
+                st.markdown("#### Tendance hebdomadaire des cas, décès et létalité")
+                st.caption(
+                    "La série temporelle principale est regroupée ici pour éviter de répéter la même lecture plus bas."
+                )
+                render_idsr_weekly_cases_cfr_chart(
+                    weekly_sorted=weekly_sorted,
+                    annot_vals=annot_vals,
+                    chart_key="idsr_hist_cas_cfr",
+                )
+
                 # Note: cette section est volontairement centrée sur la semaine max,
                 # même si l'utilisateur change semaine min.
                 st.divider()
-                with st.expander("03.b · 📑 Analyses standardisées IDSR — format bulletin hebdomadaire", expanded=False):
+                with st.expander("03.b · 📑 Tableaux et lectures standardisées — format bulletin IDSR", expanded=False):
                     st.caption(
-                        "Cette rubrique reprend le vocabulaire et les sorties les plus usuelles d’un bulletin hebdomadaire IDSR agrégé: "
-                        "distribution par DPS, taux d’attaque au cours des 3 dernières SE et focus hotspot par zone de santé."
+                        "Cette rubrique rassemble les sorties les plus utiles pour un bulletin IDSR agrégé : "
+                        "tableau standard province / zone de santé, signaux d’attaque, hotspot et tableau mensuel."
                     )
 
                     bulletin_scope = df9_base.copy() if ("df9_base" in locals() and not df9_base.empty) else df9.copy()
                     recent_3_weeks = _idsr_recent_weeks(bulletin_scope, last_n=3)
 
-                    with st.expander("03.b.1 · 🏥 Distribution des cas, décès et létalité par DPS", expanded=False):
+                    with st.expander("03.b.1 · 🏥 Tableau standard cumulatif par DPS / zone de santé", expanded=False):
                         if COL_PROV_ID in bulletin_scope.columns and "Total_cas" in bulletin_scope.columns and "Total_deces" in bulletin_scope.columns:
+                            zs_col_std = COL_ZS_ID if COL_ZS_ID in bulletin_scope.columns else None
+                            level_std = st.radio(
+                                "Niveau du tableau standard",
+                                ["Province", "Province + Zone de santé"],
+                                horizontal=True,
+                                key="idsr_standard_geo_level",
+                            )
+                            group_cols_std = [COL_PROV_ID]
+                            table_label = "DPS"
+                            if level_std == "Province + Zone de santé":
+                                if zs_col_std is None:
+                                    st.info("La colonne Zone de santé est absente : affichage provincial uniquement.")
+                                else:
+                                    group_cols_std = [COL_PROV_ID, zs_col_std]
+                                    table_label = "DPS + Zone de santé"
+
                             province_bulletin = _idsr_build_standard_geo_table(
                                 bulletin_scope,
-                                group_cols=[COL_PROV_ID],
+                                group_cols=group_cols_std,
                                 recent_weeks=recent_3_weeks,
-                                zs_col=COL_ZS_ID if COL_ZS_ID in bulletin_scope.columns else None,
+                                zs_col=zs_col_std,
                             )
                             if not province_bulletin.empty:
                                 province_display = province_bulletin.rename(columns={
                                     COL_PROV_ID: "Province",
+                                    zs_col_std: "Zone de santé",
                                     "Cas_cumul": "Cas cumul",
                                     "Deces_cumul": "Décès cumul",
                                     "Letalite_cumul_%": "Taux de létalité cumul (%)",
@@ -3344,6 +3741,9 @@ def render_idsr_tab(ctx: dict) -> None:
                                     "Variation_cas_abs": "Variation cas",
                                     "Variation_cas_%": "Variation cas (%)",
                                 })
+                                leading_cols = [c for c in ["Province", "Zone de santé"] if c in province_display.columns]
+                                remaining_cols = [c for c in province_display.columns if c not in leading_cols]
+                                province_display = province_display[leading_cols + remaining_cols]
                                 st.dataframe(
                                     province_display,
                                     width="stretch",
@@ -3361,9 +3761,14 @@ def render_idsr_tab(ctx: dict) -> None:
                                     top_share_label = None
                                     if total_cumul_cases > 0:
                                         top_row_std = province_bulletin.iloc[0]
+                                        top_target = (
+                                            f"{str(top_row_std[COL_PROV_ID])} / {str(top_row_std[zs_col_std])}"
+                                            if (zs_col_std and zs_col_std in province_bulletin.columns and level_std == "Province + Zone de santé")
+                                            else str(top_row_std[COL_PROV_ID])
+                                        )
                                         top_share = (float(top_row_std["Cas_cumul"]) / float(total_cumul_cases)) * 100.0
                                         top_share_label = (
-                                            f"La DPS la plus contributive est {str(top_row_std[COL_PROV_ID])} "
+                                            f"L’unité la plus contributive ({table_label}) est {top_target} "
                                             f"avec {_idsr_fmt_int(top_row_std['Cas_cumul'])} cas, soit {_idsr_fmt_pct(top_share)} du cumul observé."
                                         )
 
@@ -3379,17 +3784,17 @@ def render_idsr_tab(ctx: dict) -> None:
                                             top_share_label or "",
                                             (
                                                 f"Au total, {_idsr_fmt_int(latest_active_total)} zones de santé avec cas sont visibles sur la dernière semaine."
-                                                if pd.notna(latest_active_total)
+                                                if pd.notna(latest_active_total) and level_std == "Province"
                                                 else ""
                                             ),
                                         )
                                     )
                             else:
-                                st.info("Aucune synthèse standard par DPS n’a pu être calculée sur le périmètre courant.")
+                                st.info("Aucune synthèse standard n’a pu être calculée sur le périmètre courant.")
                         else:
                             st.info("La distribution standard par DPS est indisponible: colonnes Province/Total_cas/Total_deces absentes.")
 
-                    with st.expander("03.b.2 · 📈 Taux d’attaque par ZS au cours des 3 dernières semaines", expanded=False):
+                    with st.expander("03.b.2 · 📈 Signaux de taux d’attaque par ZS sur 3 semaines", expanded=False):
                         if {"Population", "Total_cas", "TIME_LAB", "TIME_KEY", COL_PROV_ID, COL_ZS_ID}.issubset(set(bulletin_scope.columns)):
                             threshold_default = 5.0
                             threshold_value = st.number_input(
@@ -3481,7 +3886,7 @@ def render_idsr_tab(ctx: dict) -> None:
                         else:
                             st.info("L’analyse du taux d’attaque sur 3 semaines nécessite Population, Province, ZS, Total_cas, TIME_LAB et TIME_KEY.")
 
-                    with st.expander("03.b.3 · 🔎 Analyse hotspot par DPS et zones de santé", expanded=False):
+                    with st.expander("03.b.3 · 🔎 Focus hotspot par DPS et zones de santé", expanded=False):
                         if COL_PROV_ID in bulletin_scope.columns and COL_ZS_ID in bulletin_scope.columns:
                             prov_options_hotspot = (
                                 bulletin_scope.groupby(COL_PROV_ID, as_index=False)
@@ -3601,6 +4006,59 @@ def render_idsr_tab(ctx: dict) -> None:
                         else:
                             st.info("Le focus hotspot nécessite les colonnes Province et Zone de santé.")
 
+                    with st.expander("03.b.4 · 📋 Tableau mensuel standard par DPS et zone de santé", expanded=False):
+                        render_idsr_monthly_standard_table(
+                            bulletin_scope,
+                            mal_col=COL_MAL,
+                            prov_col=COL_PROV_ID,
+                            zs_col=COL_ZS_ID if COL_ZS_ID in bulletin_scope.columns else None,
+                            level_key="idsr_month_level_bulletin",
+                            csv_key="idsr_monthly_bulletin_csv",
+                            xlsx_key="idsr_monthly_bulletin_xlsx",
+                        )
+
+                    with st.expander("03.b.5 · 🚨 Alertes opérationnelles", expanded=False):
+                        st.caption(
+                            "Cette rubrique se concentre sur les hausses récentes. "
+                            "Les lectures cumulées par DPS et ZS restent déjà couvertes par les tableaux bulletin, la cartographie et le focus hotspot."
+                        )
+
+                        if (COL_PROV_ID in df9.columns) and (len(weekly_sorted) >= 2):
+                            last_t = weekly_sorted.iloc[-1]["TIME_LAB"]
+                            prev_t = weekly_sorted.iloc[-2]["TIME_LAB"]
+
+                            df_last = df9[df9["TIME_LAB"] == last_t]
+                            df_prev = df9[df9["TIME_LAB"] == prev_t]
+
+                            prov_last = df_last.groupby(COL_PROV_ID, as_index=False).agg(Cas=("Total_cas", "sum"))
+                            prov_prev = df_prev.groupby(COL_PROV_ID, as_index=False).agg(Cas_prev=("Total_cas", "sum"))
+
+                            prov_delta = prov_last.merge(prov_prev, on=COL_PROV_ID, how="outer").fillna(0)
+                            prov_delta["Delta_cas"] = prov_delta["Cas"] - prov_delta["Cas_prev"]
+                            prov_delta["Delta_%"] = np.where(
+                                prov_delta["Cas_prev"] > 0,
+                                (prov_delta["Delta_cas"] / prov_delta["Cas_prev"]) * 100,
+                                np.nan
+                            )
+
+                            min_cases = st.slider(
+                                "Seuil cas (dernière semaine) pour afficher",
+                                0, 1000, 5, step=5, key="tab9_min_cases_up"
+                            )
+                            prov_delta = prov_delta[prov_delta["Cas"] >= min_cases].sort_values("Delta_cas", ascending=False)
+
+                            with st.expander("03.b.5.a · 📈 Provinces en hausse", expanded=False):
+                                n_up = st.slider("Nombre d’unités à afficher", 5, 50, 15, step=5, key="tab9_n_up_prov")
+                                prov_delta_display = _idsr_displayify_columns(
+                                    prov_delta.head(n_up),
+                                    extra_labels={COL_PROV_ID: "Province de notification"},
+                                )
+                                st.dataframe(prov_delta_display, width="stretch", height=420, hide_index=True)
+                                if prov_delta.empty:
+                                    st.caption("Aucune province ne franchit le seuil de cas retenu sur la dernière semaine.")
+                        else:
+                            st.info("L’alerte sur les provinces en hausse est indisponible : variable Province absente ou historique insuffisant.")
+
                 st.divider()
                 render_idsr_completeness_section(
                     df=df9,
@@ -3615,10 +4073,6 @@ def render_idsr_tab(ctx: dict) -> None:
                     mal_col=COL_MAL,
                 )
                 st.divider()
-                render_idsr_phase_header(
-                    "Cartographie et concentration géographique",
-                    "Localiser rapidement les DPS et zones de santé qui concentrent les cas après lecture de la situation et du taux d’attaque."
-                )
                 render_idsr_maps_section(
                     df_f=df9,
                     province_col=COL_PROV_ID,
@@ -3627,88 +4081,6 @@ def render_idsr_tab(ctx: dict) -> None:
                 )
 
                 st.divider()
-
-                with st.expander("06 · 🚨 Alertes et classements opérationnels", expanded=False):
-
-                    if (COL_PROV_ID in df9.columns) and (len(weekly_sorted) >= 2):
-                        last_t = weekly_sorted.iloc[-1]["TIME_LAB"]
-                        prev_t = weekly_sorted.iloc[-2]["TIME_LAB"]
-
-                        df_last = df9[df9["TIME_LAB"] == last_t]
-                        df_prev = df9[df9["TIME_LAB"] == prev_t]
-
-                        prov_last = df_last.groupby(COL_PROV_ID, as_index=False).agg(Cas=("Total_cas", "sum"))
-                        prov_prev = df_prev.groupby(COL_PROV_ID, as_index=False).agg(Cas_prev=("Total_cas", "sum"))
-
-                        prov_delta = prov_last.merge(prov_prev, on=COL_PROV_ID, how="outer").fillna(0)
-                        prov_delta["Delta_cas"] = prov_delta["Cas"] - prov_delta["Cas_prev"]
-                        prov_delta["Delta_%"] = np.where(
-                            prov_delta["Cas_prev"] > 0,
-                            (prov_delta["Delta_cas"] / prov_delta["Cas_prev"]) * 100,
-                            np.nan
-                        )
-
-                        min_cases = st.slider(
-                            "Seuil cas (dernière semaine) pour afficher",
-                            0, 1000, 5, step=5, key="tab9_min_cases_up"
-                        )
-                        prov_delta = prov_delta[prov_delta["Cas"] >= min_cases].sort_values("Delta_cas", ascending=False)
-
-                        with st.expander("06.a · 📈 Provinces en hausse", expanded=False):
-                            n_up = st.slider("Nombre d’unités à afficher", 5, 50, 15, step=5, key="tab9_n_up_prov")
-                            prov_delta_display = _idsr_displayify_columns(
-                                prov_delta.head(n_up),
-                                extra_labels={COL_PROV_ID: "Province de notification"},
-                            )
-                            st.dataframe(prov_delta_display, width="stretch", height=420, hide_index=True)
-                    else:
-                        st.info("Le classement des provinces en hausse est indisponible : variable Province absente ou historique insuffisant.")
-
-                    c3, c4 = st.columns(2)
-
-                    with c3:
-                        if COL_PROV_ID in df9.columns and "Total_cas" in df9.columns and "Total_deces" in df9.columns:
-                            top_prov = df9.groupby(COL_PROV_ID, as_index=False).agg(
-                                Cas=("Total_cas", "sum"),
-                                Deces=("Total_deces", "sum")
-                            )
-                            top_prov["CFR_%"] = np.where(top_prov["Cas"] > 0, (top_prov["Deces"] / top_prov["Cas"]) * 100, np.nan)
-                            top_prov = top_prov.sort_values("Cas", ascending=False)
-
-                            with st.expander("06.b · 🏥 DPS les plus touchées", expanded=False):
-                                n_prov = st.slider("Nombre de provinces à afficher", 10, 200, 20, step=10, key="tab9_n_top_prov")
-                                top_prov_display = _idsr_displayify_columns(
-                                    top_prov.head(n_prov),
-                                    extra_labels={COL_PROV_ID: "Province de notification"},
-                                )
-                                st.dataframe(top_prov_display, width="stretch", height=420, hide_index=True)
-                        else:
-                            top_prov = None
-                            st.info("Le classement des provinces est indisponible : variables requises manquantes.")
-
-                    with c4:
-                        if (COL_PROV_ID in df9.columns) and (COL_ZS_ID in df9.columns) and ("Total_cas" in df9.columns) and ("Total_deces" in df9.columns):
-                            top_zs = df9.groupby([COL_PROV_ID, COL_ZS_ID], as_index=False).agg(
-                                Cas=("Total_cas", "sum"),
-                                Deces=("Total_deces", "sum")
-                            )
-                            top_zs["CFR_%"] = np.where(top_zs["Cas"] > 0, (top_zs["Deces"] / top_zs["Cas"]) * 100, np.nan)
-                            top_zs = top_zs.sort_values("Cas", ascending=False)
-
-                            with st.expander("06.c · 🗺️ Zones de santé les plus touchées", expanded=False):
-                                n_zs = st.slider("Nombre de ZS à afficher", 10, 300, 20, step=10, key="tab9_n_top_zs")
-                                top_zs_display = _idsr_displayify_columns(
-                                    top_zs.head(n_zs),
-                                    extra_labels={
-                                        COL_PROV_ID: "Province de notification",
-                                        COL_ZS_ID: "Zone de santé de notification",
-                                    },
-                                )
-                                st.dataframe(top_zs_display, width="stretch", height=420, hide_index=True)
-                        else:
-                            top_zs = None
-                            st.info("Le classement des zones de santé est indisponible : variables requises manquantes.")
-
                 st.markdown("### 07 · Contrôle qualité des données")
                 st.caption(
                     "Cette partie aide à sécuriser le bulletin en vérifiant la cohérence temporelle, les doublons et les écarts entre totaux déclarés et tranches d’âge."
@@ -4214,65 +4586,8 @@ def render_idsr_tab(ctx: dict) -> None:
             # ---------------------------------------------------------------------
             # 14) IDSR – Spécifications des sorties
             # ---------------------------------------------------------------------
-            # 14.1) Histogramme des cas + courbe de létalité (CFR%)
-            with st.expander("08.a · 📈 Évolution hebdomadaire des cas, décès et létalité", expanded=True):
-                if 'weekly_sorted' in locals() and isinstance(weekly_sorted, pd.DataFrame) and not weekly_sorted.empty:
-                    _wk = weekly_sorted.copy()
-                    # Libellé unique Année-Semaine (évite doublons W01/W02 quand plusieurs années)
-                    if "YW" in _wk.columns:
-                        _wk["_X_LAB"] = _wk["YW"].astype(str)
-                    elif "TIME_KEY" in _wk.columns:
-                        _wk["_X_LAB"] = _wk["TIME_KEY"].astype(str)
-                    else:
-                        _wk["_X_LAB"] = _wk.get("TIME_LAB", pd.Series(dtype="object")).astype(str)
-                    # fmt_yw_label est centralisée dans dashboard_app.core
-                    _wk["_X_LAB"] = _wk["_X_LAB"].map(fmt_yw_label)
-
-                    # Sécurité sur colonnes
-                    if ("_X_LAB" in _wk.columns) and ("Cas" in _wk.columns):
-                        _wk["CFR_calc_%"] = pd.to_numeric(_wk.get("CFR_calc_%"), errors="coerce").astype(float)
-                        # Plotly n'accepte pas pd.NA (NAType) -> forcer np.nan
-                        _wk = _wk.replace({pd.NA: np.nan})
-
-                        # Texte CFR (évite "NA %" et évite pd.NA)
-                        _wk["_cfr_text"] = _wk["CFR_calc_%"].map(lambda x: "" if pd.isna(x) else f"{x:.2f} %")
-
-                        fig_cas_cfr = go.Figure()
-                        fig_cas_cfr.add_trace(go.Bar(
-                            x=_wk["_X_LAB"],
-                            y=pd.to_numeric(_wk["Cas"], errors="coerce").fillna(0).astype(float),
-                            name="Cas",
-                            yaxis="y1",
-                        ))
-                        fig_cas_cfr.add_trace(go.Scatter(
-                            x=_wk["_X_LAB"],
-                            y=_wk["CFR_calc_%"].astype(float),
-                            name="Létalité (CFR%)",
-                            mode="lines+markers+text",
-                            yaxis="y2",
-                            text=_wk["_cfr_text"],
-                            textposition="top center",
-                        ))
-                        fig_cas_cfr.update_layout(
-                            template="plotly_white",
-                            xaxis_title="Semaine épidémiologique",
-                            yaxis=dict(title="Nombre de cas"),
-                            yaxis2=dict(title="Létalité (%)", overlaying="y", side="right", rangemode="tozero"),
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                            bargap=0.04,
-                            bargroupgap=0.02,
-                            margin=dict(t=70, b=60, l=60, r=60),
-                            height=420,
-                        )
-                        fig_cas_cfr = apply_plotly_value_annotations(fig_cas_cfr, annot_vals)
-                        st.plotly_chart(fig_cas_cfr, width="stretch", key="idsr_hist_cas_cfr")
-                    else:
-                        st.info("Variables insuffisantes pour tracer l’évolution hebdomadaire (TIME_LAB/Cas).")
-                else:
-                    st.info("Aucune donnée hebdomadaire agrégée n’est disponible après filtrage.")
-
             # 14.2) Camembert par tranche d'âge + tableau associé
-            with st.expander("08.b · 👶 Répartition des cas, décès et létalité par âge", expanded=False):
+            with st.expander("08.a · 👶 Répartition des cas, décès et létalité par âge", expanded=False):
                 if not df9.empty:
                     age_scope_source = df9.copy()
                     age_scope_label = "Périmètre filtré"
@@ -4367,7 +4682,7 @@ def render_idsr_tab(ctx: dict) -> None:
 
 
             # 14.2.b) Analyses descriptives IDSR strictement basées sur l'agrégé
-            with st.expander("08.c · 👥 Profils agrégés par maladie, âge et semaine", expanded=False):
+            with st.expander("08.b · 👥 Profils agrégés par maladie, âge et semaine", expanded=False):
                 st.caption(
                     "Ces analyses restent strictement basées sur l’agrégé IDSR et détaillent la distribution par maladie, âge et semaine. "
                     "Les approfondissements géographiques ont été recentrés dans la cartographie et les classements pour alléger la lecture."
@@ -4517,280 +4832,4 @@ def render_idsr_tab(ctx: dict) -> None:
                         st.info("Aucune série hebdomadaire exploitable n’est disponible pour les maladies après filtrage.")
                 else:
                     st.info("La dynamique hebdomadaire par maladie est indisponible : colonnes TIME_LAB/TIME_KEY/Maladie/Total_cas absentes.")
-
-            st.markdown("### 09 · Tableaux standard et exports")
-            st.caption(
-                "Utilisez ces tableaux pour la lecture détaillée, les vérifications territoriales et la préparation des sorties de bulletin."
-            )
-
-            # 14.3) Tableau d’évolution par province et semaine épidémiologique
-            with st.expander("09.a · 📋 Tableau standard par DPS et semaine", expanded=False):
-
-                # Objectif : Provinces en lignes, Année-Semaine en colonnes, sous-colonnes Cas/Décès/Létalité (%)
-                if (not df9.empty) and (COL_PROV_ID in df9.columns):
-
-                    # Préparer les colonnes numériques (robuste)
-                    tmp_pw = prepare_idsr_numeric(df9, col_cases="Total_cas", col_deaths="Total_deces")
-
-                    # Choix du niveau d’affichage
-                    level_pw = st.radio(
-                        "Niveau d’affichage",
-                        ["Province de notification", "Province + Zone de notification"],
-                        horizontal=True,
-                        key="idsr_pw_level",
-                    )
-
-                    # Colonnes de lignes (index) selon le niveau
-                    zs_col = None
-                    if ("COL_ZS_ID" in globals()) and (globals()["COL_ZS_ID"] in tmp_pw.columns):
-                        zs_col = globals()["COL_ZS_ID"]
-                    elif ("COL_ZS" in globals()) and (globals()["COL_ZS"] in tmp_pw.columns):
-                        zs_col = globals()["COL_ZS"]
-
-                    idx_cols = [COL_PROV_ID]
-                    if (level_pw == "Province + Zone de notification") and (zs_col is not None):
-                        idx_cols = [COL_PROV_ID, zs_col]
-
-                    # Colonne semaine (unique) : privilégier Année-Semaine si dispo, sinon TIME_KEY, sinon TIME_LAB
-                    week_series, _order_key_col = choose_week_column(tmp_pw)
-                    if week_series.empty:
-                        st.info("Variables manquantes pour produire le tableau standard par DPS et semaine : libellé de semaine ou ordre chronologique indisponible.")
-                    else:
-                        # Construire pivot Cas/Décès/Létalité (%)
-                        pivot = build_cases_deaths_cfr_pivot(
-                            tmp_pw,
-                            idx_cols=idx_cols,
-                            week_series=week_series,
-                            col_cases="Total_cas",
-                            col_deaths="Total_deces",
-                            week_name="_YW_COL",
-                            cfr_label="Létalité (%)",
-                        )
-
-                        # Ordonner les semaines chronologiquement si possible
-                        if "weekly_sorted" in locals() and isinstance(weekly_sorted, pd.DataFrame) and (not weekly_sorted.empty):
-                            ordre_w = ordered_weeks_from_weekly_sorted(weekly_sorted, fmt=fmt_yw_label)
-                            pivot = reorder_pivot_weeks(pivot, ordre_w, fill_value=0)
-                        else:
-                            # Fallback : ordre lexical sur YYYYWww (chronologique)
-                            ordre_w = sorted(list(pivot.columns.levels[1]))
-                            pivot = reorder_pivot_weeks(pivot, ordre_w, fill_value=0)
-
-                        # Rendu standard : CFR arrondi + reset_index + affichage safe
-                        render_pivot_with_cfr(pivot, cfr_label="Létalité (%)", cfr_decimals=2, height=520)
-
-                else:
-                    st.info("Aucune donnée n’est disponible après filtrage pour produire le tableau province × semaine.")
-
-            # 14.4) Tableau croisé – totaux mensuels (Province / ZS)
-            with st.expander("09.b · 📋 Tableau mensuel par DPS et zone de santé", expanded=False):
-
-                if df9.empty:
-                    st.info("Aucune donnée n’est disponible après application des filtres analytiques.")
-                else:
-                    # ---------------------------------------------------------
-                    # 1) Construire une date source robuste
-                    # ---------------------------------------------------------
-                    def _get_date_series(_df: pd.DataFrame) -> pd.Series:
-                        # Priorité : Date_debut_semaine_iso (déjà calculée)
-                        if "Date_debut_semaine_iso" in _df.columns:
-                            s = parse_idsr_date_series(_df["Date_debut_semaine_iso"])
-                            if s.notna().any():
-                                return s
-
-                        # Sinon Date_debut_semaine si dispo
-                        if "Date_debut_semaine" in _df.columns:
-                            s = parse_idsr_date_series(_df["Date_debut_semaine"])
-                            if s.notna().any():
-                                return s
-
-                        # Sinon DEBUTSEM (Excel serial ou date)
-                        if "DEBUTSEM" in _df.columns:
-                            _debutsem = _df["DEBUTSEM"]
-                            s = parse_idsr_date_series(_debutsem)
-                            if s.notna().any():
-                                return s
-
-                        return pd.Series(pd.NaT, index=_df.index)
-
-                    tmp_m = df9.copy()
-                    tmp_m["_dt"] = _get_date_series(tmp_m)
-
-                    if tmp_m["_dt"].isna().all():
-                        st.warning("Impossible de construire les mois : aucune date de début de semaine exploitable n’a été détectée.")
-                    else:
-                        # ---------------------------------------------------------
-                        # 1bis) (Optionnel) filtrer dates absurdes pour éviter 1965/2037
-                        # ---------------------------------------------------------
-                        dt_min = pd.Timestamp("2000-01-01")
-                        dt_max = pd.Timestamp.today() + pd.Timedelta(days=366)
-                        tmp_m = tmp_m[tmp_m["_dt"].between(dt_min, dt_max)]
-
-                        if tmp_m.empty:
-                            st.warning("Toutes les dates disponibles sont hors de la plage attendue (2000 → année courante + 1). Veuillez vérifier DEBUTSEM/Date_debut_semaine.")
-                        else:
-                            # Mois (timestamp)
-                            tmp_m["_month"] = tmp_m["_dt"].dt.to_period("M").dt.to_timestamp()
-
-                            # Libellé mois en FR: "janv.-2024" (IMPORTANT: %Y pour éviter collisions 1924 vs 2024)
-                            mois_fr = {
-                                1: "janv.", 2: "févr.", 3: "mars", 4: "avr.", 5: "mai", 6: "juin",
-                                7: "juil.", 8: "août", 9: "sept.", 10: "oct.", 11: "nov.", 12: "déc."
-                            }
-                            tmp_m["_month_lab"] = tmp_m["_dt"].dt.month.map(mois_fr) + "-" + tmp_m["_dt"].dt.strftime("%Y")
-
-                            # ---------------------------------------------------------
-                            # 2) Choix niveau: Province / Province+ZS
-                            # ---------------------------------------------------------
-                            level_m = st.radio(
-                                "Niveau d’affichage",
-                                ["Provincial", "Zonal (Province + ZS)"],
-                                horizontal=True,
-                                key="idsr_month_level",
-                            )
-
-                            # Colonnes id
-                            col_mal = "Maladie" if "Maladie" in tmp_m.columns else COL_MAL
-                            col_prov = COL_PROV_ID
-                            col_zs = COL_ZS_ID if (COL_ZS_ID in tmp_m.columns) else None
-
-                            idx_cols = [col_mal, col_prov]
-                            if (level_m.startswith("Zonal")) and (col_zs is not None):
-                                idx_cols = [col_mal, col_prov, col_zs]
-
-                            # ---------------------------------------------------------
-                            # 3) Indicateurs à produire
-                            # ---------------------------------------------------------
-                            metrics = [
-                                ("Population", "Population exposée", "max"),
-                                ("Cas_0_11mois", "Cas suspects 0 à 11mois", "sum"),
-                                ("Cas_12_59mois", "Cas suspects 12mois à 5ans", "sum"),
-                                ("Cas_5_14ans", "Cas suspects 5 à 14ans", "sum"),
-                                ("Cas_15plus", "Cas suspects Adultes", "sum"),
-                                ("Total_deces", "Nombre de décès", "sum"),
-                            ]
-
-                            # Garder uniquement les métriques existantes
-                            metrics_ok = [(c, lab, agg) for (c, lab, agg) in metrics if c in tmp_m.columns]
-                            if not metrics_ok:
-                                st.info("Aucune colonne indicateur trouvée (Population / Cas_* / Total_deces).")
-                            else:
-                                # Préparer valeurs numériques
-                                for c, _, _ in metrics_ok:
-                                    tmp_m[c] = pd.to_numeric(tmp_m[c], errors="coerce")
-
-                                # -----------------------------------------------------
-                                # 4) Construire une table longue puis pivot mensuel
-                                # -----------------------------------------------------
-                                pieces = []
-                                group_base = idx_cols + ["_month", "_month_lab"]
-
-                                for c, lab, agg in metrics_ok:
-                                    g = tmp_m[group_base + [c]].copy()
-
-                                    if agg == "max":
-                                        out = g.groupby(group_base, as_index=False)[c].max()
-                                    else:
-                                        out = g.groupby(group_base, as_index=False)[c].sum(min_count=1)
-
-                                    out = out.rename(columns={c: "Valeur"})
-                                    out["Données"] = lab
-                                    pieces.append(out)
-
-                                long_df = pd.concat(pieces, ignore_index=True)
-
-                                pivot = (
-                                    long_df.pivot_table(
-                                        index=idx_cols + ["Données"],
-                                        columns="_month",
-                                        values="Valeur",
-                                        aggfunc="sum",
-                                        fill_value=0,
-                                        observed=False,
-                                    )
-                                    .reset_index()
-                                )
-
-                                # Mapping mois timestamp -> label "janv.-2024"
-                                month_map = (
-                                    long_df.dropna(subset=["_month"])
-                                    .drop_duplicates(subset=["_month"])[["_month", "_month_lab"]]
-                                    .sort_values("_month")
-                                    .set_index("_month")["_month_lab"]
-                                    .to_dict()
-                                )
-
-                                new_cols = []
-                                for col in pivot.columns:
-                                    if isinstance(col, (pd.Timestamp, datetime)):
-                                        new_cols.append(month_map.get(pd.Timestamp(col), pd.Timestamp(col).strftime("%b-%Y")))
-                                    else:
-                                        new_cols.append(col)
-                                pivot.columns = new_cols
-
-                                # Tri logique des lignes "Données"
-                                order_data = [
-                                    "Population exposée",
-                                    "Cas suspects 0 à 11mois",
-                                    "Cas suspects 12mois à 5ans",
-                                    "Cas suspects 5 à 14ans",
-                                    "Cas suspects Adultes",
-                                    "Nombre de décès",
-                                ]
-                                pivot["Données"] = pd.Categorical(pivot["Données"], categories=order_data, ordered=True)
-                                pivot = pivot.sort_values(idx_cols + ["Données"]).reset_index(drop=True)
-                                pivot = _idsr_displayify_columns(
-                                    pivot,
-                                    extra_labels={
-                                        col_mal: "Maladie",
-                                        col_prov: "Province de notification",
-                                        col_zs: "Zone de santé de notification" if col_zs is not None else None,
-                                    },
-                                )
-
-                                # -----------------------------------------------------
-                                # 5) IMPORTANT: rendre les colonnes uniques (Streamlit/PyArrow)
-                                # -----------------------------------------------------
-                                def _make_unique(cols):
-                                    seen = {}
-                                    out = []
-                                    for x in cols:
-                                        x = str(x)
-                                        if x not in seen:
-                                            seen[x] = 0
-                                            out.append(x)
-                                        else:
-                                            seen[x] += 1
-                                            out.append(f"{x}__{seen[x]}")
-                                    return out
-
-                                pivot.columns = _make_unique(pivot.columns)
-
-                                st.dataframe(pivot, width="stretch", height=520, hide_index=True)
-
-                                # -----------------------------------------------------
-                                # 6) Exportation CSV / XLSX (colonnes déjà uniques)
-                                # -----------------------------------------------------
-                                csv_m = pivot.to_csv(index=False).encode("utf-8")
-                                st.download_button(
-                                    "⬇️ Télécharger (mensuel) – CSV",
-                                    data=csv_m,
-                                    file_name="idsr_tableau_mensuel.csv",
-                                    mime="text/csv",
-                                    key="tab9_dl_monthly_pivot",
-                                )
-
-                                xlsx_buffer = BytesIO()
-                                with pd.ExcelWriter(xlsx_buffer, engine="openpyxl") as writer:
-                                    pivot.to_excel(writer, sheet_name="Tableau_mensuel", index=False)
-                                xlsx_buffer.seek(0)
-
-                                st.download_button(
-                                    "⬇️ Télécharger (mensuel) – XLSX",
-                                    data=xlsx_buffer,
-                                    file_name="idsr_tableau_mensuel.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    key="tab9_dl_monthly_pivot_xlsx",
-                                )
-
 
