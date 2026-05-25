@@ -37,6 +37,7 @@ SOURCE_COLUMNS: dict[str, dict[str, Any]] = {
     "Unite_age": {"role": "Unite utilisee pour l'age", "required": False, "level": "important"},
     "Issue": {"role": "Issue du cas ou outcome", "required": False, "level": "optional"},
     "Classification_finale": {"role": "Classification finale du cas", "required": False, "level": "optional"},
+    "Investigation": {"role": "Statut d'investigation du cas", "required": False, "level": "optional"},
     "Prelevement": {"role": "Prelevement ou echantillon realise", "required": False, "level": "optional"},
     "TDR_realise": {"role": "Statut de realisation du TDR", "required": False, "level": "optional"},
     "TDR_Resultat": {"role": "Resultat du TDR", "required": False, "level": "optional"},
@@ -211,6 +212,13 @@ COLUMN_VARIANTS: dict[str, list[str]] = {
         "classif",
         "classification_finale_du_cas",
     ],
+    "Investigation": [
+        "investigation",
+        "investigated",
+        "cas_investigue",
+        "cas_investiguee",
+        "statut_investigation",
+    ],
     "Prelevement": [
         "echantillon_preleve",
         "prelevement_realise",
@@ -236,6 +244,8 @@ COLUMN_VARIANTS: dict[str, list[str]] = {
     "Resultat_labo": [
         "resultats_labo",
         "resultat_labo",
+        "Resultat_final_labo",
+        "resultat_final_labo",
         "lab_result",
         "pcr_result",
         "quel_est_le_resultats",

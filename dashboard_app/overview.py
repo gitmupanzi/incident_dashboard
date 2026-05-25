@@ -21,6 +21,7 @@ from dashboard_app.domain import (
     COL_CLASS,
     COL_DEHY,
     COL_HOSP,
+    COL_INVEST,
     COL_ISSUE,
     COL_PREL,
     COL_PROV,
@@ -677,6 +678,7 @@ def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
     classification_counts = _build_classification_counts(df_)
     issue_counts = _build_issue_counts(df_)
     lab_counts = _build_lab_counts(df_, kpi)
+    investigation_counts = _build_investigation_counts(df_)
     quality_focus = _build_quality_focus_metrics(df_)
     delay_focus = _build_delay_focus_metrics(df_)
     hotspots = _build_hotspots_table(df_)
@@ -710,6 +712,13 @@ def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
             "subtitle": "Cas confirmés",
             "theme": "green",
             "color": "#27a063",
+        },
+        {
+            "label": "Cas investigués",
+            "value": int(investigation_counts.get("investigues", 0)),
+            "subtitle": "Investigation documentée ou inférée",
+            "theme": "navy",
+            "color": "#425a7d",
         },
         {
             "label": "Prélevés",
@@ -900,6 +909,7 @@ def render_dashboard_kpis(payload: Dict[str, Any]) -> None:
     cards = [
         ("Total cas", format_metric_value(payload.get("cases", 0)), "Périmètre filtré", "blue compact", 1),
         ("Total décès", format_metric_value(payload.get("deaths", 0)), "Périmètre filtré", "navy compact", 1),
+        ("Guéris", format_metric_value(_estimate_alive_issue_count(payload)), "Vivants documentés", "green compact", 1),
         ("CFR (%)", format_metric_value(payload.get("cfr"), decimals=2), "Létalité observée", "orange compact", 1),
         ("Période", payload.get("week_span", "-"), "Fenêtre analytique", "blue compact", 2),
         (
@@ -910,12 +920,12 @@ def render_dashboard_kpis(payload: Dict[str, Any]) -> None:
             1,
         ),
         ("ZS touchées", format_metric_value(payload.get("reported_zs", 0)), "Notifications consolidées", "green compact", 1),
+        ("Cas investigués", format_metric_value(_get_surveillance_value(payload, "Cas investigues", 0)), "Investigation documentée", "navy compact", 1),
         ("Probables", format_metric_value(_get_surveillance_value(payload, "Cas probables", 0)), "Classification disponible", "orange compact", 1),
         ("Suspects", format_metric_value(_get_surveillance_value(payload, "Cas suspects", 0)), "Classification disponible", "amber compact", 1),
         ("Positifs", format_metric_value(_get_surveillance_value(payload, "Cas positifs", 0)), "Résultats labo", "red compact", 1),
         ("Négatifs", format_metric_value(_get_surveillance_value(payload, "Cas negatifs", 0)), "Résultats labo", "green compact", 1),
         ("Invalides", format_metric_value(_get_surveillance_value(payload, "Resultats invalides", 0)), "Analyses non concluantes", "slate compact", 1),
-        ("Guéris", format_metric_value(_estimate_alive_issue_count(payload)), "Vivants documentés", "green compact", 1),
     ]
     cards_html = "".join(build_dashboard_kpi_card_html(*card) for card in cards)
     st.markdown(f"<div class='cousp-kpi-grid cousp-kpi-grid-compact'>{cards_html}</div>", unsafe_allow_html=True)
@@ -988,9 +998,33 @@ def _build_lab_counts(df_: pd.DataFrame, kpi: Dict[str, Any]) -> dict[str, int]:
     }
 
 
+def _build_investigation_counts(df_: pd.DataFrame) -> dict[str, Any]:
+    """Construit un volume simple des cas investigués sur la line list."""
+    if "investigated_oui_non" in df_.columns:
+        investigated_mask = pd.Series(df_["investigated_oui_non"], index=df_.index).fillna(False).astype(bool)
+    elif COL_INVEST in df_.columns:
+        investigated_mask = _is_yes_series(df_[COL_INVEST])
+    else:
+        investigated_mask = pd.Series(False, index=df_.index)
+
+    available = bool(
+        ("investigated_oui_non" in df_.columns)
+        or (COL_INVEST in df_.columns)
+        or (DATE_INV in df_.columns)
+        or ("Classification_finale_std" in df_.columns)
+        or (COL_CLASS in df_.columns)
+    )
+
+    return {
+        "investigues": int(investigated_mask.sum()),
+        "available": available,
+    }
+
+
 def _build_alert_proxy_counts(df_: pd.DataFrame, classification_counts: dict[str, int]) -> dict[str, Any]:
     """Construit des proxies simples de chaîne d'alerte pour les line lists."""
     notified_alerts = int(len(df_))
+    investigation_counts = _build_investigation_counts(df_)
     if "Classification_finale_std" in df_.columns and df_["Classification_finale_std"].notna().any():
         classification_series = _clean_count_series(df_["Classification_finale_std"])
     elif COL_CLASS in df_.columns and df_[COL_CLASS].notna().any():
@@ -1005,7 +1039,9 @@ def _build_alert_proxy_counts(df_: pd.DataFrame, classification_counts: dict[str
     return {
         "notified_alerts": notified_alerts,
         "verified_alerts": verified_alerts,
+        "investigated_alerts": int(investigation_counts.get("investigues", 0)) if investigation_counts.get("available") else None,
         "has_classification": classification_series is not None,
+        "has_investigation": bool(investigation_counts.get("available")),
     }
 
 
@@ -2414,6 +2450,7 @@ def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
     surveillance_chain = [
         {"label": "Alertes notifiees", "value": int(alert_proxy.get("notified_alerts", 0)), "subtitle": "Notifications issues de la line list", "theme": "blue", "color": "#2b74ca", "available": True},
         {"label": "Alertes verifiees", "value": alert_proxy.get("verified_alerts"), "subtitle": "Proxy base sur la classification finale", "theme": "green", "color": "#27a063", "available": alert_proxy.get("verified_alerts") is not None},
+        {"label": "Cas investigues", "value": alert_proxy.get("investigated_alerts"), "subtitle": "Investigation documentee ou inferee", "theme": "navy", "color": "#425a7d", "available": alert_proxy.get("investigated_alerts") is not None},
         {"label": "Cas probables", "value": int(classification_counts.get("Probable", 0)) if has_classification else None, "subtitle": "Classification standardisee", "theme": "orange", "color": "#f29b38", "available": has_classification},
         {"label": "Cas suspects", "value": int(classification_counts.get("Suspect", 0)) if has_classification else None, "subtitle": "Classification standardisee", "theme": "amber", "color": "#f2a53a", "available": has_classification},
         {"label": "Echantillons recus", "value": int(lab_counts.get("recus", 0)) if lab_counts.get("recus", 0) > 0 else int(lab_counts.get("preleves", 0)) if lab_counts.get("preleves", 0) > 0 else None, "subtitle": "Reception labo ou proxy prelevements documentes", "theme": "purple", "color": "#7b4dff", "available": bool(lab_counts.get("recus", 0) > 0 or lab_counts.get("preleves", 0) > 0)},

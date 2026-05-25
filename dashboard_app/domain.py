@@ -107,6 +107,7 @@ COL_PREL = "Prelevement"
 COL_TDR  = "TDR_realise"
 COL_TDRR = "TDR_Resultat"
 COL_HOSP = "Hospitalisation"
+COL_INVEST = "Investigation"
 COL_DEHY = "Degre_deshydratation"
 COL_ISSUE= "Issue"
 COL_CLASS= "Classification_finale"
@@ -285,7 +286,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
 
             "Quel_est_le_resultats": "Resultat_labo",
             "Resultat_final_opx": "Resultat_labo",
-            "Resultats_Labo": "Resultat_labo",
+            "Resultats_labo": "Resultat_labo",
 
             "Status_Analyse": "Statut_analyse",
         },
@@ -322,6 +323,7 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
         "rename_map": {
             "Date_debut_symptomes": "Date_debut_maladie",
             "Date_issue": "Date_sortie_au_CT",
+            "Resultat_final_labo": "Resultat_labo",
         },
         "onset_candidates": ["Date_debut_maladie", "Date_debut_symptomes"],
         "notif_candidates": ["Date_notification"],
@@ -457,15 +459,15 @@ def is_disease_enabled(disease_key: str) -> bool:
 
 def _coalesce_first(df: pd.DataFrame, candidates: List[str]) -> pd.Series:
     """Retourne la première colonne non-NA dans candidates (coalesce)."""
-    if not candidates:
+    available = [c for c in candidates if c in df.columns]
+    if not available:
         return pd.Series([pd.NA] * len(df), index=df.index)
-    out = None
-    for c in candidates:
-        if c in df.columns:
-            s = df[c]
-            out = s if out is None else out.combine_first(s)
-    if out is None:
-        out = pd.Series([pd.NA] * len(df), index=df.index)
+    if len(available) == 1:
+        return df[available[0]].copy()
+    out = pd.Series(pd.NA, index=df.index, dtype="object")
+    for col in available:
+        series = df[col]
+        out = out.mask(out.isna(), series)
     return out
 
 
@@ -543,7 +545,28 @@ def standardize_ll_by_disease(df: pd.DataFrame, disease_key: str) -> pd.DataFram
         "Date_issue": "issue_candidates",
     }
     text_candidate_map = {
-        "Classification_finale": "class_candidates",
+        "Classification_finale": list(
+            dict.fromkeys((spec.get("class_candidates", []) or []) + ["Classification_finale", "Classification_investigation", "Status_cas"])
+        ),
+        "Issue": list(
+            dict.fromkeys((spec.get("issue_text_candidates", []) or []) + ["Issue", "Evolution", "Outcome", "Statut_Cas"])
+        ),
+        "Resultat_labo": list(
+            dict.fromkeys(
+                (spec.get("lab_result_candidates", []) or [])
+                + [
+                    "Resultat_labo",
+                    "Resultat_final_labo",
+                    "Resultats_labo",
+                    "Quel_est_le_resultats",
+                    "Resultat_final_opx",
+                    "Resultat_igm",
+                    "Resultat_igm_rubeole",
+                    "Resultat_pcr_labo_national",
+                    "Resultat_machd_labo_national",
+                ]
+            )
+        ),
     }
 
     # - On convertit toutes les candidates de date en datetime (robuste)
@@ -560,10 +583,12 @@ def standardize_ll_by_disease(df: pd.DataFrame, disease_key: str) -> pd.DataFram
         fallback_series = _coalesce_first(df, spec.get(spec_key, []))
         df[target_col] = _to_dt(df[target_col]).combine_first(fallback_series)
 
-    for target_col, spec_key in text_candidate_map.items():
+    for target_col, candidates in text_candidate_map.items():
         if target_col not in df.columns:
-            df[target_col] = pd.NA
-        fallback_series = _coalesce_first(df, spec.get(spec_key, []))
+            df[target_col] = pd.Series(pd.NA, index=df.index, dtype="string")
+        else:
+            df[target_col] = df[target_col].astype("string")
+        fallback_series = _coalesce_first(df, candidates).astype("string")
         df[target_col] = df[target_col].combine_first(fallback_series)
 
     # Recalcul ISO si nécessaire après coalesce
@@ -2139,12 +2164,37 @@ def _norm_txt_series(s: pd.Series) -> pd.Series:
     return s.str.strip().str.lower()
 
 YES_SET = {"oui", "o", "y", "yes", "1", "true", "vrai"}
+INVESTIGATION_CLASS_SET = {
+    "confirme",
+    "confirme",
+    "confirmee",
+    "confirme par labo",
+    "confirme au labo",
+    "positif",
+    "probable",
+    "suspect",
+    "cas suspect",
+    "compatible",
+    "non cas",
+    "non_cas",
+    "discarded",
+    "indetermine",
+    "indeterminee",
+    "indeterminee",
+}
 
 TDR_POS_SET = {"positif", "positive", "pos", "+", "tdr positif"}
 TDR_NEG_SET = {"negatif", "négatif", "negative", "neg", "-", "tdr negatif", "tdr négatif"}
 
 def _is_yes_series(s: pd.Series) -> pd.Series:
     return _norm_txt_series(s).isin(YES_SET)
+
+
+def _has_investigation_classification(series: pd.Series) -> pd.Series:
+    """Repère les statuts de classification qui impliquent qu'une investigation a eu lieu."""
+    norm = clean_str(series).apply(lambda v: _strip_accents(v).lower().strip() if pd.notna(v) else v)
+    norm = norm.str.replace(r"\s+", " ", regex=True)
+    return norm.isin(INVESTIGATION_CLASS_SET)
 
 def _normalize_lab_result_value(value) -> object:
     if value is None or pd.isna(value):
@@ -2563,12 +2613,12 @@ def standardize_df(df):
     df = df.copy()
 
     # Strings
-    for c in [COL_PROV, COL_ZS, COL_AS, COL_SEX, COL_ISSUE, COL_CLASS, COL_TDRR, COL_AGEG, COL_AGEG2, COL_DEHY]:
+    for c in [COL_PROV, COL_ZS, COL_AS, COL_SEX, COL_ISSUE, COL_CLASS, COL_INVEST, COL_TDRR, COL_AGEG, COL_AGEG2, COL_DEHY]:
         if c in df.columns:
             df[c] = clean_str(df[c])
 
     # Yes/No
-    for c in [COL_PREL, COL_TDR, COL_HOSP]:
+    for c in [COL_PREL, COL_TDR, COL_HOSP, COL_INVEST]:
         if c in df.columns:
             df[c] = df[c].apply(norm_yesno)
 
@@ -2634,10 +2684,27 @@ def standardize_df(df):
             "sorti": "Sorti",
         })
 
+    if COL_INVEST not in df.columns:
+        df[COL_INVEST] = pd.Series(pd.NA, index=df.index, dtype="string")
+    else:
+        df[COL_INVEST] = clean_str(df[COL_INVEST]).apply(norm_yesno).astype("string")
+
+    investigated_evidence = pd.Series(False, index=df.index)
+    if DATE_INV in df.columns:
+        investigated_evidence |= pd.to_datetime(df[DATE_INV], errors="coerce").notna()
+    if "Classification_finale_std" in df.columns:
+        investigated_evidence |= _has_investigation_classification(df["Classification_finale_std"])
+    elif COL_CLASS in df.columns:
+        investigated_evidence |= _has_investigation_classification(df[COL_CLASS])
+
+    investigation_missing = df[COL_INVEST].isna() | df[COL_INVEST].astype("string").str.strip().eq("")
+    df.loc[investigation_missing & investigated_evidence, COL_INVEST] = "Oui"
+
     # indicateurs standards
     df["preleve_oui_non"] = _is_yes_series(df[COL_PREL]) if COL_PREL in df.columns else False
     df["tdr_realise_oui_non"] = _is_yes_series(df[COL_TDR]) if COL_TDR in df.columns else False
     df["hospitalise_oui_non"] = _is_yes_series(df[COL_HOSP]) if COL_HOSP in df.columns else False
+    df["investigated_oui_non"] = _is_yes_series(df[COL_INVEST]) if COL_INVEST in df.columns else False
     if "Resultat_labo" in df.columns:
         df["confirme_labo_oui_non"] = df["Resultat_labo"].apply(is_positive)
     else:
@@ -4610,9 +4677,11 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
         "date_issue": "Date_issue",
         "date_reception_labo": "Date_reception_labo",
         "date_reception_echantillon": "Date_reception_labo",
+        "date_reception_echantillon_labo": "Date_reception_labo",
         "date_de_reception": "Date_reception_labo",
         "date_resultat": "Date_resultat",
         "date_reception_resultat": "Date_resultat",
+        "date_analyse": "Date_resultat",
 
         # Geo
         "province": "Province_notification",
@@ -4670,15 +4739,26 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
         "age_annees": "Age_en_ans",
 
         # Outcome / classif
+        "issue": "Issue",
         "outcome": "Issue",
         "evolution": "Issue",
+        "classification_finale": "Classification_finale",
         "classification": "Classification_finale",
         "classif": "Classification_finale",
         "statut_cas": "Classification_finale",
         "classification_investigation": "Classification_finale",
+        "investigation": "Investigation",
+        "investigated": "Investigation",
+        "cas_investigue": "Investigation",
+        "cas_investiguee": "Investigation",
 
         # Labo / prelevement
         "echantillon_preleve": "Prelevement",
+        "resultat_labo": "Resultat_labo",
+        "resultat_final_labo": "Resultat_labo",
+        "resultats_labo": "Resultat_labo",
+        "quel_est_le_resultats": "Resultat_labo",
+        "resultat_final_opx": "Resultat_labo",
         "type_prelevement": "Type_de_prelevement",
         "nombre_doses_vaccin": "Nombre_dose_recues",
         "laboratoire": "Nom_laboratoire",
@@ -4695,7 +4775,7 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
         "Semaine_epid", "Num_semaine_epid", "Annee_epid",
         "Sexe", "Age", "Unite_age", "Age_en_ans",
         "Tranche_age", "Tranche_age_en_ans",
-        "Issue", "Classification_finale", "Prelevement", "TDR_realise", "TDR_Resultat", "Hospitalisation", "Resultat_labo",
+        "Issue", "Classification_finale", "Investigation", "Prelevement", "TDR_realise", "TDR_Resultat", "Hospitalisation", "Resultat_labo",
     ]
     for c in required:
         if c not in df.columns:
@@ -4706,6 +4786,7 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
     df["Date_debut_maladie"] = _to_dt(df["Date_debut_maladie"])
 
     # --- Age brut: fallback utile pour certaines line lists labo
+    df["Unite_age"] = df["Unite_age"].astype("string")
     age_numeric = pd.to_numeric(df["Age"], errors="coerce")
     unit_text = df["Unite_age"].astype("string").str.strip()
     unit_missing = unit_text.isna() | unit_text.eq("")

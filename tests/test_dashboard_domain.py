@@ -22,6 +22,7 @@ from dashboard_app.domain import (
     COL_DEHY,
     COL_PROV,
     COL_HOSP,
+    COL_INVEST,
     COL_ISSUE,
     COL_PREL,
     COL_SEX,
@@ -55,6 +56,7 @@ from dashboard_app.domain import (
 )
 from dashboard_app.narratives import _build_scope_overview_text
 from dashboard_app.overview import (
+    build_dashboard_kpi_payload,
     build_geo_pair_key,
     build_geo_pair_label,
     format_range_label_for_display,
@@ -222,6 +224,42 @@ class StandardizationTest(unittest.TestCase):
         self.assertEqual(int(out.loc[0, COL_YEAR]), 2026)
         self.assertEqual(int(out.loc[0, COL_WNUM]), 2)
         self.assertEqual(out.loc[0, COL_WEEK], "2026-W02")
+
+    def test_standardize_df_derives_investigation_from_date_and_classification(self):
+        raw = pd.DataFrame(
+            {
+                COL_INVEST: [None, None, "Non", "Oui"],
+                DATE_INV: ["2026-01-03", None, "2026-01-04", None],
+                COL_CLASS: ["Suspect", "Non cas", "Probable", None],
+                COL_PROV: ["Kinshasa"] * 4,
+                COL_ZS: ["Gombe"] * 4,
+            }
+        )
+
+        out = standardize_df(raw)
+
+        self.assertEqual(out.loc[0, COL_INVEST], "Oui")
+        self.assertEqual(out.loc[1, COL_INVEST], "Oui")
+        self.assertEqual(out.loc[2, COL_INVEST], "Non")
+        self.assertEqual(out.loc[3, COL_INVEST], "Oui")
+        self.assertEqual(int(out["investigated_oui_non"].sum()), 3)
+
+    def test_build_dashboard_kpi_payload_includes_investigated_cases(self):
+        raw = pd.DataFrame(
+            {
+                COL_PROV: ["Kinshasa", "Kinshasa", "Nord Kivu"],
+                COL_ZS: ["Gombe", "Gombe", "Beni"],
+                DATE_NOTIF: ["2026-01-05", "2026-01-06", "2026-01-07"],
+                COL_INVEST: ["Oui", None, "Non"],
+                DATE_INV: [None, "2026-01-08", None],
+                COL_CLASS: ["Suspect", "Confirmé", "Non cas"],
+            }
+        )
+
+        payload = build_dashboard_kpi_payload(standardize_df(raw))
+        chain = {str(item["label"]): item.get("value") for item in payload.get("surveillance_chain", [])}
+
+        self.assertEqual(chain.get("Cas investigues"), 2)
 
 
 class IndicatorTest(unittest.TestCase):
