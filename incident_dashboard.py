@@ -35,6 +35,7 @@ from dashboard_app.domain import *
 from dashboard_app.tabs.surveillance import render_surveillance_tab
 from dashboard_app.tabs.profile import render_profile_tab
 from dashboard_app.tabs.quality import render_quality_tab
+from dashboard_app.tabs.cousp import render_cousp_tab
 from dashboard_app.tabs.sitrep import render_sitrep_tab
 from dashboard_app.tabs.idsr import render_idsr_tab
 from dashboard_app.tabs.irep import render_irep_tab
@@ -1613,6 +1614,7 @@ st.caption("Sélectionnez un onglet détaillé ci-dessous. Le contenu s'affiche 
     tab_surveillance,
     tab_profil,
     tab_qualite,
+    tab_cousp,
     tab_sitrep,
     tab_irep,
     tab_maps,
@@ -1624,6 +1626,7 @@ st.caption("Sélectionnez un onglet détaillé ci-dessous. Le contenu s'affiche 
         "Surveillance",
         "Profil",
         "Qualité et export",
+        "COUSP",
         "SITREP",
         "IREP",
         "Cartographie",
@@ -1646,6 +1649,9 @@ with tab_profil:
 
 with tab_qualite:
     render_quality_tab(build_runtime_context(**globals()))
+
+with tab_cousp:
+    render_cousp_tab(build_runtime_context(**globals()))
 
 with tab_sitrep:
     render_sitrep_tab(build_runtime_context(**globals()))

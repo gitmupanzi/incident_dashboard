@@ -3018,6 +3018,66 @@ def standard_data_quality_summary(df: pd.DataFrame) -> pd.DataFrame:
         rows.append({"Indicateur": "Date de confirmation documentée (%)", "Valeur": round(float(confirm_yes.mean() * 100), 1)})
     return pd.DataFrame(rows)
 
+
+def build_cousp_standard_export_package(
+    df: pd.DataFrame,
+    *,
+    anonymiser_recherche: bool = False,
+    seuil_acceptable: float = 5.0,
+    seuil_surveillance: float = 20.0,
+) -> Tuple[Dict[str, pd.DataFrame], Optional[str]]:
+    """
+    Construit un pack COUSP standard à partir du périmètre filtré du dashboard.
+
+    Le helper utilise le pipeline COUSP integre au dashboard afin de garder
+    `incident_dashboard` autonome comme projet Streamlit.
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return {}, "Aucune donnée filtrée n'est disponible pour construire le pack COUSP standard."
+
+    work = df.copy()
+    if work.columns.duplicated().any():
+        work = work.loc[:, ~work.columns.duplicated()].copy()
+
+    try:
+        from dashboard_app.cousp_export import generer_feuilles_sortie_cousp_local
+    except Exception as exc:
+        return {}, f"Impossible de charger le module COUSP standard : {exc}"
+
+    try:
+        sheets = generer_feuilles_sortie_cousp_local(
+            work,
+            anonymiser_recherche=anonymiser_recherche,
+            seuil_acceptable=seuil_acceptable,
+            seuil_surveillance=seuil_surveillance,
+        )
+    except Exception as exc:
+        return {}, f"Erreur pendant la génération du pack COUSP standard : {exc}"
+
+    return sheets, None
+
+
+def workbook_bytes_from_sheet_dict(
+    sheets: Dict[str, pd.DataFrame],
+) -> bytes:
+    """
+    Sérialise un dictionnaire {nom_feuille: DataFrame} en fichier Excel en mémoire.
+    """
+    if not isinstance(sheets, dict) or not sheets:
+        raise ValueError("Le dictionnaire de feuilles à exporter ne peut pas être vide.")
+
+    def _sheet_safe(name: str) -> str:
+        cleaned = re.sub(r"[\[\]:*?/\\]", "_", str(name))
+        return cleaned[:31] or "Feuille1"
+
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for sheet_name, sheet_df in sheets.items():
+            if not isinstance(sheet_df, pd.DataFrame):
+                continue
+            sheet_df.to_excel(writer, sheet_name=_sheet_safe(sheet_name), index=False)
+    return buffer.getvalue()
+
 @st.cache_data(show_spinner=False)
 def duplicate_candidates_table(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty or "duplicate_fingerprint" not in df.columns or "duplicate_potential" not in df.columns:

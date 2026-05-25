@@ -42,6 +42,7 @@ from dashboard_app.domain import (
     DATE_PREL,
     DATE_RECEP,
     DATE_RES,
+    build_cousp_standard_export_package,
     build_operational_risk_score,
     build_standard_followup_tables,
     build_standard_action_tracker_template,
@@ -55,6 +56,7 @@ from dashboard_app.domain import (
     standardize_df,
     standardize_ll_by_disease,
     standardize_ll_core,
+    workbook_bytes_from_sheet_dict,
 )
 from dashboard_app.narratives import _build_scope_overview_text
 from dashboard_app.overview import (
@@ -269,6 +271,80 @@ class StandardizationTest(unittest.TestCase):
         self.assertEqual(float(out.loc[0, "delai_receipt_to_result"]), 2.0)
         self.assertEqual(float(out.loc[0, "delai_notif_to_adm"]), 2.0)
         self.assertEqual(float(out.loc[0, "delai_adm_to_issue"]), 6.0)
+
+    def test_build_cousp_standard_export_package_returns_expected_sheets(self):
+        raw = pd.DataFrame(
+            {
+                DATE_NOTIF: ["2026-01-02", "2026-01-05"],
+                DATE_ONSET: ["2026-01-01", "2026-01-04"],
+                DATE_INV: ["2026-01-03", None],
+                DATE_PREL: ["2026-01-03", None],
+                DATE_RECEP: ["2026-01-04", None],
+                DATE_RES: ["2026-01-05", None],
+                COL_PREL: ["Oui", "Non"],
+                COL_INVEST: ["Oui", None],
+                COL_ISSUE: ["Gueri", None],
+                COL_CLASS: ["Suspect", "Suspect"],
+                "Resultat_labo": ["Positif", None],
+                COL_PROV: ["Kinshasa", "Nord Kivu"],
+                COL_ZS: ["Gombe", "Goma"],
+                COL_AS: ["A1", "A2"],
+                COL_SEX: ["Masculin", "Feminin"],
+                COL_AGE: [25, 12],
+                COL_UNIT: ["annees", "annees"],
+            }
+        )
+
+        standardized = standardize_df(raw)
+        sheets, error = build_cousp_standard_export_package(standardized)
+
+        self.assertIsNone(error)
+        self.assertIn("LL_standard_nettoyee", sheets)
+        self.assertIn("Synthese_operationnelle", sheets)
+        self.assertIn("Cas_a_relancer", sheets)
+
+        excel_bytes = workbook_bytes_from_sheet_dict(sheets)
+        self.assertGreater(len(excel_bytes), 0)
+
+    def test_build_cousp_standard_export_package_applies_dynamic_thresholds(self):
+        raw = pd.DataFrame(
+            {
+                DATE_NOTIF: ["2026-01-02"] * 10,
+                DATE_ONSET: ["2026-01-01"] * 10,
+                COL_PROV: ["Kinshasa"] * 10,
+                COL_ZS: ["Gombe"] * 10,
+                COL_AS: ["A1"] * 10,
+                COL_SEX: ["Masculin"] * 9 + [None],
+                COL_AGE: [25] * 10,
+                COL_UNIT: ["annees"] * 10,
+            }
+        )
+
+        standardized = standardize_df(raw)
+        sheets_default, error_default = build_cousp_standard_export_package(standardized)
+        sheets_custom, error_custom = build_cousp_standard_export_package(
+            standardized,
+            seuil_acceptable=15.0,
+            seuil_surveillance=30.0,
+        )
+
+        self.assertIsNone(error_default)
+        self.assertIsNone(error_custom)
+
+        completeness_default = sheets_default["Completeness_variables_cles"]
+        completeness_custom = sheets_custom["Completeness_variables_cles"]
+
+        decision_default = completeness_default.loc[
+            completeness_default["Variable cle"] == COL_SEX,
+            "Decision / observation",
+        ].iloc[0]
+        decision_custom = completeness_custom.loc[
+            completeness_custom["Variable cle"] == COL_SEX,
+            "Decision / observation",
+        ].iloc[0]
+
+        self.assertEqual(decision_default, "A surveiller")
+        self.assertEqual(decision_custom, "Acceptable")
 
     def test_build_dashboard_kpi_payload_includes_investigated_cases(self):
         raw = pd.DataFrame(
