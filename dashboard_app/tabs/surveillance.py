@@ -508,6 +508,49 @@ def render_surveillance_tab(ctx: dict) -> None:
                 st_dataframe_safe(standard_signal_table, height=320)
                 st.divider()
 
+            standard_chain_tbl = build_standard_surveillance_chain_table(df_surv_scope)
+            if not standard_chain_tbl.empty:
+                st.markdown("### Chaîne analytique standard COUSP")
+                st.caption(
+                    "Cette lecture standard multi-maladies suit la chaîne alerte -> investigation -> prélèvement -> laboratoire -> prise en charge "
+                    "avec les dénominateurs effectivement disponibles dans le fichier filtré."
+                )
+                chain_lookup = {
+                    str(row["Indicateur"]): row
+                    for _, row in standard_chain_tbl.iterrows()
+                }
+                chain_metric_specs = [
+                    ("Cas notifiés", "Cas notifiés"),
+                    ("Cas investigués", "Cas investigués"),
+                    ("Cas prélevés", "Cas prélevés"),
+                    ("Résultats labo disponibles", "Résultats"),
+                    ("Cas positifs", "Positifs"),
+                    ("Décès documentés", "Décès"),
+                ]
+                chain_cols = st.columns(len(chain_metric_specs))
+                for col_ui, (lookup_key, metric_label) in zip(chain_cols, chain_metric_specs):
+                    row = chain_lookup.get(lookup_key)
+                    with col_ui:
+                        if row is None:
+                            st.metric(metric_label, "-")
+                        else:
+                            taux = row.get("Taux (%)")
+                            denom = row.get("Dénominateur")
+                            help_text = None
+                            if denom is not None and not pd.isna(denom):
+                                help_text = f"n = {int(row['Valeur'])}/{int(denom)}"
+                            value_label = format_metric_value(row.get("Valeur", 0))
+                            if taux is not None and not pd.isna(taux):
+                                value_label = f"{value_label} ({float(taux):.1f}%)"
+                            st.metric(
+                                metric_label,
+                                value_label,
+                                help=help_text,
+                            )
+                with st.expander("Voir le détail de la chaîne standard", expanded=False):
+                    st_dataframe_safe(standard_chain_tbl, height=360)
+                st.divider()
+
             latest_order = surv_reference["order"].iloc[-1]
             latest_label = str(surv_reference["label"].iloc[-1])
             recent_window_weeks = int(min(max(int(recent_window_weeks), 2), len(surv_reference)))
@@ -896,9 +939,10 @@ def render_surveillance_tab(ctx: dict) -> None:
             **🎯 Objectif** : mesurer la rapidité de détection, de notification et d’accès aux soins.
         
             **📖 Indicateurs**
-            - Délai **début maladie → admission**
-            - Délai **début maladie → prélèvement**
-            - **% ≤ {seuil_jours} jours** : part des cas pris en charge rapidement.
+            - Délais **début maladie → notification / investigation / admission / prélèvement**
+            - Délais **notification → investigation / prélèvement / admission**
+            - Délais **prélèvement → réception labo → résultat**
+            - **% ≤ {seuil_jours} jours** : part des cas traités dans le délai cible.
         
             **⚠️ Points d’attention**
             - Des délais longs peuvent favoriser la transmission et retarder la prise en charge.
@@ -910,7 +954,19 @@ def render_surveillance_tab(ctx: dict) -> None:
         st.subheader("Analyse de la promptitude des principales étapes du parcours du cas et de la notification")
         
         delais_cols = [
-            c for c in ["delai_onset_to_adm", "delai_onset_to_prel", "delai_prel_to_result"]
+            c
+            for c in [
+                "delai_onset_to_notif",
+                "delai_notif_to_invest",
+                "delai_notif_to_prel",
+                "delai_prel_to_receipt",
+                "delai_receipt_to_result",
+                "delai_notif_to_adm",
+                "delai_adm_to_issue",
+                "delai_onset_to_adm",
+                "delai_onset_to_prel",
+                "delai_prel_to_result",
+            ]
             if c in df_f.columns
         ]
         
@@ -929,23 +985,29 @@ def render_surveillance_tab(ctx: dict) -> None:
                 "Les indicateurs et classements ci-dessous aident à agir rapidement, avant même de lire les graphiques en détail."
             )
 
-            p1, n1 = _surv_threshold_metric(df_del["delai_onset_to_adm"] if "delai_onset_to_adm" in df_del.columns else None, seuil_jours)
-            p2, n2 = _surv_threshold_metric(df_del["delai_onset_to_prel"] if "delai_onset_to_prel" in df_del.columns else None, seuil_jours)
-            p3, n3 = _surv_threshold_metric(df_del["delai_prel_to_result"] if "delai_prel_to_result" in df_del.columns else None, seuil_jours)
-
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            with c1:
-                st.metric("Admission ≤ seuil (%)", _surv_metric_pct(p1), help=f"n = {n1}")
-            with c2:
-                st.metric("Prélèvement ≤ seuil (%)", _surv_metric_pct(p2), help=f"n = {n2}")
-            with c3:
-                st.metric("Délais admission documentés", format_metric_value(n1))
-            with c4:
-                st.metric("Délais prélèvement documentés", format_metric_value(n2))
-            with c5:
-                st.metric("Résultat ≤ seuil (%)", _surv_metric_pct(p3), help=f"n = {n3}")
-            with c6:
-                st.metric("Délais résultat documentés", format_metric_value(n3))
+            priority_metric_specs = [
+                ("delai_notif_to_invest", "Notif -> invest"),
+                ("delai_notif_to_prel", "Notif -> prél"),
+                ("delai_prel_to_receipt", "Prél -> réception"),
+                ("delai_receipt_to_result", "Réception -> résultat"),
+                ("delai_notif_to_adm", "Notif -> admission"),
+                ("delai_adm_to_issue", "Admission -> issue"),
+                ("delai_onset_to_notif", "Début -> notif"),
+                ("delai_onset_to_prel", "Début -> prél"),
+                ("delai_onset_to_adm", "Début -> admission"),
+                ("delai_prel_to_result", "Prél -> résultat"),
+            ]
+            metric_specs = [(col, label) for col, label in priority_metric_specs if col in delais_cols][:6]
+            if metric_specs:
+                metric_cols = st.columns(len(metric_specs))
+                for col_ui, (delay_col, metric_label) in zip(metric_cols, metric_specs):
+                    pct_val, n_val = _surv_threshold_metric(df_del[delay_col], seuil_jours)
+                    with col_ui:
+                        st.metric(
+                            f"{metric_label} ≤ seuil (%)",
+                            _surv_metric_pct(pct_val),
+                            help=f"n = {n_val}",
+                        )
 
             if not delay_summary_std.empty:
                 st.markdown("**Résumé standard des délais disponibles**")
@@ -953,13 +1015,18 @@ def render_surveillance_tab(ctx: dict) -> None:
 
             if COL_PROV in df_del.columns:
                 st.markdown("**Provinces à surveiller en priorité**")
-                ranking_specs = []
-                if "delai_onset_to_adm" in delais_cols:
-                    ranking_specs.append(("delai_onset_to_adm", "Début maladie → admission"))
-                if "delai_onset_to_prel" in delais_cols:
-                    ranking_specs.append(("delai_onset_to_prel", "Début maladie → prélèvement"))
-                if "delai_prel_to_result" in delais_cols:
-                    ranking_specs.append(("delai_prel_to_result", "Prélèvement → résultat"))
+                ranking_priority = [
+                    ("delai_notif_to_invest", "Notification → investigation"),
+                    ("delai_notif_to_prel", "Notification → prélèvement"),
+                    ("delai_prel_to_receipt", "Prélèvement → réception labo"),
+                    ("delai_receipt_to_result", "Réception labo → résultat"),
+                    ("delai_notif_to_adm", "Notification → admission"),
+                    ("delai_adm_to_issue", "Admission → issue"),
+                    ("delai_onset_to_adm", "Début maladie → admission"),
+                    ("delai_onset_to_prel", "Début maladie → prélèvement"),
+                    ("delai_prel_to_result", "Prélèvement → résultat"),
+                ]
+                ranking_specs = [(col, label) for col, label in ranking_priority if col in delais_cols][:4]
 
                 if ranking_specs:
                     rank_cols = st.columns(len(ranking_specs))

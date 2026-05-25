@@ -43,7 +43,9 @@ from dashboard_app.domain import (
     DATE_RECEP,
     DATE_RES,
     build_operational_risk_score,
+    build_standard_followup_tables,
     build_standard_action_tracker_template,
+    build_standard_surveillance_chain_table,
     build_standard_signal_table,
     build_spatiotemporal_cluster_table,
     build_weekly_alerts,
@@ -244,6 +246,30 @@ class StandardizationTest(unittest.TestCase):
         self.assertEqual(out.loc[3, COL_INVEST], "Oui")
         self.assertEqual(int(out["investigated_oui_non"].sum()), 3)
 
+    def test_standardize_df_derives_extended_promptitude_delays(self):
+        raw = pd.DataFrame(
+            {
+                DATE_NOTIF: ["2026-01-02"],
+                DATE_INV: ["2026-01-03"],
+                DATE_PREL: ["2026-01-05"],
+                DATE_RECEP: ["2026-01-06"],
+                DATE_RES: ["2026-01-08"],
+                DATE_ADM: ["2026-01-04"],
+                DATE_ISSUE: ["2026-01-10"],
+                COL_PROV: ["Kinshasa"],
+                COL_ZS: ["Gombe"],
+            }
+        )
+
+        out = standardize_df(raw)
+
+        self.assertEqual(float(out.loc[0, "delai_notif_to_invest"]), 1.0)
+        self.assertEqual(float(out.loc[0, "delai_notif_to_prel"]), 3.0)
+        self.assertEqual(float(out.loc[0, "delai_prel_to_receipt"]), 1.0)
+        self.assertEqual(float(out.loc[0, "delai_receipt_to_result"]), 2.0)
+        self.assertEqual(float(out.loc[0, "delai_notif_to_adm"]), 2.0)
+        self.assertEqual(float(out.loc[0, "delai_adm_to_issue"]), 6.0)
+
     def test_build_dashboard_kpi_payload_includes_investigated_cases(self):
         raw = pd.DataFrame(
             {
@@ -405,6 +431,74 @@ class AdvancedAnalyticsTest(unittest.TestCase):
 
 
 class StandardAnalyticsTest(unittest.TestCase):
+    def test_build_standard_surveillance_chain_table_summarizes_standard_blocks(self):
+        df = standardize_df(
+            pd.DataFrame(
+                {
+                    "N_alerte": ["AL-1", "AL-2", None],
+                    "N_epid": ["EP-1", "EP-2", "EP-3"],
+                    COL_INVEST: ["Oui", None, "Non"],
+                    DATE_INV: [None, "2026-01-04", None],
+                    COL_CLASS: ["Suspect", "Confirmé", "Probable"],
+                    COL_PREL: ["Oui", "Oui", "Non"],
+                    DATE_PREL: ["2026-01-03", "2026-01-04", None],
+                    DATE_RECEP: ["2026-01-05", None, None],
+                    "Resultat_labo": ["positif", "negatif", None],
+                    COL_ISSUE: ["gueri", "deces", "vivant"],
+                    DATE_ISSUE: ["2026-01-10", "2026-01-09", None],
+                    COL_PROV: ["Kinshasa"] * 3,
+                    COL_ZS: ["Gombe"] * 3,
+                }
+            )
+        )
+
+        chain = build_standard_surveillance_chain_table(df)
+        values = dict(zip(chain["Indicateur"], chain["Valeur"]))
+
+        self.assertEqual(values["Alertes documentées"], 2)
+        self.assertEqual(values["Cas notifiés"], 3)
+        self.assertEqual(values["Cas investigués"], 2)
+        self.assertEqual(values["Cas suspects"], 1)
+        self.assertEqual(values["Cas probables"], 1)
+        self.assertEqual(values["Cas confirmés"], 1)
+        self.assertEqual(values["Cas prélevés"], 2)
+        self.assertEqual(values["Réceptions labo documentées"], 1)
+        self.assertEqual(values["Cas positifs"], 1)
+        self.assertEqual(values["Décès documentés"], 1)
+
+    def test_build_standard_followup_tables_detects_standard_relance_cases(self):
+        df = standardize_df(
+            pd.DataFrame(
+                {
+                    "N_alerte": ["AL-1", "AL-2", "AL-3"],
+                    COL_INVEST: ["Non", "Oui", "Oui"],
+                    COL_CLASS: ["Suspect", "Probable", "Confirmé"],
+                    COL_PREL: ["Non", "Oui", "Oui"],
+                    DATE_PREL: [None, "2026-01-05", "2026-01-06"],
+                    DATE_RECEP: [None, None, "2026-01-07"],
+                    DATE_RES: [None, None, None],
+                    "Resultat_labo": [None, None, "positif"],
+                    "Date_confirmation": [None, None, None],
+                    COL_ISSUE: ["vivant", "deces", "vivant"],
+                    DATE_ISSUE: [None, None, None],
+                    COL_PROV: ["Kinshasa", "", "Kinshasa"],
+                    COL_ZS: ["Gombe", "Gombe", ""],
+                }
+            )
+        )
+
+        summary, detail = build_standard_followup_tables(df)
+        counts = dict(zip(summary["Règle"], summary["Cas à relancer"]))
+
+        self.assertEqual(counts["Cas sans investigation documentée"], 1)
+        self.assertEqual(counts["Cas suspects ou probables sans prélèvement"], 1)
+        self.assertEqual(counts["Cas prélevés sans réception labo"], 1)
+        self.assertEqual(counts["Réceptions labo sans résultat documenté"], 0)
+        self.assertEqual(counts["Cas positifs sans date de confirmation"], 1)
+        self.assertEqual(counts["Décès sans date d'issue"], 1)
+        self.assertEqual(counts["Localisation incomplète"], 2)
+        self.assertFalse(detail.empty)
+
     def test_build_standard_signal_table_flags_core_operational_triggers(self):
         rows = []
         weekly_counts = {

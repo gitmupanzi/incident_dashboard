@@ -1455,7 +1455,60 @@ def render_quality_tab(ctx: dict) -> None:
                         fig_coh.update_layout(xaxis_title="% lignes touchées", yaxis_title=coherence_group_col)
                         fig_coh = apply_plotly_value_annotations(fig_coh, annot_vals)
                         st.plotly_chart(fig_coh, width="stretch")
-        
+
+        # ==========================================================
+        # 1b) Cas à relancer dans la chaîne standard
+        # ==========================================================
+        with st.expander("Cas à relancer dans la chaîne standard", expanded=False):
+            st.caption(
+                "Ce tableau standard multi-maladies met en évidence les dossiers qui bloquent la chaîne alerte -> investigation -> "
+                "prélèvement -> laboratoire -> issue. Il aide à prioriser les relances terrain et labo."
+            )
+            followup_summary, followup_detail = build_standard_followup_tables(df_f)
+            if followup_summary.empty:
+                render_absence_narrative("quality")
+            else:
+                k_fu1, k_fu2, k_fu3 = st.columns(3)
+                k_fu1.metric("Règles suivies", str(len(followup_summary)))
+                k_fu2.metric(
+                    "Règles avec cas à relancer",
+                    str(int((pd.to_numeric(followup_summary["Cas à relancer"], errors="coerce").fillna(0) > 0).sum())),
+                )
+                k_fu3.metric(
+                    "Cas à relancer cumulés",
+                    format_metric_value(pd.to_numeric(followup_summary["Cas à relancer"], errors="coerce").fillna(0).sum()),
+                )
+
+                st_dataframe_safe(followup_summary, height=320)
+                st.download_button(
+                    "Télécharger le résumé des relances (CSV)",
+                    data=followup_summary.to_csv(index=False).encode("utf-8"),
+                    file_name="quality_cas_a_relancer_resume.csv",
+                    mime="text/csv",
+                    key="download_quality_followup_summary_csv",
+                )
+
+                if not followup_detail.empty:
+                    followup_rules = followup_summary.loc[
+                        pd.to_numeric(followup_summary["Cas à relancer"], errors="coerce").fillna(0) > 0,
+                        "Règle",
+                    ].astype(str).tolist()
+                    selected_rule = st.selectbox(
+                        "Règle à détailler",
+                        options=followup_rules,
+                        key="quality_followup_rule_select",
+                    )
+                    detail_view = followup_detail[followup_detail["Règle"].astype(str) == str(selected_rule)].copy()
+                    st.caption("Détail des dossiers à relancer pour la règle sélectionnée.")
+                    st.dataframe(detail_view.head(500), width="stretch", height=420, hide_index=True)
+                    st.download_button(
+                        "Télécharger le détail des relances (CSV)",
+                        data=detail_view.to_csv(index=False).encode("utf-8"),
+                        file_name="quality_cas_a_relancer_detail.csv",
+                        mime="text/csv",
+                        key="download_quality_followup_detail_csv",
+                    )
+
         # ==========================================================
         # 2) Complétude de l'ensemble des colonnes
         # ==========================================================
@@ -1570,12 +1623,16 @@ def render_quality_tab(ctx: dict) -> None:
         # ==========================================================
         with st.expander("Promptitude des étapes clés", expanded=False):
             promptitude_pairs = [
-                ("Début maladie → admission", "Date_debut_maladie", "Date_admission_au_CT"),
                 ("Début maladie → notification", DATE_ONSET, "Date_notification"),
                 ("Début maladie → investigation", DATE_ONSET, "Date_investigation"),
-                ("Admission → prélèvement", DATE_ADM, DATE_PREL),
+                ("Début maladie → admission", "Date_debut_maladie", "Date_admission_au_CT"),
+                ("Début maladie → prélèvement", DATE_ONSET, DATE_PREL),
+                ("Notification → investigation", DATE_NOTIF, DATE_INV),
+                ("Notification → prélèvement", DATE_NOTIF, DATE_PREL),
+                ("Notification → admission", DATE_NOTIF, DATE_ADM),
                 ("Prélèvement → réception labo", DATE_PREL, DATE_RECEP),
                 ("Réception labo → résultat", DATE_RECEP, DATE_RES),
+                ("Admission → issue", DATE_ADM, DATE_ISSUE),
             ]
 
             seuil_prompt = st.number_input(

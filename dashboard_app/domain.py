@@ -2623,7 +2623,21 @@ def standardize_df(df):
             df[c] = df[c].apply(norm_yesno)
 
     # Dates
-    date_candidates = [DATE_ONSET, DATE_NOTIF, DATE_ADM, DATE_PREL, DATE_CONS, DATE_INV, DATE_RES, DATE_RECEP, DATE_ISSUE, "Date_sortie_au_CT", "Date_confirmation", "Date_de_guerie"]
+    date_candidates = [
+        DATE_ONSET,
+        DATE_NOTIF,
+        DATE_ADM,
+        DATE_PREL,
+        DATE_CONS,
+        DATE_INV,
+        DATE_RES,
+        DATE_RECEP,
+        DATE_ISSUE,
+        "Date_sortie_au_CT",
+        "Date_confirmation",
+        "Date_de_guerie",
+        "Date_analyse",
+    ]
     df = safe_to_datetime(df, [c for c in date_candidates if c in df.columns])
 
     # Year/week
@@ -2717,6 +2731,10 @@ def standardize_df(df):
     df = delay_days(df, DATE_PREL, DATE_ONSET, "delai_onset_to_prel")
     df = delay_days(df, DATE_RES, DATE_PREL, "delai_prel_to_result")
     df = delay_days(df, DATE_INV, DATE_NOTIF, "delai_notif_to_invest")
+    df = delay_days(df, DATE_PREL, DATE_NOTIF, "delai_notif_to_prel")
+    df = delay_days(df, DATE_RECEP, DATE_PREL, "delai_prel_to_receipt")
+    df = delay_days(df, DATE_RES, DATE_RECEP, "delai_receipt_to_result")
+    df = delay_days(df, DATE_ADM, DATE_NOTIF, "delai_notif_to_adm")
     df = delay_days(df, DATE_ISSUE, DATE_ADM, "delai_adm_to_issue")
 
     # alias explicites demandés pour les analyses standards
@@ -2727,6 +2745,10 @@ def standardize_df(df):
         "delai_onset_to_prel": "Delai_debut_prelevement_j",
         "delai_prel_to_result": "Delai_prelevement_resultat_j",
         "delai_notif_to_invest": "Delai_notification_investigation_j",
+        "delai_notif_to_prel": "Delai_notification_prelevement_j",
+        "delai_prel_to_receipt": "Delai_prelevement_reception_labo_j",
+        "delai_receipt_to_result": "Delai_reception_resultat_labo_j",
+        "delai_notif_to_adm": "Delai_notification_admission_j",
         "delai_adm_to_issue": "Delai_admission_issue_j",
     }
     for src, dst in delay_aliases.items():
@@ -2759,7 +2781,19 @@ def standardize_df(df):
     df["missing_parent_geo_flag"] = ~df["geo_valid"]
 
     df["chrono_valid"] = True
-    for c in ["delai_onset_to_consult", "delai_onset_to_notif", "delai_onset_to_adm", "delai_onset_to_prel", "delai_prel_to_result", "delai_notif_to_invest", "delai_adm_to_issue"]:
+    for c in [
+        "delai_onset_to_consult",
+        "delai_onset_to_notif",
+        "delai_onset_to_adm",
+        "delai_onset_to_prel",
+        "delai_prel_to_result",
+        "delai_notif_to_invest",
+        "delai_notif_to_prel",
+        "delai_prel_to_receipt",
+        "delai_receipt_to_result",
+        "delai_notif_to_adm",
+        "delai_adm_to_issue",
+    ]:
         if c in df.columns:
             df["chrono_valid"] = df["chrono_valid"] & (pd.to_numeric(df[c], errors="coerce").fillna(0) >= 0)
     df["chronologie_invalide"] = ~df["chrono_valid"]
@@ -2832,6 +2866,10 @@ def qc_flags(df: pd.DataFrame) -> pd.DataFrame:
         ("delai_adm_to_issue", "Date issue < admission"),
         ("delai_prel_to_result", "Date résultat < prélèvement"),
         ("delai_notif_to_invest", "Date investigation < notification"),
+        ("delai_notif_to_prel", "Date prélèvement < notification"),
+        ("delai_prel_to_receipt", "Date réception labo < prélèvement"),
+        ("delai_receipt_to_result", "Date résultat < réception labo"),
+        ("delai_notif_to_adm", "Date admission < notification"),
     ]:
         if c in df.columns:
             _add(pd.to_numeric(df[c], errors="coerce") < 0, lab)
@@ -2867,6 +2905,33 @@ def qc_flags(df: pd.DataFrame) -> pd.DataFrame:
 
     if COL_ISSUE in df.columns:
         _add(df[COL_ISSUE].isna(), "Issue manquante")
+
+    if any(c in df.columns for c in [COL_INVEST, DATE_INV, COL_CLASS, "Classification_finale_std"]):
+        investigate_yes = df["investigated_oui_non"] if "investigated_oui_non" in df.columns else (_is_yes_series(df[COL_INVEST]) if COL_INVEST in df.columns else pd.Series(False, index=df.index))
+        _add(~pd.Series(investigate_yes, index=df.index).fillna(False), "Investigation non documentée")
+
+    if any(c in df.columns for c in [COL_CLASS, "Classification_finale_std"]) and COL_PREL in df.columns:
+        classification = _standard_classification_series(df)
+        prelev_yes = df["preleve_oui_non"] if "preleve_oui_non" in df.columns else _is_yes_series(df[COL_PREL])
+        _add(classification.isin(["Suspect", "Probable"]) & ~prelev_yes, "Cas suspect/probable sans prélèvement")
+
+    if COL_PREL in df.columns and DATE_RECEP in df.columns:
+        prelev_yes = df["preleve_oui_non"] if "preleve_oui_non" in df.columns else _is_yes_series(df[COL_PREL])
+        receipt_yes = pd.to_datetime(df[DATE_RECEP], errors="coerce").notna()
+        _add(prelev_yes & ~receipt_yes, "Prélèvement sans réception labo")
+
+    if DATE_RECEP in df.columns:
+        receipt_yes = pd.to_datetime(df[DATE_RECEP], errors="coerce").notna()
+        lab_result = _standard_lab_result_series(df)
+        result_yes = lab_result.notna() & lab_result.ne("")
+        if DATE_RES in df.columns:
+            result_yes = result_yes | pd.to_datetime(df[DATE_RES], errors="coerce").notna()
+        _add(receipt_yes & ~result_yes, "Réception labo sans résultat")
+
+    if "Date_confirmation" in df.columns:
+        lab_result = _standard_lab_result_series(df)
+        positive_yes = lab_result.isin(TDR_POS_SET)
+        _add(positive_yes & pd.to_datetime(df["Date_confirmation"], errors="coerce").isna(), "Positif sans date confirmation")
 
     if "duplicate_potential" in df.columns:
         _add(df["duplicate_potential"] == True, "Doublon potentiel")
@@ -2938,11 +3003,19 @@ def standard_data_quality_summary(df: pd.DataFrame) -> pd.DataFrame:
         ("preleve_oui_non", "Prélèvement oui (%)"),
         ("tdr_realise_oui_non", "TDR réalisé oui (%)"),
         ("hospitalise_oui_non", "Hospitalisation oui (%)"),
+        ("investigated_oui_non", "Investigation documentée (%)"),
         ("confirme_labo_oui_non", "Confirmation/positivité labo (%)"),
         ("is_death", "Décès (%)"),
     ]:
         if col in df.columns:
             rows.append({"Indicateur": label, "Valeur": round(float(pd.Series(df[col]).fillna(False).mean() * 100), 1)})
+
+    if DATE_RECEP in df.columns:
+        receipt_yes = pd.to_datetime(df[DATE_RECEP], errors="coerce").notna()
+        rows.append({"Indicateur": "Réception labo documentée (%)", "Valeur": round(float(receipt_yes.mean() * 100), 1)})
+    if "Date_confirmation" in df.columns:
+        confirm_yes = pd.to_datetime(df["Date_confirmation"], errors="coerce").notna()
+        rows.append({"Indicateur": "Date de confirmation documentée (%)", "Valeur": round(float(confirm_yes.mean() * 100), 1)})
     return pd.DataFrame(rows)
 
 @st.cache_data(show_spinner=False)
@@ -2970,6 +3043,10 @@ def build_standard_delay_summary(df: pd.DataFrame) -> pd.DataFrame:
         "delai_onset_to_prel": "Début → prélèvement",
         "delai_prel_to_result": "Prélèvement → résultat",
         "delai_notif_to_invest": "Notification → investigation",
+        "delai_notif_to_prel": "Notification → prélèvement",
+        "delai_prel_to_receipt": "Prélèvement → réception labo",
+        "delai_receipt_to_result": "Réception labo → résultat",
+        "delai_notif_to_adm": "Notification → admission",
         "delai_adm_to_issue": "Admission → issue",
     }
     rows = []
@@ -2996,8 +3073,296 @@ STANDARD_DELAY_LABELS = {
     "delai_onset_to_prel": "Début -> prélèvement",
     "delai_prel_to_result": "Prélèvement -> résultat",
     "delai_notif_to_invest": "Notification -> investigation",
+    "delai_notif_to_prel": "Notification -> prélèvement",
+    "delai_prel_to_receipt": "Prélèvement -> réception labo",
+    "delai_receipt_to_result": "Réception labo -> résultat",
+    "delai_notif_to_adm": "Notification -> admission",
     "delai_adm_to_issue": "Admission -> issue",
 }
+
+
+def _standard_classification_series(df: pd.DataFrame) -> pd.Series:
+    """Retourne une classification standardisée exploitable sur plusieurs maladies."""
+    source = None
+    if "Classification_finale_std" in df.columns:
+        source = df["Classification_finale_std"]
+    elif COL_CLASS in df.columns:
+        source = df[COL_CLASS]
+    else:
+        return pd.Series(pd.NA, index=df.index, dtype="string")
+
+    norm = (
+        source.astype("string")
+        .str.strip()
+        .str.lower()
+        .apply(lambda v: _strip_accents(v) if pd.notna(v) else v)
+    )
+    mapped = pd.Series(pd.NA, index=df.index, dtype="string")
+    mapped = mapped.mask(norm.str.contains("confirm", na=False) | norm.eq("positif"), "Confirmé")
+    mapped = mapped.mask(norm.str.contains("probab", na=False), "Probable")
+    mapped = mapped.mask(norm.str.contains("suspect", na=False), "Suspect")
+    mapped = mapped.mask(norm.isin(["non cas", "non_cas", "discarded"]) | norm.str.contains("non cas", na=False), "Non cas")
+    mapped = mapped.mask(norm.str.contains("compat", na=False), "Compatible")
+    return mapped.fillna(source.astype("string").str.strip())
+
+
+def _standard_lab_result_series(df: pd.DataFrame) -> pd.Series:
+    """Retourne le résultat laboratoire/TDR normalisé disponible."""
+    if COL_TDRR in df.columns and df[COL_TDRR].notna().any():
+        source = df[COL_TDRR]
+    elif "Resultat_labo" in df.columns and df["Resultat_labo"].notna().any():
+        source = df["Resultat_labo"]
+    else:
+        return pd.Series(pd.NA, index=df.index, dtype="string")
+    return _tdr_result_norm(source).astype("string")
+
+
+def _non_empty_count(series: pd.Series) -> int:
+    """Compte les valeurs renseignées en ignorant les vides textuels."""
+    ser = series.astype("string").str.strip()
+    return int(ser.notna().sum() - ser.eq("").sum())
+
+
+@st.cache_data(show_spinner=False)
+def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Construit une chaîne analytique standard COUSP utilisable en multi-maladies."""
+    columns = ["Bloc", "Indicateur", "Valeur", "Dénominateur", "Taux (%)", "Source standard"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    work = df.copy()
+    n_cases = int(len(work))
+    classification = _standard_classification_series(work)
+    lab_result = _standard_lab_result_series(work)
+    issue_std = work["Issue_std"] if "Issue_std" in work.columns else work.get(COL_ISSUE, pd.Series(pd.NA, index=work.index, dtype="string"))
+
+    investigation_source_present = any(col in work.columns for col in [COL_INVEST, DATE_INV, COL_CLASS, "Classification_finale_std"])
+    investigate_yes = work["investigated_oui_non"] if "investigated_oui_non" in work.columns else (_is_yes_series(work[COL_INVEST]) if COL_INVEST in work.columns else pd.Series(False, index=work.index))
+    prelev_yes = work["preleve_oui_non"] if "preleve_oui_non" in work.columns else (_is_yes_series(work[COL_PREL]) if COL_PREL in work.columns else pd.Series(False, index=work.index))
+    hosp_yes = work["hospitalise_oui_non"] if "hospitalise_oui_non" in work.columns else (_is_yes_series(work[COL_HOSP]) if COL_HOSP in work.columns else pd.Series(False, index=work.index))
+    deaths = work["is_death"] if "is_death" in work.columns else issue_std.apply(is_death)
+    receipt_yes = pd.to_datetime(work[DATE_RECEP], errors="coerce").notna() if DATE_RECEP in work.columns else pd.Series(False, index=work.index)
+    result_yes = lab_result.notna() & lab_result.ne("")
+    gueri_norm = (
+        issue_std.astype("string")
+        .str.strip()
+        .str.lower()
+        .apply(lambda v: _strip_accents(v) if pd.notna(v) else v)
+    )
+    gueris = gueri_norm.str.contains("guer", na=False)
+
+    alert_count = _non_empty_count(work["N_alerte"]) if "N_alerte" in work.columns else 0
+    investigate_den = alert_count if alert_count > 0 else n_cases
+    investigate_base = "Alertes documentées" if alert_count > 0 else "Cas filtrés"
+    class_den = int(investigate_yes.sum()) if int(investigate_yes.sum()) > 0 else n_cases
+    class_base = "Cas investigués" if int(investigate_yes.sum()) > 0 else "Cas filtrés"
+    prelev_den = int((classification == "Suspect").sum())
+    if prelev_den <= 0:
+        prelev_den = n_cases
+        prelev_base = "Cas filtrés"
+    else:
+        prelev_base = "Cas suspects"
+    receipt_den = int(prelev_yes.sum()) if int(prelev_yes.sum()) > 0 else n_cases
+    receipt_base = "Cas prélevés" if int(prelev_yes.sum()) > 0 else "Cas filtrés"
+    result_den = int(receipt_yes.sum()) if int(receipt_yes.sum()) > 0 else receipt_den
+    result_base = "Réceptions labo documentées" if int(receipt_yes.sum()) > 0 else receipt_base
+    lab_valid_den = int(result_yes.sum()) if int(result_yes.sum()) > 0 else n_cases
+
+    rows = []
+
+    def _append(block: str, indicator: str, value: int, denominator: int | None, base_label: str, source_label: str) -> None:
+        rows.append(
+            {
+                "Bloc": block,
+                "Indicateur": indicator,
+                "Valeur": int(value),
+                "Dénominateur": int(denominator) if denominator is not None else pd.NA,
+                "Taux (%)": round(float(safe_pct(value, denominator)), 1) if denominator not in (None, 0) and not pd.isna(denominator) else np.nan,
+                "Source standard": f"{source_label} | base: {base_label}",
+            }
+        )
+
+    if "N_alerte" in work.columns:
+        _append("Alerte", "Alertes documentées", alert_count, n_cases, "Cas filtrés", "N_alerte")
+    if "N_epid" in work.columns:
+        _append("Alerte", "Identifiants épid documentés", _non_empty_count(work["N_epid"]), n_cases, "Cas filtrés", "N_epid")
+    _append("Notification", "Cas notifiés", n_cases, n_cases, "Cas filtrés", "Lignes filtrées")
+
+    if investigation_source_present:
+        _append("Investigation", "Cas investigués", int(investigate_yes.sum()), investigate_den, investigate_base, f"{COL_INVEST} / {DATE_INV} / {COL_CLASS}")
+    if classification.notna().any():
+        class_labels = {
+            "Suspect": "Cas suspects",
+            "Probable": "Cas probables",
+            "Confirmé": "Cas confirmés",
+            "Non cas": "Non cas documentés",
+        }
+        for label, display_label in class_labels.items():
+            _append("Investigation", display_label, int((classification == label).sum()), class_den, class_base, "Classification_finale")
+
+    if "Lien_epid_avec_un_cas" in work.columns:
+        lien_yes = _is_yes_series(work["Lien_epid_avec_un_cas"])
+        _append("Exposition", "Lien épid documenté", int(lien_yes.sum()), n_cases, "Cas filtrés", "Lien_epid_avec_un_cas")
+    if "Facteur_exposition" in work.columns:
+        _append("Exposition", "Facteur d'exposition renseigné", _non_empty_count(work["Facteur_exposition"]), n_cases, "Cas filtrés", "Facteur_exposition")
+
+    if COL_PREL in work.columns or DATE_PREL in work.columns:
+        _append("Prélèvement", "Cas prélevés", int(prelev_yes.sum()), prelev_den, prelev_base, f"{COL_PREL} / {DATE_PREL}")
+
+    if DATE_RECEP in work.columns:
+        _append("Laboratoire", "Réceptions labo documentées", int(receipt_yes.sum()), receipt_den, receipt_base, DATE_RECEP)
+    if result_yes.any():
+        _append("Laboratoire", "Résultats labo disponibles", int(result_yes.sum()), result_den, result_base, f"{COL_TDRR} / Resultat_labo")
+        _append("Laboratoire", "Cas positifs", int(lab_result.isin(TDR_POS_SET).sum()), lab_valid_den, "Résultats documentés", f"{COL_TDRR} / Resultat_labo")
+        _append("Laboratoire", "Cas négatifs", int(lab_result.isin(TDR_NEG_SET).sum()), lab_valid_den, "Résultats documentés", f"{COL_TDRR} / Resultat_labo")
+        invalid_mask = lab_result.isin(["invalide", "invalid", "inba", "bande absente", "indetermine", "indéterminé"])
+        _append("Laboratoire", "Résultats invalides", int(invalid_mask.sum()), lab_valid_den, "Résultats documentés", f"{COL_TDRR} / Resultat_labo")
+
+    if COL_HOSP in work.columns or DATE_ADM in work.columns:
+        _append("Prise en charge", "Cas hospitalisés", int(hosp_yes.sum()), n_cases, "Cas filtrés", f"{COL_HOSP} / {DATE_ADM}")
+    if COL_ISSUE in work.columns or "Issue_std" in work.columns:
+        _append("Prise en charge", "Décès documentés", int(deaths.sum()), n_cases, "Cas filtrés", COL_ISSUE)
+        _append("Prise en charge", "Guéris documentés", int(gueris.sum()), n_cases, "Cas filtrés", COL_ISSUE)
+
+    return pd.DataFrame(rows, columns=columns)
+
+
+@st.cache_data(show_spinner=False)
+def build_standard_followup_tables(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Construit les tableaux standard de cas à relancer pour la chaîne de surveillance."""
+    summary_cols = ["Règle", "Bloc", "Cas à relancer", "%", "Action proposée"]
+    if df is None or df.empty:
+        empty = pd.DataFrame(columns=summary_cols)
+        return empty, pd.DataFrame(columns=["Règle"])
+
+    work = df.copy()
+    n_cases = int(len(work))
+    classification = _standard_classification_series(work)
+    lab_result = _standard_lab_result_series(work)
+    investigate_yes = work["investigated_oui_non"] if "investigated_oui_non" in work.columns else (_is_yes_series(work[COL_INVEST]) if COL_INVEST in work.columns else pd.Series(False, index=work.index))
+    prelev_yes = work["preleve_oui_non"] if "preleve_oui_non" in work.columns else (_is_yes_series(work[COL_PREL]) if COL_PREL in work.columns else pd.Series(False, index=work.index))
+    receipt_yes = pd.to_datetime(work[DATE_RECEP], errors="coerce").notna() if DATE_RECEP in work.columns else pd.Series(False, index=work.index)
+    deaths = work["is_death"] if "is_death" in work.columns else (work[COL_ISSUE].apply(is_death) if COL_ISSUE in work.columns else pd.Series(False, index=work.index))
+    geo_missing = pd.Series(False, index=work.index)
+    if COL_PROV in work.columns:
+        geo_missing |= work[COL_PROV].astype("string").str.strip().fillna("").eq("")
+    if COL_ZS in work.columns:
+        geo_missing |= work[COL_ZS].astype("string").str.strip().fillna("").eq("")
+    if COL_AS in work.columns:
+        geo_missing |= work[COL_AS].astype("string").str.strip().fillna("").eq("")
+    if "missing_parent_geo_flag" in work.columns:
+        geo_missing |= work["missing_parent_geo_flag"].fillna(False)
+
+    rules: list[tuple[str, str, pd.Series, str]] = []
+    if any(col in work.columns for col in [COL_INVEST, DATE_INV, COL_CLASS, "Classification_finale_std"]):
+        rules.append((
+            "Cas sans investigation documentée",
+            "Investigation",
+            ~investigate_yes,
+            "Relancer la documentation de l'investigation ou compléter la classification.",
+        ))
+    if classification.notna().any():
+        rules.append((
+            "Cas suspects ou probables sans prélèvement",
+            "Prélèvement",
+            classification.isin(["Suspect", "Probable"]) & ~prelev_yes,
+            "Vérifier le circuit de prélèvement et documenter les cas non prélevés.",
+        ))
+    if DATE_RECEP in work.columns:
+        rules.append((
+            "Cas prélevés sans réception labo",
+            "Laboratoire",
+            prelev_yes & ~receipt_yes,
+            "Vérifier l'acheminement et la réception des échantillons au laboratoire.",
+        ))
+    if DATE_RECEP in work.columns and (DATE_RES in work.columns or lab_result.notna().any()):
+        result_missing = ~pd.to_datetime(work[DATE_RES], errors="coerce").notna() if DATE_RES in work.columns else pd.Series(True, index=work.index)
+        if lab_result.notna().any():
+            result_missing &= ~(lab_result.notna() & lab_result.ne(""))
+        rules.append((
+            "Réceptions labo sans résultat documenté",
+            "Laboratoire",
+            receipt_yes & result_missing,
+            "Relancer l'analyse ou la transmission du résultat final.",
+        ))
+    if "Date_confirmation" in work.columns and lab_result.notna().any():
+        rules.append((
+            "Cas positifs sans date de confirmation",
+            "Laboratoire",
+            lab_result.isin(TDR_POS_SET) & pd.to_datetime(work["Date_confirmation"], errors="coerce").isna(),
+            "Compléter la date de confirmation pour fiabiliser la chronologie de confirmation.",
+        ))
+    if COL_ISSUE in work.columns or DATE_ISSUE in work.columns:
+        issue_missing = pd.to_datetime(work[DATE_ISSUE], errors="coerce").isna() if DATE_ISSUE in work.columns else pd.Series(True, index=work.index)
+        rules.append((
+            "Décès sans date d'issue",
+            "Prise en charge",
+            deaths & issue_missing,
+            "Compléter la date d'issue des décès documentés.",
+        ))
+    if geo_missing.any():
+        rules.append((
+            "Localisation incomplète",
+            "Géographie",
+            geo_missing,
+            "Compléter province, zone ou aire de santé pour permettre le suivi territorial.",
+        ))
+
+    detail_cols = [
+        c for c in [
+            "Nom_complet",
+            "N_epid",
+            "N_alerte",
+            COL_PROV,
+            COL_ZS,
+            COL_AS,
+            COL_SEX,
+            COL_AGE,
+            COL_UNIT,
+            COL_CLASS,
+            COL_INVEST,
+            COL_PREL,
+            COL_HOSP,
+            COL_ISSUE,
+            DATE_NOTIF,
+            DATE_INV,
+            DATE_PREL,
+            DATE_RECEP,
+            DATE_RES,
+            DATE_ISSUE,
+            "Date_confirmation",
+            "Resultat_labo",
+            COL_TDRR,
+            "Nom_laboratoire",
+            "Type_de_prelevement",
+        ]
+        if c in work.columns
+    ]
+
+    summary_rows = []
+    detail_frames = []
+    for label, block, mask, action in rules:
+        clean_mask = pd.Series(mask, index=work.index).fillna(False)
+        count = int(clean_mask.sum())
+        summary_rows.append(
+            {
+                "Règle": label,
+                "Bloc": block,
+                "Cas à relancer": count,
+                "%": round(float(safe_pct(count, n_cases)), 1) if n_cases > 0 else np.nan,
+                "Action proposée": action,
+            }
+        )
+        if count > 0:
+            detail = work.loc[clean_mask, detail_cols].copy()
+            detail.insert(0, "Règle", label)
+            detail_frames.append(detail)
+
+    summary = pd.DataFrame(summary_rows, columns=summary_cols)
+    if not summary.empty:
+        summary = summary.sort_values(["Cas à relancer", "Règle"], ascending=[False, True]).reset_index(drop=True)
+    detail_df = pd.concat(detail_frames, ignore_index=True) if detail_frames else pd.DataFrame(columns=["Règle"] + detail_cols)
+    return summary, detail_df
 
 def list_available_standard_delays(df: pd.DataFrame) -> List[Tuple[str, str]]:
     """Retourne les délais standards exploitables dans le périmètre filtré."""
@@ -3064,14 +3429,14 @@ def build_delay_group_summary(df: pd.DataFrame, delay_col: str, group_col: str, 
 def build_recommended_fields_matrix(df: pd.DataFrame) -> pd.DataFrame:
     """Matrice simple de disponibilité des champs standards recommandés."""
     field_groups = {
-        "Identification": ["Nom_complet", "N_epid", "N", "N_labo"],
+        "Alerte / Identification": ["Nom_complet", "N_alerte", "Source_alerte", "N_epid", "N", "N_labo", "Localite"],
         "Géographie": [COL_PROV, COL_ZS, COL_AS],
         "Personne": [COL_SEX, "Age_en_ans", "Tranche_age"],
-        "Temps": [DATE_ONSET, DATE_CONS, DATE_NOTIF, DATE_INV, DATE_ADM, DATE_PREL, DATE_RES, DATE_ISSUE],
-        "Issue": [COL_ISSUE, DATE_ISSUE, "Date_sortie_au_CT"],
+        "Investigation / Temps": [DATE_ONSET, DATE_CONS, DATE_NOTIF, DATE_INV, DATE_ADM, DATE_PREL, DATE_RECEP, DATE_RES, DATE_ISSUE, "Date_confirmation"],
+        "Issue / PEC": [COL_HOSP, COL_ISSUE, DATE_ISSUE, "Date_sortie_au_CT"],
         "Labo": [COL_PREL, COL_TDR, COL_TDRR, "Resultat_labo", "Type_de_prelevement", "Nom_laboratoire", "Etat_echantillon"],
         "Vaccination": ["Statut_vaccinal", "Vaccin_precedemment", "Nombre_dose", "Nombre_dose_recues", "Date_derniere_vaccination"],
-        "Lien épid / cluster": ["Lien_epid_avec_un_cas", "Cas_source_id", "Facteur_exposition", "Type_de_lien"],
+        "Exposition / Lien épid": ["Lien_epid_avec_un_cas", "Cas_source_id", "Facteur_exposition", "Type_de_lien"],
     }
     rows = []
     for grp, cols in field_groups.items():
