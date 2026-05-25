@@ -1,8 +1,100 @@
 """Render the COUSP standard analytics tab."""
 
+from __future__ import annotations
+
+from io import BytesIO
+import re
+
 from dashboard_app.runtime_support import inject_runtime_support
 
+# Les deux fonctions de haut niveau existent dans dashboard_app.domain.
+# dashboard_app.cousp_export contient surtout le générateur local
+# generer_feuilles_sortie_cousp_local, utilisé comme fallback ci-dessous.
+try:
+    from dashboard_app.domain import (
+        build_cousp_standard_export_package as _domain_build_cousp_standard_export_package,
+        workbook_bytes_from_sheet_dict as _domain_workbook_bytes_from_sheet_dict,
+    )
+except Exception as _exc:  # fallback géré dans render_cousp_tab()
+    _domain_build_cousp_standard_export_package = None
+    _domain_workbook_bytes_from_sheet_dict = None
+    _COUSP_DOMAIN_IMPORT_ERROR = _exc
+else:
+    _COUSP_DOMAIN_IMPORT_ERROR = None
+
 inject_runtime_support(globals())
+
+
+def _fallback_build_cousp_standard_export_package(
+    df: pd.DataFrame,
+    *,
+    anonymiser_recherche: bool = False,
+    seuil_acceptable: float = 5.0,
+    seuil_surveillance: float = 20.0,
+) -> tuple[dict[str, pd.DataFrame], str | None]:
+    """Fallback local si les wrappers de dashboard_app.domain ne sont pas importables."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return {}, "Aucune donnée filtrée n'est disponible pour construire le pack COUSP standard."
+
+    work = df.copy()
+    if work.columns.duplicated().any():
+        work = work.loc[:, ~work.columns.duplicated()].copy()
+
+    try:
+        from dashboard_app.cousp_export import generer_feuilles_sortie_cousp_local
+    except Exception as exc:
+        return {}, f"Impossible de charger le module COUSP standard : {exc}"
+
+    try:
+        sheets = generer_feuilles_sortie_cousp_local(
+            work,
+            anonymiser_recherche=anonymiser_recherche,
+            seuil_acceptable=seuil_acceptable,
+            seuil_surveillance=seuil_surveillance,
+        )
+    except Exception as exc:
+        return {}, f"Erreur pendant la génération du pack COUSP standard : {exc}"
+
+    return sheets, None
+
+
+def _fallback_workbook_bytes_from_sheet_dict(sheets: dict[str, pd.DataFrame]) -> bytes:
+    """Fallback local pour sérialiser un dictionnaire de DataFrame en Excel."""
+    if not isinstance(sheets, dict) or not sheets:
+        raise ValueError("Le dictionnaire de feuilles à exporter ne peut pas être vide.")
+
+    def _sheet_safe(name: str) -> str:
+        cleaned = re.sub(r"[\[\]:*?/\\]", "_", str(name))
+        return cleaned[:31] or "Feuille1"
+
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for sheet_name, sheet_df in sheets.items():
+            if not isinstance(sheet_df, pd.DataFrame):
+                continue
+            sheet_df.to_excel(writer, sheet_name=_sheet_safe(sheet_name), index=False)
+
+    return buffer.getvalue()
+
+
+def _resolve_cousp_helpers():
+    """Résout les helpers COUSP sans dépendre uniquement de build_runtime_context()."""
+    build_package = globals().get("build_cousp_standard_export_package")
+    workbook_builder = globals().get("workbook_bytes_from_sheet_dict")
+
+    if not callable(build_package) and callable(_domain_build_cousp_standard_export_package):
+        build_package = _domain_build_cousp_standard_export_package
+
+    if not callable(workbook_builder) and callable(_domain_workbook_bytes_from_sheet_dict):
+        workbook_builder = _domain_workbook_bytes_from_sheet_dict
+
+    if not callable(build_package):
+        build_package = _fallback_build_cousp_standard_export_package
+
+    if not callable(workbook_builder):
+        workbook_builder = _fallback_workbook_bytes_from_sheet_dict
+
+    return build_package, workbook_builder
 
 
 def _cousp_sheet_overview_table(sheets: dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -24,8 +116,10 @@ def render_cousp_tab(ctx: dict) -> None:
     """Render the COUSP standard analytics tab."""
     globals().update(ctx)
 
+    build_package, workbook_builder = _resolve_cousp_helpers()
+
     render_section_title(9, "Pack d'analyse COUSP standard")
-    if IDSR_MODE:
+    if bool(globals().get("IDSR_MODE", False)):
         render_absence_narrative("idsr_line_list")
         return
 
@@ -43,7 +137,8 @@ def render_cousp_tab(ctx: dict) -> None:
         expanded=False,
     )
 
-    if df_f is None or not isinstance(df_f, pd.DataFrame) or df_f.empty:
+    df_f_local = globals().get("df_f")
+    if df_f_local is None or not isinstance(df_f_local, pd.DataFrame) or df_f_local.empty:
         st.info("Aucune donnee filtree n'est disponible pour construire l'analyse COUSP.")
         return
 
@@ -97,8 +192,8 @@ def render_cousp_tab(ctx: dict) -> None:
             f"A surveiller<={float(seuil_surveillance):.1f}%, sinon Prioritaire."
         )
 
-    sheets, error = build_cousp_standard_export_package(
-        df_f,
+    sheets, error = build_package(
+        df_f_local,
         anonymiser_recherche=anonymiser_cousp,
         seuil_acceptable=float(seuil_acceptable),
         seuil_surveillance=float(seuil_surveillance),
@@ -118,7 +213,7 @@ def render_cousp_tab(ctx: dict) -> None:
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Feuilles COUSP", len(sheets))
-    m2.metric("Lignes filtrees", int(len(df_f)))
+    m2.metric("Lignes filtrees", int(len(df_f_local)))
     m3.metric("Anomalies de dates", int(len(anomalies_df)))
     m4.metric("Cas a relancer", int(len(relances_df)))
 
@@ -126,11 +221,11 @@ def render_cousp_tab(ctx: dict) -> None:
     st_dataframe_safe(summary_df, height=220)
 
     try:
-        cousp_excel_bytes = workbook_bytes_from_sheet_dict(sheets)
+        cousp_excel_bytes = workbook_builder(sheets)
     except Exception as exc:
         st.warning(f"Le telechargement du pack COUSP est indisponible : {exc}")
     else:
-        export_base_name = f"{str(disease_key).strip().lower()}_filtre"
+        export_base_name = f"{str(globals().get('disease_key', 'maladie')).strip().lower()}_filtre"
         st.download_button(
             "Telecharger le pack COUSP standard (Excel)",
             data=cousp_excel_bytes,
@@ -243,7 +338,9 @@ def render_cousp_tab(ctx: dict) -> None:
                 title=f"Variables prioritaires selon le taux de missing ({topn})",
             )
             figc.update_layout(xaxis_tickangle=-45, yaxis=dict(range=[0, 100]))
-            figc = apply_plotly_value_annotations(figc, annot_vals)
+            annotation_fn = globals().get("apply_plotly_value_annotations")
+            if callable(annotation_fn):
+                figc = annotation_fn(figc, bool(globals().get("annot_vals", False)))
             st.plotly_chart(figc, width="stretch")
 
     with tab_anomalies:
