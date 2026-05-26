@@ -1259,6 +1259,31 @@ if not IDSR_MODE:
         if class_sel and ("Toutes" not in class_sel):
             df_f = df_f[df_f[COL_CLASS].isin(class_sel)]
 
+    # =========================
+    # Résultat final labo (multiselect, "Toutes" par défaut, dépend de df_f)
+    # =========================
+    lab_result_filter_col = None
+    if "Resultat_labo" in df_f.columns and df_f["Resultat_labo"].notna().any():
+        lab_result_filter_col = "Resultat_labo"
+    elif COL_TDRR in df_f.columns and df_f[COL_TDRR].notna().any():
+        lab_result_filter_col = COL_TDRR
+
+    if lab_result_filter_col is not None:
+        lab_result_values = sorted(
+            [x for x in df_f[lab_result_filter_col].dropna().unique().tolist() if x]
+        )
+        lab_result_options = ["Toutes"] + lab_result_values
+        normalize_sel("lab_result_sel", lab_result_options)
+
+        lab_result_sel = st.sidebar.multiselect(
+            "Résultat final labo",
+            options=lab_result_options,
+            key="lab_result_sel",
+        )
+
+        if lab_result_sel and ("Toutes" not in lab_result_sel):
+            df_f = df_f[df_f[lab_result_filter_col].isin(lab_result_sel)]
+
     df_f_source = (
         df_quality_source.loc[df_f.index].copy()
         if "df_quality_source" in locals() and isinstance(df_quality_source, pd.DataFrame)
@@ -1288,9 +1313,11 @@ if not IDSR_MODE:
             prov_summary = ", ".join(st.session_state.get("prov_sel", ["Toutes"])[:4])
             zs_summary = ", ".join(st.session_state.get("zs_sel", ["Toutes"])[:4])
             class_summary = ", ".join(st.session_state.get("class_sel", ["Toutes"])[:4])
+            lab_result_summary = ", ".join(st.session_state.get("lab_result_sel", ["Toutes"])[:4])
             st.write(f"Province : **{prov_summary}**")
             st.write(f"Zone de santé : **{zs_summary}**")
             st.write(f"Classification : **{class_summary}**")
+            st.write(f"Résultat final labo : **{lab_result_summary}**")
             st.write(f"Cartographie détaillée : **{'activée' if show_maps else 'désactivée'}**")
 else:
     # Mode IDSR: on ne charge pas de line list ici. Les analyses IDSR sont dans l'onglet 9.
