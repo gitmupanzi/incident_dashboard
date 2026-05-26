@@ -1377,7 +1377,7 @@ def _irep_render_window(
 def render_irep_tab(ctx: dict) -> None:
     """Render the decision-oriented IREP tab."""
     globals().update(ctx)
-    render_section_title(13, "Indice composite de risque épidémique (IREP)")
+    render_section_title(8, "Indice composite de risque épidémique (IREP)")
     render_tab_narrative("irep")
     tab_help(
         "Lecture et interprétation",

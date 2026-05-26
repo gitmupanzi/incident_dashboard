@@ -2074,7 +2074,7 @@ def _idsr_build_hotspot_tables(
 def render_idsr_tab(ctx: dict) -> None:
     """Render the weekly IDSR analytics tab."""
     globals().update(ctx)
-    render_section_title(16, "IDSR — Surveillance agrégée hebdomadaire")
+    render_section_title(11, "IDSR — Surveillance agrégée hebdomadaire")
     render_tab_narrative("idsr")
 
     tab_help(
