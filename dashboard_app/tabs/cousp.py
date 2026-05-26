@@ -469,7 +469,7 @@ def render_cousp_tab(ctx: dict) -> None:
 
     build_package, workbook_builder = _resolve_cousp_helpers()
 
-    render_section_title(7, "Pack d'analyse COUSP standard")
+    render_section_title(4, "Pack d'analyse COUSP standard")
     if bool(globals().get("IDSR_MODE", False)):
         render_absence_narrative("idsr_line_list")
         return

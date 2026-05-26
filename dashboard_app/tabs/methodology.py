@@ -8,7 +8,7 @@ inject_runtime_support(globals())
 def render_methodology_tab(ctx: dict) -> None:
     """Render the methodology and interpretation tab."""
     globals().update(ctx)
-    render_section_title(10, "Méthodologie, définitions et limites d'interprétation")
+    render_section_title(7, "Méthodologie, définitions et limites d'interprétation")
     render_reader_narrative(
         "Pourquoi cet onglet existe",
         "Cette page documente les règles de lecture du tableau de bord. Elle permet de rendre les résultats plus transparents "

@@ -8,7 +8,7 @@ inject_runtime_support(globals())
 def render_maps_tab(ctx: dict) -> None:
     """Render the detailed maps tab."""
     globals().update(ctx)
-    render_section_title(9, "Cartographie detaillee des cas et foyers")
+    render_section_title(6, "Cartographie detaillee des cas et foyers")
     render_tab_narrative("cartographie")
     render_detailed_maps_tab(
         df_f=df_f,

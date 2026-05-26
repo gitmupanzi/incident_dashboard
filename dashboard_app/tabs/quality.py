@@ -337,7 +337,7 @@ def masquer_identifiants_techniques(
 def render_quality_tab(ctx: dict) -> None:
     """Render the data quality and export tab."""
     globals().update(ctx)
-    render_section_title(4, "Qualité des données, promptitude et cohérence opérationnelle")
+    render_section_title(3, "Qualité des données, promptitude et cohérence opérationnelle")
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")
     else:
@@ -740,7 +740,7 @@ def render_quality_tab(ctx: dict) -> None:
     # TAB 6: DATA & EXPORT
     # =========================
     st.divider()
-    render_section_title(5, "Extraction, revue et export des données")
+    st.markdown("### Extraction, revue et export des données")
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")
     else:
@@ -1165,7 +1165,7 @@ def render_quality_tab(ctx: dict) -> None:
     # TAB 7 — Labo / qualité / signaux
     # =========================
     st.divider()
-    render_section_title(6, "Qualité des données et alertes de gestion")
+    st.markdown("### Qualité des données et alertes de gestion")
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")
     else:

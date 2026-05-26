@@ -928,7 +928,7 @@ def render_surveillance_tab(ctx: dict) -> None:
     # Section suivante : promptitude. Les indicateurs de performance et de létalité déjà présentés plus haut ne sont pas répétés ici afin d’éviter les redondances.
 
     st.divider()
-    render_section_title(2, "Promptitude de notification, investigation et prise en charge")
+    st.markdown("### Promptitude de notification, investigation et prise en charge")
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")
     else:
