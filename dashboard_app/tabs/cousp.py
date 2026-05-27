@@ -1088,6 +1088,7 @@ def render_cousp_tab(ctx: dict) -> None:
         if anomalies_df.empty:
             st.success("Aucune anomalie de dates detectee dans le perimetre filtre.")
         else:
+            anomalies_filter_df = _cousp_enrich_anomalies_with_reference_data(anomalies_df, recherche_df)
             with st.expander("Anomalies de dates - tableau et filtres", expanded=True):
                 st.markdown("**Parametres du sous-onglet Anomalies de dates**")
                 st.caption(
@@ -1095,27 +1096,31 @@ def render_cousp_tab(ctx: dict) -> None:
                 )
                 st.caption("Aucune valeur selectionnee = toutes les valeurs.")
                 anomalies_view = _cousp_apply_local_multiselect_filters(
-                    anomalies_df,
+                    anomalies_filter_df,
                     [
                         "Province_notification",
                         "Zone_de_sante_notification",
                         "Variable_anomalie",
                         "Type_anomalie",
+                        "Classification_investigation",
+                        "Resultat_final_labo",
+                        "Issue",
                     ],
                     key_prefix="cousp_anomalies_filter",
                 )
-                st.caption(f"{len(anomalies_view)} ligne(s) d'anomalies affichee(s).")
-                st_dataframe_safe(anomalies_view, height=540)
+                anomalies_view_enriched = anomalies_view.copy()
+                st.caption(f"{len(anomalies_view_enriched)} ligne(s) d'anomalies affichee(s).")
+                st_dataframe_safe(anomalies_view_enriched, height=540)
                 st.download_button(
                     "Telecharger les anomalies filtrees (CSV)",
-                    data=anomalies_view.to_csv(index=False).encode("utf-8"),
+                    data=anomalies_view_enriched.to_csv(index=False).encode("utf-8"),
                     file_name="cousp_anomalies_dates.csv",
                     mime="text/csv",
                     key="download_cousp_anomalies_csv",
                 )
             with st.expander("Visualisations des anomalies", expanded=True):
                 with st.container():
-                    anomalies_viz_df = _cousp_enrich_anomalies_with_reference_data(anomalies_view, recherche_df)
+                    anomalies_viz_df = anomalies_view_enriched
                     st.markdown("**Visualisations des anomalies**")
                     vcol1, vcol2 = st.columns([1.4, 1.0])
                     with vcol1:
@@ -1170,6 +1175,9 @@ def render_cousp_tab(ctx: dict) -> None:
                         "Province_notification",
                         "Zone_de_sante_notification",
                         "Motif_relance",
+                        "Classification_investigation",
+                        "Resultat_final_labo",
+                        "Issue",
                     ],
                     key_prefix="cousp_relances_filter",
                 )
