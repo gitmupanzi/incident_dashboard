@@ -463,6 +463,275 @@ def _cousp_apply_local_multiselect_filters(
     return _cousp_apply_column_filters(df, active_filters)
 
 
+def _cousp_pick_reference_join_key(
+    left_df: pd.DataFrame,
+    right_df: pd.DataFrame,
+) -> str | None:
+    """Choisit une cle stable pour enrichir une vue COUSP a partir du dataset recherche."""
+    if (
+        left_df is None
+        or right_df is None
+        or not isinstance(left_df, pd.DataFrame)
+        or not isinstance(right_df, pd.DataFrame)
+        or left_df.empty
+        or right_df.empty
+    ):
+        return None
+
+    candidates = ["N_alerte", "N_epid", "N_labo"]
+    best_key: str | None = None
+    best_score = -1
+
+    for col in candidates:
+        if col not in left_df.columns or col not in right_df.columns:
+            continue
+        right_keys = right_df[col].astype("string").str.strip().replace("", pd.NA).dropna()
+        if right_keys.empty or right_keys.duplicated().any():
+            continue
+        left_keys = left_df[col].astype("string").str.strip().replace("", pd.NA)
+        score = int(left_keys.notna().sum())
+        if score > best_score:
+            best_key = col
+            best_score = score
+
+    return best_key
+
+
+def _cousp_enrich_anomalies_with_reference_data(
+    anomalies_df: pd.DataFrame,
+    reference_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Ajoute les colonnes temporelles utiles aux graphiques d'anomalies."""
+    if (
+        anomalies_df is None
+        or not isinstance(anomalies_df, pd.DataFrame)
+        or anomalies_df.empty
+        or reference_df is None
+        or not isinstance(reference_df, pd.DataFrame)
+        or reference_df.empty
+    ):
+        return anomalies_df.copy() if isinstance(anomalies_df, pd.DataFrame) else pd.DataFrame()
+
+    join_key = _cousp_pick_reference_join_key(anomalies_df, reference_df)
+    if not join_key:
+        return anomalies_df.copy()
+
+    extra_cols = [
+        col
+        for col in [
+            join_key,
+            "Date_notification",
+            "Semaine_epid",
+            "Classification_investigation",
+            "Resultat_final_labo",
+            "Issue",
+        ]
+        if col in reference_df.columns
+    ]
+    if join_key not in extra_cols:
+        return anomalies_df.copy()
+
+    out = anomalies_df.copy()
+    out["__join_key_cousp"] = out[join_key].astype("string").str.strip().replace("", pd.NA)
+
+    ref = reference_df[extra_cols].copy()
+    ref["__join_key_cousp"] = ref[join_key].astype("string").str.strip().replace("", pd.NA)
+    ref = ref.loc[ref["__join_key_cousp"].notna()].drop_duplicates("__join_key_cousp")
+
+    merged = out.merge(
+        ref.drop(columns=[join_key]),
+        on="__join_key_cousp",
+        how="left",
+    )
+    return merged.drop(columns=["__join_key_cousp"], errors="ignore")
+
+
+def _cousp_parse_epi_week_label(value) -> tuple[int, int] | None:
+    """Parse des formats tels que S19-2026, SE19-2026 ou 2026-W19."""
+    if value is None or pd.isna(value):
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    patterns = [
+        r"(?P<year>\d{4})\D+(?P<week>\d{1,2})$",
+        r"^[A-Za-z]{0,3}(?P<week>\d{1,2})\D+(?P<year>\d{4})$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        year = int(match.group("year"))
+        week = int(match.group("week"))
+        if 1 <= week <= 53:
+            return year, week
+    return None
+
+
+def _cousp_build_temporal_series(
+    df: pd.DataFrame,
+    *,
+    grain: str,
+    date_col: str = "Date_notification",
+    week_col: str = "Semaine_epid",
+) -> pd.DataFrame:
+    """Construit une serie de comptage par jour, semaine epi ou mois."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame(columns=["Periode", "Cas", "Libelle"])
+
+    if grain == "jour":
+        if date_col not in df.columns:
+            return pd.DataFrame(columns=["Periode", "Cas", "Libelle"])
+        dates = pd.to_datetime(df[date_col], errors="coerce").dropna().dt.normalize()
+        if dates.empty:
+            return pd.DataFrame(columns=["Periode", "Cas", "Libelle"])
+        counts = dates.value_counts().sort_index()
+        out = counts.rename_axis("Periode").reset_index(name="Cas")
+        out["Libelle"] = out["Periode"].dt.strftime("%Y-%m-%d")
+        return out
+
+    if grain == "mois":
+        if date_col not in df.columns:
+            return pd.DataFrame(columns=["Periode", "Cas", "Libelle"])
+        months = pd.to_datetime(df[date_col], errors="coerce").dropna().dt.to_period("M")
+        if months.empty:
+            return pd.DataFrame(columns=["Periode", "Cas", "Libelle"])
+        counts = months.value_counts().sort_index()
+        out = counts.rename_axis("Mois").reset_index(name="Cas")
+        out["Periode"] = out["Mois"].dt.to_timestamp()
+        out["Libelle"] = out["Mois"].astype("string")
+        return out[["Periode", "Cas", "Libelle"]]
+
+    if grain == "semaine":
+        if week_col not in df.columns:
+            return pd.DataFrame(columns=["Periode", "Cas", "Libelle"])
+        weeks = df[week_col].astype("string").str.strip().replace("", pd.NA).dropna()
+        if weeks.empty:
+            return pd.DataFrame(columns=["Periode", "Cas", "Libelle"])
+
+        rows = []
+        for label, count in weeks.value_counts().items():
+            parsed = _cousp_parse_epi_week_label(label)
+            year = parsed[0] if parsed else 9999
+            week = parsed[1] if parsed else 9999
+            rows.append(
+                {
+                    "Periode": str(label),
+                    "Cas": int(count),
+                    "Libelle": str(label),
+                    "__sort_year": year,
+                    "__sort_week": week,
+                }
+            )
+
+        out = pd.DataFrame(rows)
+        if out.empty:
+            return pd.DataFrame(columns=["Periode", "Cas", "Libelle"])
+        out = out.sort_values(
+            ["__sort_year", "__sort_week", "Libelle"],
+            ascending=[True, True, True],
+            kind="stable",
+        ).reset_index(drop=True)
+        return out[["Periode", "Cas", "Libelle"]]
+
+    return pd.DataFrame(columns=["Periode", "Cas", "Libelle"])
+
+
+def _cousp_build_category_counts(
+    df: pd.DataFrame,
+    category_col: str,
+    *,
+    topn: int = 10,
+) -> pd.DataFrame:
+    """Compte les lignes par categorie en excluant les valeurs vides."""
+    if (
+        df is None
+        or not isinstance(df, pd.DataFrame)
+        or df.empty
+        or category_col not in df.columns
+    ):
+        return pd.DataFrame(columns=[category_col, "Cas"])
+
+    values = (
+        df[category_col]
+        .astype("string")
+        .str.strip()
+        .replace("", pd.NA)
+        .dropna()
+    )
+    if values.empty:
+        return pd.DataFrame(columns=[category_col, "Cas"])
+
+    return (
+        values.value_counts()
+        .head(int(max(1, topn)))
+        .rename_axis(category_col)
+        .reset_index(name="Cas")
+    )
+
+
+def _cousp_render_temporal_evolution_chart(
+    df: pd.DataFrame,
+    *,
+    title: str,
+    key_prefix: str,
+) -> None:
+    """Affiche une courbe d'evolution dynamique J/S/M."""
+    st.caption(
+        "Granularite dynamique : `Jour` et `Mois` utilisent `Date_notification`, "
+        "`Semaine` utilise `Semaine_epid`."
+    )
+    label_to_grain = {
+        "Jour": "jour",
+        "Semaine": "semaine",
+        "Mois": "mois",
+    }
+    selected_label = st.radio(
+        "Periode d'analyse",
+        options=list(label_to_grain.keys()),
+        index=1,
+        horizontal=True,
+        key=f"{key_prefix}_grain",
+    )
+    series_df = _cousp_build_temporal_series(df, grain=label_to_grain[selected_label])
+    if series_df.empty:
+        st.info("Les colonnes temporelles necessaires sont absentes ou vides pour ce filtre.")
+        return
+
+    x_col = "Periode"
+    fig = px.line(
+        series_df,
+        x=x_col,
+        y="Cas",
+        markers=True,
+        title=title,
+    )
+    fig.update_traces(
+        hovertemplate="%{x}<br>Cas: %{y}<extra></extra>",
+        line=dict(width=3),
+        marker=dict(size=7),
+    )
+    fig.update_layout(
+        template="plotly_white",
+        height=360,
+        margin=dict(t=60, r=20, b=40, l=20),
+        xaxis_title="Periode",
+        yaxis_title="Nombre de cas",
+        hovermode="x unified",
+    )
+    if label_to_grain[selected_label] == "semaine":
+        fig.update_xaxes(type="category", tickangle=-40)
+    elif label_to_grain[selected_label] == "mois":
+        fig.update_xaxes(tickformat="%Y-%m")
+
+    annotation_fn = globals().get("apply_plotly_value_annotations")
+    if callable(annotation_fn):
+        fig = annotation_fn(fig, bool(globals().get("annot_vals", False)))
+    st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_chart")
+
+
 def render_cousp_tab(ctx: dict) -> None:
     """Render the COUSP standard analytics tab."""
     globals().update(ctx)
@@ -601,6 +870,7 @@ def render_cousp_tab(ctx: dict) -> None:
     completeness_df = sheets.get("Completeness_variables_cles", pd.DataFrame())
     anomalies_df = sheets.get("Anomalies_dates", pd.DataFrame())
     relances_df = sheets.get("Cas_a_relancer", pd.DataFrame())
+    recherche_df = sheets.get("Recherche_dataset", pd.DataFrame())
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Feuilles COUSP", len(sheets))
@@ -646,143 +916,370 @@ def render_cousp_tab(ctx: dict) -> None:
         if synthese_df.empty:
             st.info("Aucune synthese operationnelle disponible.")
         else:
-            st.caption("Filtres de synthese COUSP.")
-            st.caption("Aucune valeur selectionnee = toutes les valeurs.")
-            synthese_view = _cousp_apply_local_multiselect_filters(
-                synthese_df,
-                ["Section", "Indicateur"],
-                key_prefix="cousp_synthese_filter",
-            )
+            with st.expander("Synthese operationnelle - tableau et filtres", expanded=True):
+                st.caption("Filtres de synthese COUSP.")
+                st.caption("Aucune valeur selectionnee = toutes les valeurs.")
+                synthese_view = _cousp_apply_local_multiselect_filters(
+                    synthese_df,
+                    ["Section", "Indicateur"],
+                    key_prefix="cousp_synthese_filter",
+                )
 
-            if "Section" in synthese_view.columns:
-                kpi_df = synthese_view.loc[synthese_view["Section"] == "KPI"].copy()
-                delay_df = synthese_view.loc[synthese_view["Section"] != "KPI"].copy()
-            else:
-                kpi_df = synthese_view.copy()
-                delay_df = pd.DataFrame()
+                if "Section" in synthese_view.columns:
+                    kpi_df = synthese_view.loc[synthese_view["Section"] == "KPI"].copy()
+                    delay_df = synthese_view.loc[synthese_view["Section"] != "KPI"].copy()
+                else:
+                    kpi_df = synthese_view.copy()
+                    delay_df = pd.DataFrame()
 
-            if not kpi_df.empty:
-                st.markdown("**KPI COUSP**")
-                st_dataframe_safe(kpi_df, height=320)
-            if not delay_df.empty:
-                st.markdown("**Delais prioritaires**")
-                st_dataframe_safe(delay_df, height=320)
+                if not kpi_df.empty:
+                    st.markdown("**KPI COUSP**")
+                    st_dataframe_safe(kpi_df, height=320)
+                if not delay_df.empty:
+                    st.markdown("**Delais prioritaires**")
+                    st_dataframe_safe(delay_df, height=320)
+
+            with st.expander("Visualisations de la synthese operationnelle", expanded=True):
+                with st.container():
+                    scol1, scol2 = st.columns([1.1, 1.1])
+                    with scol1:
+                        if kpi_df.empty:
+                            st.info("Aucun KPI exploitable pour la visualisation.")
+                        else:
+                            kpi_plot = kpi_df.copy()
+                            if "Valeur" in kpi_plot.columns:
+                                kpi_plot["Valeur"] = pd.to_numeric(kpi_plot["Valeur"], errors="coerce")
+                                kpi_plot = kpi_plot.loc[kpi_plot["Valeur"].notna()].copy()
+                            if kpi_plot.empty or "Indicateur" not in kpi_plot.columns or "Valeur" not in kpi_plot.columns:
+                                st.info("Les KPI ne contiennent pas de valeurs numeriques a afficher.")
+                            else:
+                                fig_kpi = px.bar(
+                                    kpi_plot.sort_values("Valeur", ascending=False),
+                                    x="Indicateur",
+                                    y="Valeur",
+                                    title="Vue d'ensemble des KPI COUSP",
+                                    color="Valeur",
+                                    color_continuous_scale="Blues",
+                                )
+                                fig_kpi.update_layout(
+                                    template="plotly_white",
+                                    height=380,
+                                    margin=dict(t=60, r=20, b=80, l=20),
+                                    coloraxis_showscale=False,
+                                    xaxis_tickangle=-35,
+                                    xaxis_title="Indicateur",
+                                    yaxis_title="Valeur",
+                                )
+                                annotation_fn = globals().get("apply_plotly_value_annotations")
+                                if callable(annotation_fn):
+                                    fig_kpi = annotation_fn(fig_kpi, bool(globals().get("annot_vals", False)))
+                                st.plotly_chart(fig_kpi, width="stretch", key="cousp_synthese_kpi_chart")
+                    with scol2:
+                        if delay_df.empty:
+                            st.info("Aucun delai prioritaire exploitable pour la visualisation.")
+                        else:
+                            delay_plot = delay_df.copy()
+                            if "Mediane" in delay_plot.columns:
+                                delay_plot["Mediane"] = pd.to_numeric(delay_plot["Mediane"], errors="coerce")
+                            if "Proportion_retards_%" in delay_plot.columns:
+                                delay_plot["Proportion_retards_%"] = pd.to_numeric(
+                                    delay_plot["Proportion_retards_%"],
+                                    errors="coerce",
+                                )
+                            delay_plot = delay_plot.loc[delay_plot.get("Mediane").notna()].copy()
+                            if delay_plot.empty or "Indicateur" not in delay_plot.columns:
+                                st.info("Les delais prioritaires ne contiennent pas de mediane exploitable.")
+                            else:
+                                color_col = (
+                                    "Proportion_retards_%"
+                                    if "Proportion_retards_%" in delay_plot.columns
+                                    and delay_plot["Proportion_retards_%"].notna().any()
+                                    else "Mediane"
+                                )
+                                fig_delay = px.bar(
+                                    delay_plot.sort_values("Mediane", ascending=False),
+                                    x="Indicateur",
+                                    y="Mediane",
+                                    color=color_col,
+                                    title="Mediane des delais prioritaires",
+                                    color_continuous_scale="OrRd",
+                                )
+                                fig_delay.update_layout(
+                                    template="plotly_white",
+                                    height=380,
+                                    margin=dict(t=60, r=20, b=80, l=20),
+                                    xaxis_tickangle=-35,
+                                    xaxis_title="Indicateur",
+                                    yaxis_title="Mediane (jours)",
+                                )
+                                annotation_fn = globals().get("apply_plotly_value_annotations")
+                                if callable(annotation_fn):
+                                    fig_delay = annotation_fn(fig_delay, bool(globals().get("annot_vals", False)))
+                                st.plotly_chart(fig_delay, width="stretch", key="cousp_synthese_delay_chart")
 
     with tab_completude:
         if completeness_df.empty:
             st.info("Aucune analyse de completude disponible.")
         else:
-            st.caption(
-                f"Seuils actifs : acceptable <= {float(seuil_acceptable):.1f}% missing ; "
-                f"a surveiller <= {float(seuil_surveillance):.1f}% missing."
-            )
-            st.caption("Aucune valeur selectionnee = toutes les valeurs.")
-            completeness_view = _cousp_apply_local_multiselect_filters(
-                completeness_df,
-                ["Bloc", "Priorite", "Type variable", "Decision / observation"],
-                key_prefix="cousp_completude_filter",
-            )
-            k_m1, k_m2, k_m3, k_m4 = st.columns(4)
-            k_m1.metric("Variables suivies", str(len(completeness_view)))
-            k_m2.metric(
-                "Variables prioritaires",
-                str(int((completeness_view["Decision / observation"] == "Prioritaire").sum())),
-            )
-            k_m3.metric(
-                "Variables sans missing",
-                str(int((completeness_view["Decision / observation"] == "OK").sum())),
-            )
-            k_m4.metric(
-                "Missing moyen (%)",
-                f"{pd.to_numeric(completeness_view['% missing'], errors='coerce').mean():.1f}",
-            )
+            with st.expander("Completude - tableau et filtres", expanded=True):
+                st.caption(
+                    f"Seuils actifs : acceptable <= {float(seuil_acceptable):.1f}% missing ; "
+                    f"a surveiller <= {float(seuil_surveillance):.1f}% missing."
+                )
+                st.caption("Aucune valeur selectionnee = toutes les valeurs.")
+                completeness_view = _cousp_apply_local_multiselect_filters(
+                    completeness_df,
+                    ["Bloc", "Priorite", "Type variable", "Decision / observation"],
+                    key_prefix="cousp_completude_filter",
+                )
+                k_m1, k_m2, k_m3, k_m4 = st.columns(4)
+                k_m1.metric("Variables suivies", str(len(completeness_view)))
+                k_m2.metric(
+                    "Variables prioritaires",
+                    str(int((completeness_view["Decision / observation"] == "Prioritaire").sum())),
+                )
+                k_m3.metric(
+                    "Variables sans missing",
+                    str(int((completeness_view["Decision / observation"] == "OK").sum())),
+                )
+                k_m4.metric(
+                    "Missing moyen (%)",
+                    f"{pd.to_numeric(completeness_view['% missing'], errors='coerce').mean():.1f}",
+                )
 
-            st_dataframe_safe(completeness_view, height=520)
-            st.download_button(
-                "Telecharger le tableau de completude (CSV)",
-                data=completeness_view.to_csv(index=False).encode("utf-8"),
-                file_name="cousp_completude_variables.csv",
-                mime="text/csv",
-                key="download_cousp_missing_csv",
-            )
+                st_dataframe_safe(completeness_view, height=520)
+                st.download_button(
+                    "Telecharger le tableau de completude (CSV)",
+                    data=completeness_view.to_csv(index=False).encode("utf-8"),
+                    file_name="cousp_completude_variables.csv",
+                    mime="text/csv",
+                    key="download_cousp_missing_csv",
+                )
 
-            topn = st.slider(
-                "Nombre de variables a afficher",
-                min_value=5,
-                max_value=min(80, max(5, len(completeness_view))),
-                value=min(20, len(completeness_view)),
-                step=5,
-                key="cousp_missing_topn",
-            )
-            comp_plot = completeness_view.sort_values(
-                ["% missing", "Manquantes"],
-                ascending=[False, False],
-            ).head(topn)
+            with st.expander("Visualisations de la completude", expanded=True):
+                with st.container():
+                    topn = st.slider(
+                        "Nombre de variables a afficher",
+                        min_value=5,
+                        max_value=min(80, max(5, len(completeness_view))),
+                        value=min(20, len(completeness_view)),
+                        step=5,
+                        key="cousp_missing_topn",
+                    )
+                    comp_plot = completeness_view.sort_values(
+                        ["% missing", "Manquantes"],
+                        ascending=[False, False],
+                    ).head(topn)
 
-            figc = px.bar(
-                comp_plot,
-                x="Variable cle",
-                y="% missing",
-                color="Decision / observation",
-                title=f"Variables prioritaires selon le taux de missing ({topn})",
-            )
-            figc.update_layout(xaxis_tickangle=-45, yaxis=dict(range=[0, 100]))
-            annotation_fn = globals().get("apply_plotly_value_annotations")
-            if callable(annotation_fn):
-                figc = annotation_fn(figc, bool(globals().get("annot_vals", False)))
-            st.plotly_chart(figc, width="stretch")
+                    figc = px.bar(
+                        comp_plot,
+                        x="Variable cle",
+                        y="% missing",
+                        color="Decision / observation",
+                        title=f"Variables prioritaires selon le taux de missing ({topn})",
+                    )
+                    figc.update_layout(xaxis_tickangle=-45, yaxis=dict(range=[0, 100]))
+                    annotation_fn = globals().get("apply_plotly_value_annotations")
+                    if callable(annotation_fn):
+                        figc = annotation_fn(figc, bool(globals().get("annot_vals", False)))
+                    st.plotly_chart(figc, width="stretch")
 
     with tab_anomalies:
         if anomalies_df.empty:
             st.success("Aucune anomalie de dates detectee dans le perimetre filtre.")
         else:
-            st.markdown("**Parametres du sous-onglet Anomalies de dates**")
-            st.caption(
-                "Filtres rapides sur les anomalies de dates pour cibler une province, une zone ou un type d'anomalie."
-            )
-            st.caption("Aucune valeur selectionnee = toutes les valeurs.")
-            anomalies_view = _cousp_apply_local_multiselect_filters(
-                anomalies_df,
-                [
-                    "Province_notification",
-                    "Zone_de_sante_notification",
-                    "Variable_anomalie",
-                    "Type_anomalie",
-                ],
-                key_prefix="cousp_anomalies_filter",
-            )
-            st.caption(f"{len(anomalies_view)} ligne(s) d'anomalies affichee(s).")
-            st_dataframe_safe(anomalies_view, height=540)
-            st.download_button(
-                "Telecharger les anomalies filtrees (CSV)",
-                data=anomalies_view.to_csv(index=False).encode("utf-8"),
-                file_name="cousp_anomalies_dates.csv",
-                mime="text/csv",
-                key="download_cousp_anomalies_csv",
-            )
+            with st.expander("Anomalies de dates - tableau et filtres", expanded=True):
+                st.markdown("**Parametres du sous-onglet Anomalies de dates**")
+                st.caption(
+                    "Filtres rapides sur les anomalies de dates pour cibler une province, une zone ou un type d'anomalie."
+                )
+                st.caption("Aucune valeur selectionnee = toutes les valeurs.")
+                anomalies_view = _cousp_apply_local_multiselect_filters(
+                    anomalies_df,
+                    [
+                        "Province_notification",
+                        "Zone_de_sante_notification",
+                        "Variable_anomalie",
+                        "Type_anomalie",
+                    ],
+                    key_prefix="cousp_anomalies_filter",
+                )
+                st.caption(f"{len(anomalies_view)} ligne(s) d'anomalies affichee(s).")
+                st_dataframe_safe(anomalies_view, height=540)
+                st.download_button(
+                    "Telecharger les anomalies filtrees (CSV)",
+                    data=anomalies_view.to_csv(index=False).encode("utf-8"),
+                    file_name="cousp_anomalies_dates.csv",
+                    mime="text/csv",
+                    key="download_cousp_anomalies_csv",
+                )
+            with st.expander("Visualisations des anomalies", expanded=True):
+                with st.container():
+                    anomalies_viz_df = _cousp_enrich_anomalies_with_reference_data(anomalies_view, recherche_df)
+                    st.markdown("**Visualisations des anomalies**")
+                    vcol1, vcol2 = st.columns([1.4, 1.0])
+                    with vcol1:
+                        _cousp_render_temporal_evolution_chart(
+                            anomalies_viz_df,
+                            title="Evolution des cas avec anomalies de dates",
+                            key_prefix="cousp_anomalies_trend",
+                        )
+                    with vcol2:
+                        anomaly_counts = _cousp_build_category_counts(
+                            anomalies_view,
+                            "Variable_anomalie",
+                            topn=10,
+                        )
+                        if anomaly_counts.empty:
+                            st.info("Aucune variable d'anomalie exploitable pour le graphique.")
+                        else:
+                            fig_anom = px.bar(
+                                anomaly_counts.sort_values("Cas", ascending=True),
+                                x="Cas",
+                                y="Variable_anomalie",
+                                orientation="h",
+                                title="Top 10 des anomalies de dates",
+                                color="Cas",
+                                color_continuous_scale="Reds",
+                            )
+                            fig_anom.update_layout(
+                                template="plotly_white",
+                                height=360,
+                                margin=dict(t=60, r=20, b=30, l=20),
+                                coloraxis_showscale=False,
+                                xaxis_title="Nombre de cas",
+                                yaxis_title="Variable d'anomalie",
+                            )
+                            annotation_fn = globals().get("apply_plotly_value_annotations")
+                            if callable(annotation_fn):
+                                fig_anom = annotation_fn(fig_anom, bool(globals().get("annot_vals", False)))
+                            st.plotly_chart(fig_anom, width="stretch", key="cousp_anomalies_top_chart")
 
     with tab_relances:
         if relances_df.empty:
             st.success("Aucun cas a relancer detecte dans le perimetre filtre.")
         else:
-            st.caption(
-                "Filtres rapides sur les cas a relancer pour cibler une province, une zone ou un motif de relance."
-            )
-            st.caption("Aucune valeur selectionnee = toutes les valeurs.")
-            relances_view = _cousp_apply_local_multiselect_filters(
-                relances_df,
-                [
-                    "Province_notification",
-                    "Zone_de_sante_notification",
-                    "Motif_relance",
-                ],
-                key_prefix="cousp_relances_filter",
-            )
-            st.caption(f"{len(relances_view)} ligne(s) de relance affichee(s).")
-            st_dataframe_safe(relances_view, height=540)
+            with st.expander("Cas a relancer - tableau et filtres", expanded=True):
+                st.caption(
+                    "Filtres rapides sur les cas a relancer pour cibler une province, une zone ou un motif de relance."
+                )
+                st.caption("Aucune valeur selectionnee = toutes les valeurs.")
+                relances_view = _cousp_apply_local_multiselect_filters(
+                    relances_df,
+                    [
+                        "Province_notification",
+                        "Zone_de_sante_notification",
+                        "Motif_relance",
+                    ],
+                    key_prefix="cousp_relances_filter",
+                )
+                st.caption(f"{len(relances_view)} ligne(s) de relance affichee(s).")
+                st_dataframe_safe(relances_view, height=540)
+                st.download_button(
+                    "Telecharger les cas a relancer filtres (CSV)",
+                    data=relances_view.to_csv(index=False).encode("utf-8"),
+                    file_name="cousp_cas_a_relancer.csv",
+                    mime="text/csv",
+                    key="download_cousp_relances_csv",
+                )
+
+            with st.expander("Visualisations des cas a relancer", expanded=True):
+                with st.container():
+                    rcol1, rcol2 = st.columns([1.1, 1.1])
+                    with rcol1:
+                        motif_counts = _cousp_build_category_counts(
+                            relances_view,
+                            "Motif_relance",
+                            topn=10,
+                        )
+                        if motif_counts.empty:
+                            st.info("Aucun motif de relance exploitable pour la visualisation.")
+                        else:
+                            fig_relance_motif = px.bar(
+                                motif_counts.sort_values("Cas", ascending=True),
+                                x="Cas",
+                                y="Motif_relance",
+                                orientation="h",
+                                title="Top 10 des motifs de relance",
+                                color="Cas",
+                                color_continuous_scale="Oranges",
+                            )
+                            fig_relance_motif.update_layout(
+                                template="plotly_white",
+                                height=380,
+                                margin=dict(t=60, r=20, b=30, l=20),
+                                coloraxis_showscale=False,
+                                xaxis_title="Nombre de cas",
+                                yaxis_title="Motif de relance",
+                            )
+                            annotation_fn = globals().get("apply_plotly_value_annotations")
+                            if callable(annotation_fn):
+                                fig_relance_motif = annotation_fn(
+                                    fig_relance_motif,
+                                    bool(globals().get("annot_vals", False)),
+                                )
+                            st.plotly_chart(
+                                fig_relance_motif,
+                                width="stretch",
+                                key="cousp_relances_motif_chart",
+                            )
+                    with rcol2:
+                        relance_geo_options = [
+                            col
+                            for col in [
+                                "Province_notification",
+                                "Zone_de_sante_notification",
+                                "Aire_de_sante_notification",
+                            ]
+                            if col in relances_view.columns
+                        ]
+                        if not relance_geo_options:
+                            st.info("Aucune variable geographique exploitable pour les relances.")
+                        else:
+                            selected_relance_geo = st.selectbox(
+                                "Repartition geographique des relances",
+                                options=relance_geo_options,
+                                index=min(1, len(relance_geo_options) - 1),
+                                key="cousp_relances_geo_col",
+                            )
+                            relance_geo_counts = _cousp_build_category_counts(
+                                relances_view,
+                                selected_relance_geo,
+                                topn=10,
+                            )
+                            if relance_geo_counts.empty:
+                                st.info("Aucune donnee geographique exploitable pour ce filtre.")
+                            else:
+                                fig_relance_geo = px.bar(
+                                    relance_geo_counts.sort_values("Cas", ascending=False),
+                                    x=selected_relance_geo,
+                                    y="Cas",
+                                    title=f"Top 10 - {selected_relance_geo}",
+                                    color="Cas",
+                                    color_continuous_scale="Teal",
+                                )
+                                fig_relance_geo.update_layout(
+                                    template="plotly_white",
+                                    height=380,
+                                    margin=dict(t=60, r=20, b=60, l=20),
+                                    coloraxis_showscale=False,
+                                    xaxis_tickangle=-35,
+                                    xaxis_title=selected_relance_geo,
+                                    yaxis_title="Nombre de cas",
+                                )
+                                annotation_fn = globals().get("apply_plotly_value_annotations")
+                                if callable(annotation_fn):
+                                    fig_relance_geo = annotation_fn(
+                                        fig_relance_geo,
+                                        bool(globals().get("annot_vals", False)),
+                                    )
+                                st.plotly_chart(
+                                    fig_relance_geo,
+                                    width="stretch",
+                                    key="cousp_relances_geo_chart",
+                                )
 
     with tab_recherche:
-        recherche_df = sheets.get("Recherche_dataset", pd.DataFrame())
         if recherche_df.empty:
             st.info("Aucun dataset de recherche disponible.")
         else:
@@ -793,22 +1290,119 @@ def render_cousp_tab(ctx: dict) -> None:
                 )
                 dictionnaire_df = _cousp_added_variables_dictionary()
                 st_dataframe_safe(dictionnaire_df, height=420)
-            with st.expander("Filtres du dataset de recherche", expanded=False):
-                st.caption("Apercu du dataset standardise COUSP utilise pour la recherche et l'export.")
-                st.caption("Aucune valeur selectionnee = toutes les valeurs.")
-                recherche_filter_columns = _cousp_candidate_filter_columns(recherche_df)[:8]
-                recherche_view = _cousp_apply_local_multiselect_filters(
-                    recherche_df,
-                    recherche_filter_columns,
-                    key_prefix="cousp_recherche_filter",
-                )
-                st.caption(f"{len(recherche_view)} ligne(s) de recherche affichee(s).")
-                st.download_button(
-                    "Telecharger le dataset de recherche filtre (CSV)",
-                    data=recherche_view.to_csv(index=False).encode("utf-8"),
-                    file_name="cousp_recherche_dataset_filtre.csv",
-                    mime="text/csv",
-                    key="download_cousp_recherche_csv",
-                )
-            with st.expander("Apercu du dataset de recherche", expanded=True):
-                st_dataframe_safe(recherche_view.head(200), height=540)
+            with st.container():
+                with st.expander("Apercu du dataset de recherche", expanded=False):
+                    st.caption("Apercu du dataset standardise COUSP utilise pour la recherche et l'export.")
+                    st.caption("Aucune valeur selectionnee = toutes les valeurs.")
+                    recherche_filter_columns = _cousp_candidate_filter_columns(recherche_df)[:8]
+                    recherche_view = _cousp_apply_local_multiselect_filters(
+                        recherche_df,
+                        recherche_filter_columns,
+                        key_prefix="cousp_recherche_filter",
+                    )
+                    st.caption(f"{len(recherche_view)} ligne(s) de recherche affichee(s).")
+                    st.download_button(
+                        "Telecharger le dataset de recherche filtre (CSV)",
+                        data=recherche_view.to_csv(index=False).encode("utf-8"),
+                        file_name="cousp_recherche_dataset_filtre.csv",
+                        mime="text/csv",
+                        key="download_cousp_recherche_csv",
+                    )
+                    st_dataframe_safe(recherche_view.head(200), height=540)
+            with st.expander("Visualisations du dataset de recherche", expanded=True):
+                with st.container():
+                    st.markdown("**Visualisations du dataset de recherche**")
+                    rv1, rv2 = st.columns([1.4, 1.0])
+                    with rv1:
+                        _cousp_render_temporal_evolution_chart(
+                            recherche_view,
+                            title="Evolution des cas du dataset de recherche",
+                            key_prefix="cousp_recherche_trend",
+                        )
+                    with rv2:
+                        geo_options = [
+                            col
+                            for col in [
+                                "Province_notification",
+                                "Zone_de_sante_notification",
+                                "Aire_de_sante_notification",
+                            ]
+                            if col in recherche_view.columns
+                        ]
+                        if not geo_options:
+                            st.info("Aucune variable geographique exploitable pour la visualisation.")
+                        else:
+                            selected_geo = st.selectbox(
+                                "Repartition geographique",
+                                options=geo_options,
+                                index=min(1, len(geo_options) - 1),
+                                key="cousp_recherche_geo_col",
+                            )
+                            geo_counts = _cousp_build_category_counts(
+                                recherche_view,
+                                selected_geo,
+                                topn=10,
+                            )
+                            if geo_counts.empty:
+                                st.info("Aucune donnee geographique exploitable pour ce filtre.")
+                            else:
+                                fig_geo = px.bar(
+                                    geo_counts.sort_values("Cas", ascending=False),
+                                    x=selected_geo,
+                                    y="Cas",
+                                    title=f"Top 10 - {selected_geo}",
+                                    color="Cas",
+                                    color_continuous_scale="Blues",
+                                )
+                                fig_geo.update_layout(
+                                    template="plotly_white",
+                                    height=360,
+                                    margin=dict(t=60, r=20, b=60, l=20),
+                                    coloraxis_showscale=False,
+                                    xaxis_tickangle=-35,
+                                    xaxis_title=selected_geo,
+                                    yaxis_title="Nombre de cas",
+                                )
+                                annotation_fn = globals().get("apply_plotly_value_annotations")
+                                if callable(annotation_fn):
+                                    fig_geo = annotation_fn(fig_geo, bool(globals().get("annot_vals", False)))
+                                st.plotly_chart(fig_geo, width="stretch", key="cousp_recherche_geo_chart")
+
+                    category_options = [
+                        col
+                        for col in [
+                            "Classification_investigation",
+                            "Resultat_final_labo",
+                            "Issue",
+                            "Sexe",
+                            "Source_alerte",
+                            "Tranche_age",
+                        ]
+                        if col in recherche_view.columns
+                    ]
+                    if category_options:
+                        selected_category = st.selectbox(
+                            "Profil du dataset de recherche",
+                            options=category_options,
+                            index=0,
+                            key="cousp_recherche_profile_col",
+                        )
+                        category_counts = _cousp_build_category_counts(
+                            recherche_view,
+                            selected_category,
+                            topn=12,
+                        )
+                        if not category_counts.empty:
+                            fig_profile = px.pie(
+                                category_counts,
+                                names=selected_category,
+                                values="Cas",
+                                hole=0.45,
+                                title=f"Distribution - {selected_category}",
+                            )
+                            fig_profile.update_layout(
+                                template="plotly_white",
+                                height=420,
+                                margin=dict(t=60, r=20, b=20, l=20),
+                            )
+                            st.plotly_chart(fig_profile, width="stretch", key="cousp_recherche_profile_chart")
