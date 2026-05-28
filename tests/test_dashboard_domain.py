@@ -538,7 +538,7 @@ class StandardAnalyticsTest(unittest.TestCase):
         self.assertEqual(values["Cas probables"], 1)
         self.assertEqual(values["Cas confirmés"], 1)
         self.assertEqual(values["Cas prélevés"], 2)
-        self.assertEqual(values["Réceptions labo documentées"], 1)
+        self.assertEqual(values["Réceptions labo documentées"], 2)
         self.assertEqual(values["Cas positifs"], 1)
         self.assertEqual(values["Décès documentés"], 1)
 

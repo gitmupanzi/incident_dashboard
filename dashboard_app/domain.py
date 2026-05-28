@@ -3183,6 +3183,48 @@ def _non_empty_count(series: pd.Series) -> int:
     return int(ser.notna().sum() - ser.eq("").sum())
 
 
+def _non_empty_mask(series: pd.Series) -> pd.Series:
+    """Retourne un masque booléen pour les valeurs textuelles réellement renseignées."""
+    ser = series.astype("string").str.strip()
+    return ser.notna() & ser.ne("")
+
+
+def _choose_standard_denominator(
+    value_count: int,
+    candidates: List[Tuple[int, str]],
+    *,
+    fallback_count: int,
+    fallback_label: str,
+) -> Tuple[int, str]:
+    """Choisit le premier dénominateur standard cohérent pour éviter des taux impossibles."""
+    cleaned: List[Tuple[int, str]] = []
+    for count, label in candidates:
+        try:
+            count_int = int(count)
+        except Exception:
+            continue
+        if count_int > 0:
+            cleaned.append((count_int, label))
+
+    for count_int, label in cleaned:
+        if count_int >= int(value_count):
+            return count_int, label
+
+    try:
+        fallback_int = int(fallback_count)
+    except Exception:
+        fallback_int = 0
+
+    if fallback_int > 0:
+        return fallback_int, fallback_label
+
+    if cleaned:
+        count_int, label = max(cleaned, key=lambda item: item[0])
+        return count_int, label
+
+    return fallback_int, fallback_label
+
+
 @st.cache_data(show_spinner=False)
 def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
     """Construit une chaîne analytique standard COUSP utilisable en multi-maladies."""
@@ -3201,8 +3243,16 @@ def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
     prelev_yes = work["preleve_oui_non"] if "preleve_oui_non" in work.columns else (_is_yes_series(work[COL_PREL]) if COL_PREL in work.columns else pd.Series(False, index=work.index))
     hosp_yes = work["hospitalise_oui_non"] if "hospitalise_oui_non" in work.columns else (_is_yes_series(work[COL_HOSP]) if COL_HOSP in work.columns else pd.Series(False, index=work.index))
     deaths = work["is_death"] if "is_death" in work.columns else issue_std.apply(is_death)
+    prelev_date_yes = pd.to_datetime(work[DATE_PREL], errors="coerce").notna() if DATE_PREL in work.columns else pd.Series(False, index=work.index)
     receipt_yes = pd.to_datetime(work[DATE_RECEP], errors="coerce").notna() if DATE_RECEP in work.columns else pd.Series(False, index=work.index)
+    result_date_yes = pd.to_datetime(work[DATE_RES], errors="coerce").notna() if DATE_RES in work.columns else pd.Series(False, index=work.index)
+    if "Date_analyse" in work.columns:
+        result_date_yes |= pd.to_datetime(work["Date_analyse"], errors="coerce").notna()
+    lab_ticket_yes = _non_empty_mask(work["N_labo"]) if "N_labo" in work.columns else pd.Series(False, index=work.index)
     result_yes = lab_result.notna() & lab_result.ne("")
+    prelev_documented = prelev_yes | prelev_date_yes | receipt_yes | result_date_yes | lab_ticket_yes
+    receipt_documented = receipt_yes | result_date_yes | result_yes
+    hosp_documented = hosp_yes | (pd.to_datetime(work[DATE_ADM], errors="coerce").notna() if DATE_ADM in work.columns else pd.Series(False, index=work.index))
     gueri_norm = (
         issue_std.astype("string")
         .str.strip()
@@ -3210,22 +3260,51 @@ def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
         .apply(lambda v: _strip_accents(v) if pd.notna(v) else v)
     )
     gueris = gueri_norm.str.contains("guer", na=False)
+    suspect_like = classification.isin(["Suspect", "Probable"])
+    sample_eligible = classification.isin(["Suspect", "Probable", "Compatible", "Confirmé"])
+    investigated_non_noncas = investigate_yes & ~classification.eq("Non cas")
 
     alert_count = _non_empty_count(work["N_alerte"]) if "N_alerte" in work.columns else 0
     investigate_den = alert_count if alert_count > 0 else n_cases
     investigate_base = "Alertes documentées" if alert_count > 0 else "Cas filtrés"
     class_den = int(investigate_yes.sum()) if int(investigate_yes.sum()) > 0 else n_cases
     class_base = "Cas investigués" if int(investigate_yes.sum()) > 0 else "Cas filtrés"
-    prelev_den = int((classification == "Suspect").sum())
-    if prelev_den <= 0:
-        prelev_den = n_cases
-        prelev_base = "Cas filtrés"
-    else:
-        prelev_base = "Cas suspects"
-    receipt_den = int(prelev_yes.sum()) if int(prelev_yes.sum()) > 0 else n_cases
-    receipt_base = "Cas prélevés" if int(prelev_yes.sum()) > 0 else "Cas filtrés"
-    result_den = int(receipt_yes.sum()) if int(receipt_yes.sum()) > 0 else receipt_den
-    result_base = "Réceptions labo documentées" if int(receipt_yes.sum()) > 0 else receipt_base
+    prelev_count = int(prelev_documented.sum())
+    prelev_den, prelev_base = _choose_standard_denominator(
+        prelev_count,
+        [
+            (int(suspect_like.sum()), "Cas suspects/probables"),
+            (int(sample_eligible.sum()), "Cas suspects/probables/compatibles/confirmés"),
+            (int(investigated_non_noncas.sum()), "Cas investigués hors non-cas"),
+            (int(investigate_yes.sum()), "Cas investigués"),
+        ],
+        fallback_count=n_cases,
+        fallback_label="Cas filtrés",
+    )
+    receipt_count = int(receipt_documented.sum())
+    receipt_den, receipt_base = _choose_standard_denominator(
+        receipt_count,
+        [
+            (prelev_count, "Cas prélevés documentés"),
+            (int(sample_eligible.sum()), "Cas suspects/probables/compatibles/confirmés"),
+            (int(investigated_non_noncas.sum()), "Cas investigués hors non-cas"),
+            (int(investigate_yes.sum()), "Cas investigués"),
+        ],
+        fallback_count=n_cases,
+        fallback_label="Cas filtrés",
+    )
+    result_count = int(result_yes.sum())
+    result_den, result_base = _choose_standard_denominator(
+        result_count,
+        [
+            (receipt_count, "Réceptions labo documentées"),
+            (prelev_count, "Cas prélevés documentés"),
+            (int(sample_eligible.sum()), "Cas suspects/probables/compatibles/confirmés"),
+            (int(investigated_non_noncas.sum()), "Cas investigués hors non-cas"),
+        ],
+        fallback_count=n_cases,
+        fallback_label="Cas filtrés",
+    )
     lab_valid_den = int(result_yes.sum()) if int(result_yes.sum()) > 0 else n_cases
 
     rows = []
@@ -3267,19 +3346,19 @@ def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
         _append("Exposition", "Facteur d'exposition renseigné", _non_empty_count(work["Facteur_exposition"]), n_cases, "Cas filtrés", "Facteur_exposition")
 
     if COL_PREL in work.columns or DATE_PREL in work.columns:
-        _append("Prélèvement", "Cas prélevés", int(prelev_yes.sum()), prelev_den, prelev_base, f"{COL_PREL} / {DATE_PREL}")
+        _append("Prélèvement", "Cas prélevés", prelev_count, prelev_den, prelev_base, f"{COL_PREL} / {DATE_PREL} / {DATE_RECEP} / N_labo")
 
     if DATE_RECEP in work.columns:
-        _append("Laboratoire", "Réceptions labo documentées", int(receipt_yes.sum()), receipt_den, receipt_base, DATE_RECEP)
+        _append("Laboratoire", "Réceptions labo documentées", receipt_count, receipt_den, receipt_base, f"{DATE_RECEP} / {DATE_RES}")
     if result_yes.any():
-        _append("Laboratoire", "Résultats labo disponibles", int(result_yes.sum()), result_den, result_base, f"{COL_TDRR} / Resultat_labo")
+        _append("Laboratoire", "Résultats labo disponibles", result_count, result_den, result_base, f"{COL_TDRR} / Resultat_labo")
         _append("Laboratoire", "Cas positifs", int(lab_result.isin(TDR_POS_SET).sum()), lab_valid_den, "Résultats documentés", f"{COL_TDRR} / Resultat_labo")
         _append("Laboratoire", "Cas négatifs", int(lab_result.isin(TDR_NEG_SET).sum()), lab_valid_den, "Résultats documentés", f"{COL_TDRR} / Resultat_labo")
         invalid_mask = lab_result.isin(["invalide", "invalid", "inba", "bande absente", "indetermine", "indéterminé"])
         _append("Laboratoire", "Résultats invalides", int(invalid_mask.sum()), lab_valid_den, "Résultats documentés", f"{COL_TDRR} / Resultat_labo")
 
     if COL_HOSP in work.columns or DATE_ADM in work.columns:
-        _append("Prise en charge", "Cas hospitalisés", int(hosp_yes.sum()), n_cases, "Cas filtrés", f"{COL_HOSP} / {DATE_ADM}")
+        _append("Prise en charge", "Cas hospitalisés", int(hosp_documented.sum()), n_cases, "Cas filtrés", f"{COL_HOSP} / {DATE_ADM}")
     if COL_ISSUE in work.columns or "Issue_std" in work.columns:
         _append("Prise en charge", "Décès documentés", int(deaths.sum()), n_cases, "Cas filtrés", COL_ISSUE)
         _append("Prise en charge", "Guéris documentés", int(gueris.sum()), n_cases, "Cas filtrés", COL_ISSUE)
