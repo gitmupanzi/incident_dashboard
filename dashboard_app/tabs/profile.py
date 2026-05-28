@@ -156,11 +156,22 @@ def render_profile_tab(ctx: dict) -> None:
         df_desc = df_f.copy()
         df_desc['Tranche_age_4cat_std'] = derive_age_4cat_generic(df_desc)
         df_desc['Tranche_age_5ans_std'] = derive_age_5yr_generic(df_desc)
-        if use_custom_viz and HAS_CUSTOM_VIZ and age_col and COL_SEX in df_desc.columns and COL_PROV in df_desc.columns:
+        profile_pyramid_age_mode = str(globals().get("overview_pyramid_age_mode", "5yr"))
+        profile_pyramid_col = get_age_pyramid_group_column_name(profile_pyramid_age_mode)
+        df_desc[profile_pyramid_col] = derive_age_pyramid_generic(df_desc, profile_pyramid_age_mode)
+        has_profile_pyramid_data = (
+            df_desc[profile_pyramid_col].notna().any()
+            and COL_SEX in df_desc.columns
+            and df_desc[COL_SEX].notna().any()
+            and COL_PROV in df_desc.columns
+            and df_desc[COL_PROV].notna().any()
+        )
+        if has_profile_pyramid_data:
             st.markdown("**Structure âge-sexe détaillée par province**")
+            st.caption(f"Decoupage applique : {AGE_PYRAMID_MODE_LABELS.get(profile_pyramid_age_mode, profile_pyramid_age_mode)}")
             fig = graphique_pyramide_age(
                 df=df_desc,
-                col_tranche=age_col,
+                col_tranche=profile_pyramid_col,
                 col_sexe=COL_SEX,
                 col_valeur=COL_UNIT if COL_UNIT in df_desc.columns else COL_SEX,
                 valeurs_neg=['Masculin', 'Homme', 'M'],
@@ -174,9 +185,14 @@ def render_profile_tab(ctx: dict) -> None:
                 return_fig=True,
                 couleur_contour_facette="#777772"
             )
-            st_plot(fig, key='oms_pyr_faceted_prov')
+            if fig is not None:
+                if not (use_custom_viz and HAS_CUSTOM_VIZ):
+                    st.caption("Rendu standard actif : les visualisations custom sont desactivees.")
+                st_plot(fig, key='oms_pyr_faceted_prov')
+            else:
+                st.info("Pyramide par province indisponible : le rendu du graphique a echoue.")
         else:
-            render_absence_narrative("profile")
+            st.info("Pyramide par province indisponible : variables Age/Sexe/Province insuffisantes.")
 
         st.divider()
         st.subheader("3. Dimension lieu — répartition par province, zone de santé et aire de santé")

@@ -243,6 +243,33 @@ def derive_age_5yr_generic(df_: pd.DataFrame) -> pd.Series:
     return pd.cut(years, bins=bins, labels=labels, right=False).astype("string")
 
 
+AGE_PYRAMID_MODE_LABELS = {
+    "5yr": "Tranches quinquennales (0-4, 5-9, 10-14, ..., 60+)",
+    "4cat": "Tranches COUSP (0-11 mois, 12-59 mois, 5-15 ans, >15 ans)",
+}
+
+AGE_PYRAMID_CATEGORY_ORDERS = {
+    "5yr": ["0-4", "5-9", "10-14", "15-19", "20-24", "25-29", "30-34", "35-39", "40-44", "45-49", "50-54", "55-59", "60+"],
+    "4cat": ["0-11 mois", "12-59 mois", "5-15 ans", ">15 ans"],
+}
+
+
+def derive_age_pyramid_generic(df_: pd.DataFrame, mode: str = "5yr") -> pd.Series:
+    if str(mode).strip().lower() == "4cat":
+        return derive_age_4cat_generic(df_)
+    return derive_age_5yr_generic(df_)
+
+
+def get_age_pyramid_group_column_name(mode: str = "5yr") -> str:
+    if str(mode).strip().lower() == "4cat":
+        return "Tranche_age_4cat_dashboard"
+    return "Tranche_age_5ans_dashboard"
+
+
+def get_age_pyramid_category_order(mode: str = "5yr") -> list[str]:
+    return list(AGE_PYRAMID_CATEGORY_ORDERS.get(str(mode).strip().lower(), AGE_PYRAMID_CATEGORY_ORDERS["5yr"]))
+
+
 @st.cache_data(show_spinner=False)
 def build_global_summary_table(df_: pd.DataFrame) -> pd.DataFrame:
     n_cases = int(len(df_))

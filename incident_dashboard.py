@@ -259,8 +259,11 @@ def _reset_display_options() -> None:
     st.session_state["pas_x"] = 1
     st.session_state["seuil_min_count"] = 0
     st.session_state["show_sidebar_summary"] = True
+    st.session_state["overview_pyramid_age_mode"] = "5yr"
 
 st.sidebar.header("Visualisations")
+if "overview_pyramid_age_mode" not in st.session_state:
+    st.session_state["overview_pyramid_age_mode"] = "5yr"
 with st.sidebar.expander("Paramètres avancés des visualisations", expanded=False):
     use_custom_viz = st.checkbox(
         "Utiliser visualisations custom (dataminsante)",
@@ -268,10 +271,22 @@ with st.sidebar.expander("Paramètres avancés des visualisations", expanded=Fal
         key="use_custom_viz",
         help="Les fonctions custom sont intégrées dans le package applicatif du dashboard."
     )
+    pyramid_age_mode = st.selectbox(
+        "Decoupage age (tous les graphiques)",
+        options=list(AGE_PYRAMID_MODE_LABELS.keys()),
+        index=list(AGE_PYRAMID_MODE_LABELS.keys()).index(st.session_state.get("overview_pyramid_age_mode", "5yr")),
+        key="overview_pyramid_age_mode",
+        format_func=lambda key: AGE_PYRAMID_MODE_LABELS.get(key, key),
+        help="Applique le meme decoupage a la pyramide age-sexe et aux graphiques lies a l'age.",
+    )
     annot_vals = st.checkbox("Afficher annotations (valeurs)", value=False, key="annot_vals")
     pas_x = st.number_input("Pas X (ticks)", min_value=1, max_value=10, value=1, step=1, key="pas_x")
     seuil_min_count = st.number_input("Seuil minimal (filtrer petits groupes)", min_value=0, max_value=100, value=0, step=1, key="seuil_min_count")
     st.button("Réinitialiser les options d’affichage", key="reset_display_options", on_click=_reset_display_options)
+
+pyramid_age_mode = str(st.session_state.get("overview_pyramid_age_mode", "5yr"))
+
+
 
 show_sidebar_summary = st.sidebar.checkbox(
     "Afficher le résumé des filtres actifs",
@@ -286,11 +301,138 @@ show_sidebar_summary = st.sidebar.checkbox(
 # =========================
 IDSR_MODE = (disease_key == "idsr")
 
+def build_overview_age_sex_pyramid_figure(
+    df_: pd.DataFrame,
+    pyramid_age_mode: str,
+    use_custom_viz_flag: bool,
+) -> tuple[object | None, str | None]:
+    df_pyr = df_.copy()
+    pyramid_age_col = get_age_pyramid_group_column_name(pyramid_age_mode)
+    df_pyr[pyramid_age_col] = derive_age_pyramid_generic(df_pyr, pyramid_age_mode)
+
+    has_age = pyramid_age_col in df_pyr.columns and df_pyr[pyramid_age_col].notna().any()
+    has_sex = COL_SEX in df_pyr.columns and df_pyr[COL_SEX].notna().any()
+    if not (has_age and has_sex):
+        return None, "data_missing"
+
+    if use_custom_viz_flag and HAS_CUSTOM_VIZ:
+        fig_pyr = plot_pyramide_symetrique(
+            df=df_pyr,
+            col_categorie=pyramid_age_col,
+            col_groupe=COL_SEX,
+            valeurs_neg=["Masculin", "Homme", "M"],
+            titre=None,
+            seuil_min=0,
+            croissant=True,
+            afficher_signe_negatif_dans_label=False,
+        )
+        if fig_pyr is None:
+            return None, "render_failed"
+        fig_pyr.update_layout(
+            height=430,
+            margin=dict(t=18, b=44, l=72, r=56),
+            legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+            uniformtext_minsize=8,
+            uniformtext_mode="hide",
+            barmode="relative",
+        )
+        fig_pyr.update_xaxes(automargin=True)
+        fig_pyr.update_yaxes(automargin=True)
+        return fig_pyr, None
+
+    sex_display_map = {
+        "feminin": "Feminin",
+        "féminin": "Feminin",
+        "f": "Feminin",
+        "female": "Feminin",
+        "femme": "Feminin",
+        "masculin": "Masculin",
+        "m": "Masculin",
+        "male": "Masculin",
+        "homme": "Masculin",
+    }
+    work = df_pyr[[pyramid_age_col, COL_SEX]].dropna().copy()
+    work["_Sexe_dashboard"] = work[COL_SEX].apply(
+        lambda value: sex_display_map.get(str(value).strip().lower(), str(value).strip())
+    )
+    age_order = get_age_pyramid_category_order(pyramid_age_mode)
+    extra_age_values = [
+        value for value in work[pyramid_age_col].astype(str).unique().tolist()
+        if value not in age_order
+    ]
+    age_order = age_order + extra_age_values
+    work[pyramid_age_col] = pd.Categorical(work[pyramid_age_col], categories=age_order, ordered=True)
+    counts = (
+        work.groupby([pyramid_age_col, "_Sexe_dashboard"], observed=True)
+        .size()
+        .reset_index(name="n")
+    )
+    pivot = (
+        counts.pivot_table(
+            index=pyramid_age_col,
+            columns="_Sexe_dashboard",
+            values="n",
+            aggfunc="sum",
+            fill_value=0,
+            observed=False,
+        )
+        .reindex(age_order)
+        .fillna(0)
+    )
+
+    fig_pyr = go.Figure()
+    for group_name, direction in [("Masculin", -1), ("Feminin", 1)]:
+        if group_name not in pivot.columns:
+            continue
+        values = pd.to_numeric(pivot[group_name], errors="coerce").fillna(0)
+        fig_pyr.add_trace(
+            go.Bar(
+                y=age_order,
+                x=(values * direction).tolist(),
+                orientation="h",
+                name=group_name,
+                marker=dict(color=SEX_COLOR_MAP.get(group_name, "#4c78a8")),
+                text=values.astype(int).astype(str).tolist(),
+                texttemplate="%{text}",
+                textposition="outside",
+                customdata=values.astype(int).tolist(),
+                hovertemplate=f"Sexe: {group_name}<br>Tranche d'âge: %{{y}}<br>Nombre de cas: %{{customdata}}<extra></extra>",
+                cliponaxis=False,
+            )
+        )
+
+    max_val = int(max(abs(v) for tr in fig_pyr.data for v in tr.x)) if fig_pyr.data else 0
+    axis_max = max(1, int(np.ceil(max_val * 1.08)))
+    fig_pyr.update_layout(
+        height=430,
+        margin=dict(t=18, b=44, l=72, r=56),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+        uniformtext_minsize=8,
+        uniformtext_mode="hide",
+        barmode="relative",
+        template="plotly_white",
+        xaxis=dict(
+            tickvals=[-max_val, 0, max_val],
+            ticktext=[str(max_val), "0", str(max_val)],
+            automargin=True,
+            zeroline=True,
+            zerolinewidth=1.2,
+            zerolinecolor="rgba(26,30,43,0.28)",
+            range=[-axis_max, axis_max],
+            title="Nombre de cas",
+        ),
+        yaxis=dict(categoryorder="array", categoryarray=age_order, title="Tranche d'âge"),
+    )
+    fig_pyr.update_xaxes(automargin=True)
+    fig_pyr.update_yaxes(automargin=True)
+    return fig_pyr, "fallback"
+
 def render_overview_dashboard_v2(
     df_: pd.DataFrame,
     files_used: list[str],
     disease_key: str,
     use_custom_viz_flag: bool,
+    pyramid_age_mode: str,
     annotate_values_flag: bool,
     x_tick_step: int,
 ) -> None:
@@ -527,69 +669,62 @@ def render_overview_dashboard_v2(
             st.info("La variable Sexe est absente ou vide.")
 
     with p3:
-        st.markdown("<div class='cousp-panel-title'>Répartition par âge</div>", unsafe_allow_html=True)
-        years = infer_age_years_generic(df_)
-        if years.notna().any():
-            age_hist = pd.DataFrame({"Age_en_ans": years.dropna()})
-            fig_age = px.histogram(
-                age_hist,
-                x="Age_en_ans",
-                nbins=18,
+        st.markdown("<div class='cousp-panel-title'>Courbe hebdomadaire des cas.</div>", unsafe_allow_html=True)
+        if weekly.empty or "label" not in weekly.columns or "Cas" not in weekly.columns:
+            st.info("Courbe hebdomadaire indisponible.")
+        else:
+            fig_age = px.line(
+                weekly,
+                x="label",
+                y="Cas",
+                markers=True,
                 color_discrete_sequence=["#2d7d46"],
                 title=" ",
+                labels={"label": "Semaine épidémiologique", "Cas": "Nombre de cas"},
             )
+            fig_age.update_traces(line=dict(width=3))
+            fig_age.update_layout(xaxis_tickangle=-35)
+            if x_tick_step > 1 and len(weekly) > x_tick_step:
+                fig_age.update_xaxes(
+                    tickmode="array",
+                    tickvals=weekly["label"].iloc[:: max(int(x_tick_step), 1)],
+                    ticktext=weekly["label"].iloc[:: max(int(x_tick_step), 1)],
+                )
             st_plot(fig_age, key="overview_age_hist_v2", annotate_values=annotate_values_flag)
-        else:
-            age_col = pick_age_col(df_)
-            if age_col is None:
-                st.info("Aucune information d'âge exploitable n'est disponible.")
-            else:
-                age_tbl = build_frequency_table(df_, age_col)
-                fig_age = px.bar(age_tbl, x=age_col, y="n", color_discrete_sequence=["#2d7d46"])
-                fig_age.update_layout(xaxis_tickangle=-35)
-                st_plot(fig_age, key="overview_age_bar_v2", annotate_values=annotate_values_flag)
 
     p4, p5 = st.columns([1.55, 1.0])
     with p4:
         st.markdown("<div class='cousp-panel-title'>Pyramide âge-sexe</div>", unsafe_allow_html=True)
-        df_pyr = df_.copy()
-        df_pyr["Tranche_age_5ans_dashboard"] = derive_age_5yr_generic(df_pyr)
-        if use_custom_viz_flag and HAS_CUSTOM_VIZ and COL_SEX in df_pyr.columns and df_pyr["Tranche_age_5ans_dashboard"].notna().any():
-            fig_pyr = plot_pyramide_symetrique(
-                df=df_pyr,
-                col_categorie="Tranche_age_5ans_dashboard",
-                col_groupe=COL_SEX,
-                valeurs_neg=["Masculin", "Homme", "M"],
-                titre=None,
-                seuil_min=0,
-                croissant=True,
-                afficher_signe_negatif_dans_label=False,
-            )
-            if fig_pyr is not None:
-                fig_pyr.update_layout(
-                    height=430,
-                    margin=dict(t=18, b=44, l=72, r=56),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
-                    uniformtext_minsize=8,
-                    uniformtext_mode="hide",
-                    barmode="relative",
-                )
-                fig_pyr.update_xaxes(automargin=True)
-                fig_pyr.update_yaxes(automargin=True)
+        fig_pyr, pyramid_status = build_overview_age_sex_pyramid_figure(
+            df_=df_,
+            pyramid_age_mode=pyramid_age_mode,
+            use_custom_viz_flag=use_custom_viz_flag,
+        )
+        if fig_pyr is not None:
+            if pyramid_status == "fallback":
+                st.caption("Rendu standard actif : les visualisations custom sont desactivees.")
             st_plot(fig_pyr, key="overview_pyramid_v2", height=430, annotate_values=False)
-        else:
+        elif pyramid_status == "data_missing":
             st.info("Pyramide indisponible : variables Age/Sexe insuffisantes.")
+        else:
+            st.info("Pyramide indisponible : le rendu du graphique a echoue.")
 
     with p5:
         st.markdown("<div class='cousp-panel-title'>Distribution par tranche d'âge</div>", unsafe_allow_html=True)
         df_age_group = df_.copy()
-        age_group_col = pick_age_col(df_age_group)
-        if age_group_col is None:
-            df_age_group["Tranche_age_4cat_dashboard"] = derive_age_4cat_generic(df_age_group)
-            age_group_col = "Tranche_age_4cat_dashboard"
+        age_group_col = get_age_pyramid_group_column_name(pyramid_age_mode)
+        df_age_group[age_group_col] = derive_age_pyramid_generic(df_age_group, pyramid_age_mode)
 
         if age_group_col in df_age_group.columns and df_age_group[age_group_col].notna().any():
             age_group_tbl = build_frequency_table(df_age_group, age_group_col)
+            age_order = get_age_pyramid_category_order(pyramid_age_mode)
+            extra_age_values = [value for value in age_group_tbl[age_group_col].astype(str).tolist() if value not in age_order]
+            age_group_tbl[age_group_col] = pd.Categorical(
+                age_group_tbl[age_group_col],
+                categories=age_order + extra_age_values,
+                ordered=True,
+            )
+            age_group_tbl = age_group_tbl.sort_values(age_group_col)
             fig_age_group = px.bar(
                 age_group_tbl,
                 x=age_group_col,
@@ -1347,6 +1482,7 @@ def _legacy_render_overview_dashboard(
     use_custom_viz_flag: bool,
     annotate_values_flag: bool,
     x_tick_step: int,
+    pyramid_age_mode: str = "5yr",
 ) -> None:
     """Assemble la page d'accueil institutionnelle avant les onglets détaillés."""
     if df_.empty:
@@ -1544,69 +1680,63 @@ def _legacy_render_overview_dashboard(
             st.info("La variable Sexe est absente ou vide.")
 
     with p3:
-        st.markdown("<div class='cousp-panel-title'>Répartition par âge</div>", unsafe_allow_html=True)
-        years = infer_age_years_generic(df_)
-        if years.notna().any():
-            age_hist = pd.DataFrame({"Age_en_ans": years.dropna()})
-            fig_age = px.histogram(
-                age_hist,
-                x="Age_en_ans",
-                nbins=18,
+        st.markdown("<div class='cousp-panel-title'>Courbe hebdomadaire des cas.</div>", unsafe_allow_html=True)
+        if weekly.empty or "label" not in weekly.columns or "Cas" not in weekly.columns:
+            st.info("Courbe hebdomadaire indisponible.")
+        else:
+            fig_age = px.line(
+                weekly,
+                x="label",
+                y="Cas",
+                markers=True,
                 color_discrete_sequence=["#2d7d46"],
                 title=" ",
+                labels={"label": "Semaine épidémiologique", "Cas": "Nombre de cas"},
             )
+            fig_age.update_traces(line=dict(width=3))
+            fig_age.update_layout(xaxis_tickangle=-35)
+            if x_tick_step > 1 and len(weekly) > x_tick_step:
+                fig_age.update_xaxes(
+                    tickmode="array",
+                    tickvals=weekly["label"].iloc[:: max(int(x_tick_step), 1)],
+                    ticktext=weekly["label"].iloc[:: max(int(x_tick_step), 1)],
+                )
             st_plot(fig_age, key="overview_age_hist", annotate_values=annotate_values_flag)
-        else:
-            age_col = pick_age_col(df_)
-            if age_col is None:
-                st.info("Aucune information d'âge exploitable n'est disponible.")
-            else:
-                age_tbl = build_frequency_table(df_, age_col)
-                fig_age = px.bar(age_tbl, x=age_col, y="n", color_discrete_sequence=["#2d7d46"])
-                fig_age.update_layout(xaxis_tickangle=-35)
-                st_plot(fig_age, key="overview_age_bar", annotate_values=annotate_values_flag)
 
     p4, p5 = st.columns([1.55, 1.0])
     with p4:
         st.markdown("<div class='cousp-panel-title'>Pyramide age-sexe</div>", unsafe_allow_html=True)
-        df_pyr = df_.copy()
-        df_pyr["Tranche_age_5ans_dashboard"] = derive_age_5yr_generic(df_pyr)
-        if use_custom_viz_flag and HAS_CUSTOM_VIZ and COL_SEX in df_pyr.columns and df_pyr["Tranche_age_5ans_dashboard"].notna().any():
-            fig_pyr = plot_pyramide_symetrique(
-                df=df_pyr,
-                col_categorie="Tranche_age_5ans_dashboard",
-                col_groupe=COL_SEX,
-                valeurs_neg=["Masculin", "Homme", "M"],
-                titre=None,
-                seuil_min=0,
-                croissant=True,
-                afficher_signe_negatif_dans_label=False,
-            )
-            if fig_pyr is not None:
-                fig_pyr.update_layout(
-                    height=430,
-                    margin=dict(t=18, b=44, l=72, r=56),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
-                    uniformtext_minsize=8,
-                    uniformtext_mode="hide",
-                    barmode="relative",
-                )
-                fig_pyr.update_xaxes(automargin=True)
-                fig_pyr.update_yaxes(automargin=True)
+        st.caption(f"Decoupage actif : {AGE_PYRAMID_MODE_LABELS.get(pyramid_age_mode, pyramid_age_mode)}")
+        fig_pyr, pyramid_status = build_overview_age_sex_pyramid_figure(
+            df_=df_,
+            pyramid_age_mode=pyramid_age_mode,
+            use_custom_viz_flag=use_custom_viz_flag,
+        )
+        if fig_pyr is not None:
+            if pyramid_status == "fallback":
+                st.caption("Rendu standard actif : les visualisations custom sont desactivees.")
             st_plot(fig_pyr, key="overview_pyramid", height=430, annotate_values=False)
-        else:
+        elif pyramid_status == "data_missing":
             st.info("Pyramide indisponible : variables Age/Sexe insuffisantes.")
+        else:
+            st.info("Pyramide indisponible : le rendu du graphique a echoue.")
 
     with p5:
         st.markdown("<div class='cousp-panel-title'>Distribution par tranche d'âge</div>", unsafe_allow_html=True)
         df_age_group = df_.copy()
-        age_group_col = pick_age_col(df_age_group)
-        if age_group_col is None:
-            df_age_group["Tranche_age_4cat_dashboard"] = derive_age_4cat_generic(df_age_group)
-            age_group_col = "Tranche_age_4cat_dashboard"
+        age_group_col = get_age_pyramid_group_column_name(pyramid_age_mode)
+        df_age_group[age_group_col] = derive_age_pyramid_generic(df_age_group, pyramid_age_mode)
 
         if age_group_col in df_age_group.columns and df_age_group[age_group_col].notna().any():
             age_group_tbl = build_frequency_table(df_age_group, age_group_col)
+            age_order = get_age_pyramid_category_order(pyramid_age_mode)
+            extra_age_values = [value for value in age_group_tbl[age_group_col].astype(str).tolist() if value not in age_order]
+            age_group_tbl[age_group_col] = pd.Categorical(
+                age_group_tbl[age_group_col],
+                categories=age_order + extra_age_values,
+                ordered=True,
+            )
+            age_group_tbl = age_group_tbl.sort_values(age_group_col)
             fig_age_group = px.bar(
                 age_group_tbl,
                 x=age_group_col,
@@ -1626,6 +1756,7 @@ if not IDSR_MODE:
         files_used=files_used,
         disease_key=disease_key,
         use_custom_viz_flag=use_custom_viz,
+        pyramid_age_mode=pyramid_age_mode,
         annotate_values_flag=annot_vals,
         x_tick_step=int(pas_x),
     )
