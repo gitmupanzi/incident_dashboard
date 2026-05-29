@@ -51,6 +51,7 @@ Pour l'investigation, le dashboard applique une convention standard importante :
 L'interface principale expose aujourd'hui les onglets suivants :
 
 - `Vue d'ensemble` : synthese d'accueil, KPI, cartes rapides, tendance hebdomadaire et lecture contextuelle
+- `Notions statistiques` : explication pedagogique des notions quantitatives utilisees dans le projet et de leur importance
 - `Surveillance` : dynamique epidemiologique, completude de surveillance, alertes, clusters, chaine analytique standard COUSP et delais de promptitude
 - `Profil` : lecture descriptive selon le modele Temps-Lieu-Personne, pyramides, distributions age/sexe, detail labo
 - `Qualite et export` : qualite des donnees, promptitude, coherence, cas a relancer, exports CSV/Excel, QC flags, doublons, tracker d'actions
@@ -253,6 +254,7 @@ incident_dashboard/
 |   |-- runtime_support.py             # contexte partage entre onglets
 |   |-- tabs/
 |   |   |-- overview_detail.py         # vue d'ensemble detaillee
+|   |   |-- statistics.py              # notions statistiques, formules et aide a l'interpretation
 |   |   |-- surveillance.py            # surveillance, chaine standard, delais, alertes, clusters
 |   |   |-- profile.py                 # analyses Temps-Lieu-Personne
 |   |   |-- quality.py                 # qualite, coherence, cas a relancer, extraction et export

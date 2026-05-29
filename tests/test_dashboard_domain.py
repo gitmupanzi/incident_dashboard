@@ -94,6 +94,10 @@ from dashboard_app.tabs.irep import (
     _irep_prepare_analysis_scope,
     _irep_prepare_population_reference_frame,
 )
+from dashboard_app.tabs.statistics import (
+    _build_statistical_examples,
+    _build_statistical_notions_catalog,
+)
 
 
 CORE_STANDARD_COLUMNS = [
@@ -150,6 +154,16 @@ class CoreHelpersTest(unittest.TestCase):
         self.assertTrue(pd.isna(result.iloc[2]))
         self.assertTrue(pd.isna(result.iloc[3]))
         self.assertTrue(pd.isna(result.iloc[4]))
+
+    def test_statistical_notions_catalog_covers_core_concepts(self):
+        catalog = _build_statistical_notions_catalog()
+        notions = set(catalog["Notion"].astype(str).tolist())
+
+        self.assertIn("Taux de létalité (CFR %)", notions)
+        self.assertIn("Incidence", notions)
+        self.assertIn("Médiane", notions)
+        self.assertIn("IREP", notions)
+        self.assertIn("Alerte hebdomadaire", notions)
 
 
 class StandardizationTest(unittest.TestCase):
@@ -488,6 +502,29 @@ class IndicatorTest(unittest.TestCase):
         )
         self.assertEqual(within_target["Notification"], 50.0)
         self.assertEqual(within_target["Issue"], 0.0)
+
+    def test_build_statistical_examples_returns_core_line_list_examples(self):
+        df = standardize_df(
+            pd.DataFrame(
+                {
+                    DATE_ONSET: ["2026-01-01", "2026-01-02"],
+                    DATE_NOTIF: ["2026-01-02", "2026-01-05"],
+                    DATE_ADM: ["2026-01-03", "2026-01-06"],
+                    DATE_RES: ["2026-01-06", "2026-01-07"],
+                    COL_ISSUE: ["deces", "gueri"],
+                    COL_TDRR: ["positif", "negatif"],
+                    COL_PROV: ["Kinshasa", "Kinshasa"],
+                    COL_ZS: ["Gombe", "Gombe"],
+                }
+            )
+        )
+
+        examples = _build_statistical_examples(df, idsr_mode=False)
+        notions = set(examples["Notion"].astype(str).tolist())
+
+        self.assertIn("Effectif de cas", notions)
+        self.assertIn("Létalité (CFR %)", notions)
+        self.assertIn("Positivité labo (%)", notions)
 
     def test_is_death_recognizes_common_labels(self):
         self.assertTrue(is_death("deces"))

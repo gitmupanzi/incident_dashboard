@@ -32,6 +32,7 @@ from dashboard_app.column_mapping import (
 from dashboard_app.tabs.overview_detail import render_overview_detail_tab
 from dashboard_app.overview import *
 from dashboard_app.domain import *
+from dashboard_app.tabs.statistics import render_statistics_tab
 from dashboard_app.tabs.surveillance import render_surveillance_tab
 from dashboard_app.tabs.profile import render_profile_tab
 from dashboard_app.tabs.quality import render_quality_tab
@@ -1770,6 +1771,7 @@ st.caption("Sélectionnez un onglet détaillé ci-dessous. Le contenu s'affiche 
 
 (
     tab_overview_detail,
+    tab_statistics,
     tab_surveillance,
     tab_profil,
     tab_qualite,
@@ -1781,6 +1783,7 @@ st.caption("Sélectionnez un onglet détaillé ci-dessous. Le contenu s'affiche 
 ) = st.tabs(
     [
         "Vue d’ensemble",
+        "Notions statistiques",
         "Surveillance",
         "Profil",
         "Qualité et export",
@@ -1794,6 +1797,9 @@ st.caption("Sélectionnez un onglet détaillé ci-dessous. Le contenu s'affiche 
 
 with tab_overview_detail:
     render_overview_detail_tab(build_runtime_context(**globals()))
+
+with tab_statistics:
+    render_statistics_tab(build_runtime_context(**globals()))
 
 # =========================
 # TAB 1: DYNAMIQUE ÉPIDÉMIOLOGIQUE ET PROMPTITUDE
