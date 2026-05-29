@@ -182,6 +182,11 @@ from dashboard_app.domain import (
     _norm_key,
     _normalize_province_name_for_matching,
     _resolve_map_filter_value,
+    _standard_classification_series,
+    _standard_care_issue_masks,
+    _standard_exposure_masks,
+    _standard_surveillance_evidence_masks,
+    _standard_test_documented_mask,
     _tdr_result_norm,
 )
 from dashboard_app.core import _normalize_metric_alias_columns
@@ -309,32 +314,37 @@ def build_frequency_table(df_: pd.DataFrame, col: str, top_n: int | None = None)
 def build_simple_lab_table(df_: pd.DataFrame) -> pd.DataFrame:
     rows = []
     n_cases = int(len(df_))
-    if COL_PREL in df_.columns:
-        n_prel = int(_is_yes_series(df_[COL_PREL]).sum())
-        rows.append(("Prélèvement réalisé", n_prel, round(n_prel / n_cases * 100, 1) if n_cases else np.nan))
-    if COL_TDR in df_.columns and df_[COL_TDR].notna().any():
-        n_tdr = int(_is_yes_series(df_[COL_TDR]).sum())
-        rows.append(("TDR réalisé", n_tdr, round(n_tdr / n_cases * 100, 1) if n_cases else np.nan))
+    evidence = _standard_surveillance_evidence_masks(df_)
+    prelev_documented = evidence["prelev_documented"]
+    receipt_documented = evidence["receipt_documented"]
+    result_documented = evidence["result_documented"]
+    test_documented = _standard_test_documented_mask(df_)
+    if prelev_documented.any():
+        n_prel = int(prelev_documented.sum())
+        rows.append(("Prélèvement documenté", n_prel, round(n_prel / n_cases * 100, 1) if n_cases else np.nan))
+    if receipt_documented.any():
+        n_receipt = int(receipt_documented.sum())
+        rows.append(("Réception labo documentée", n_receipt, round(n_receipt / n_cases * 100, 1) if n_cases else np.nan))
+    if test_documented.any():
+        n_tdr = int(test_documented.sum())
+        rows.append(("Test documenté", n_tdr, round(n_tdr / n_cases * 100, 1) if n_cases else np.nan))
     result_col = None
     if COL_TDRR in df_.columns and df_[COL_TDRR].notna().any():
         result_col = COL_TDRR
     elif "Resultat_labo" in df_.columns and df_["Resultat_labo"].notna().any():
         result_col = "Resultat_labo"
-        rows.append(("R\u00e9sultat labo renseign\u00e9", int(df_["Resultat_labo"].notna().sum()), round(int(df_["Resultat_labo"].notna().sum()) / n_cases * 100, 1) if n_cases else np.nan))
+    if result_documented.any():
+        n_result_doc = int(result_documented.sum())
+        rows.append(("Résultat labo documenté", n_result_doc, round(n_result_doc / n_cases * 100, 1) if n_cases else np.nan))
     if result_col is not None:
         res_n = _tdr_result_norm(df_[result_col])
         n_pos = int(res_n.isin(TDR_POS_SET).sum())
         n_neg = int(res_n.isin(TDR_NEG_SET).sum())
         n_valid = n_pos + n_neg
         rows.append(("Résultat valide (Pos/Nég)", n_valid, round(n_valid / n_cases * 100, 1) if n_cases else np.nan))
-        rows.append(("TDR positif", n_pos, round(n_pos / n_valid * 100, 1) if n_valid else np.nan))
-        rows.append(("TDR négatif", n_neg, round(n_neg / n_valid * 100, 1) if n_valid else np.nan))
+        rows.append(("Tests positifs", n_pos, round(n_pos / n_valid * 100, 1) if n_valid else np.nan))
+        rows.append(("Tests négatifs", n_neg, round(n_neg / n_valid * 100, 1) if n_valid else np.nan))
     df_out = pd.DataFrame(rows, columns=["Indicateur labo", "n", "%"])
-    if result_col == "Resultat_labo":
-        df_out["Indicateur labo"] = df_out["Indicateur labo"].replace({
-            "TDR positif": "Tests positifs",
-            "TDR négatif": "Tests négatifs",
-        })
     return df_out
 
 
@@ -1010,12 +1020,14 @@ def _build_lab_counts(df_: pd.DataFrame, kpi: Dict[str, Any]) -> dict[str, int]:
     waiting_mask = result_norm.isin({"en attente", "non teste"})
     positive_mask = result_norm.isin(TDR_POS_SET)
     negative_mask = result_norm.isin(TDR_NEG_SET)
-    received_count = int(pd.to_datetime(df_[DATE_RECEP], errors="coerce").notna().sum()) if DATE_RECEP in df_.columns else 0
+    evidence = _standard_surveillance_evidence_masks(df_)
+    test_documented = _standard_test_documented_mask(df_)
+    received_count = int(evidence["receipt_documented"].sum())
 
     return {
         "preleves": int(kpi.get("prelev_num", 0) or 0),
         "recus": received_count,
-        "tests_documentes": int(kpi.get("tdr_num", 0) or 0),
+        "tests_documentes": int(test_documented.sum()),
         "resultats_valides": int(valid_mask.sum()),
         "analyses": int((valid_mask | invalid_mask).sum()),
         "positifs": int(positive_mask.sum()),
@@ -1091,24 +1103,32 @@ def _build_quality_focus_metrics(df_: pd.DataFrame) -> list[dict[str, Any]]:
     else:
         geo_missing_pct = 100.0
 
-    suspect_mask = (
-        df_["Classification_finale_std"].astype("string").eq("Suspect")
-        if "Classification_finale_std" in df_.columns
-        else pd.Series(False, index=df_.index)
-    )
-    if COL_PREL in df_.columns and suspect_mask.any():
-        prelev_yes = _is_yes_series(df_[COL_PREL])
-        suspects_without_sample_pct = float(((suspect_mask & ~prelev_yes).sum() / max(int(suspect_mask.sum()), 1)) * 100.0)
-    else:
-        suspects_without_sample_pct = 0.0
+    classification = _standard_classification_series(df_)
+    evidence = _standard_surveillance_evidence_masks(df_)
+    exposure_masks = _standard_exposure_masks(df_)
+    care_issue_masks = _standard_care_issue_masks(df_)
+    suspect_mask = classification.isin(["Suspect", "Probable"])
+    prelev_documented = evidence["prelev_documented"]
+    result_documented = evidence["result_documented"]
 
-    result_norm = _extract_lab_result_series(df_)
-    prelev_yes_global = _is_yes_series(df_[COL_PREL]) if COL_PREL in df_.columns else pd.Series(False, index=df_.index)
-    if len(result_norm):
-        result_available = result_norm.isin(TDR_POS_SET.union(TDR_NEG_SET).union({"indetermine"}))
-        prelev_without_result_pct = float(((prelev_yes_global & ~result_available).sum() / max(int(prelev_yes_global.sum()), 1)) * 100.0) if prelev_yes_global.any() else 0.0
-    else:
-        prelev_without_result_pct = 0.0
+    suspects_without_sample_pct = (
+        float(((suspect_mask & ~prelev_documented).sum() / max(int(suspect_mask.sum()), 1)) * 100.0)
+        if suspect_mask.any()
+        else 0.0
+    )
+
+    prelev_without_result_pct = (
+        float(((prelev_documented & ~result_documented).sum() / max(int(prelev_documented.sum()), 1)) * 100.0)
+        if prelev_documented.any()
+        else 0.0
+    )
+
+    contact_without_detail_pct = float(
+        (exposure_masks["linked_yes"] & ~exposure_masks["detail_documented"]).sum() / n_total * 100.0
+    )
+    care_without_issue_pct = float(
+        (care_issue_masks["care_documented"] & ~care_issue_masks["issue_documented"]).sum() / n_total * 100.0
+    )
 
     duplicate_pct = float(df_["duplicate_potential"].fillna(False).mean() * 100.0) if "duplicate_potential" in df_.columns else 0.0
     chrono_pct = float(df_["chronologie_invalide"].fillna(False).mean() * 100.0) if "chronologie_invalide" in df_.columns else 0.0
@@ -1119,6 +1139,8 @@ def _build_quality_focus_metrics(df_: pd.DataFrame) -> list[dict[str, Any]]:
         {"label": "Cas sans zone de santé", "value": round(geo_missing_pct, 1), "theme": "blue"},
         {"label": "Suspects sans prélèvement", "value": round(suspects_without_sample_pct, 1), "theme": "orange"},
         {"label": "Prélèvements sans résultat", "value": round(prelev_without_result_pct, 1), "theme": "orange"},
+        {"label": "Contacts sans détail", "value": round(contact_without_detail_pct, 1), "theme": "orange"},
+        {"label": "PEC sans issue", "value": round(care_without_issue_pct, 1), "theme": "orange"},
         {"label": "Doublons potentiels", "value": round(duplicate_pct, 1), "theme": "red"},
         {"label": "Chronologie invalide", "value": round(chrono_pct, 1), "theme": "red"},
     ]
@@ -1127,28 +1149,32 @@ def _build_quality_focus_metrics(df_: pd.DataFrame) -> list[dict[str, Any]]:
 
 def _build_delay_focus_metrics(df_: pd.DataFrame) -> list[dict[str, Any]]:
     """Sélectionne quelques délais clés pour le résumé opérationnel."""
-    labels = {
-        "Début → notification": "Notification",
-        "Notification → investigation": "Investigation",
-        "Début → prélèvement": "Prélèvement",
-        "Prélèvement → résultat": "Résultat",
-    }
-    delay_summary = build_standard_delay_summary(df_)
-    if delay_summary.empty:
-        return []
-
-    selected = delay_summary[delay_summary["Type_delai"].isin(labels.keys())].copy()
-    if selected.empty:
-        selected = delay_summary.head(4).copy()
-
+    target_days = float(get_session_int("seuil_jours", 2) or 2)
+    priority_specs = [
+        ("delai_onset_to_notif", "Notification", "Début -> notification"),
+        ("delai_notif_to_invest", "Investigation", "Notification -> investigation"),
+        ("delai_notif_to_prel", "Prélèvement", "Notification -> prélèvement"),
+        ("delai_prel_to_receipt", "Réception", "Prélèvement -> réception labo"),
+        ("delai_receipt_to_result", "Résultat", "Réception labo -> résultat"),
+        ("delai_notif_to_adm", "Admission", "Notification -> admission"),
+        ("delai_adm_to_issue", "Issue", "Admission -> issue"),
+    ]
     rows: list[dict[str, Any]] = []
-    for _, row in selected.iterrows():
+    for column, label, full_label in priority_specs:
+        if column not in df_.columns:
+            continue
+        series = pd.to_numeric(df_[column], errors="coerce")
+        series = series[(series >= 0) & series.notna()]
+        if series.empty:
+            continue
         rows.append(
             {
-                "label": labels.get(str(row["Type_delai"]), str(row["Type_delai"])),
-                "full_label": str(row["Type_delai"]),
-                "median_days": float(row["Médiane_j"]),
-                "n": int(row["n"]),
+                "label": label,
+                "full_label": full_label,
+                "median_days": round(float(series.median()), 1),
+                "n": int(series.size),
+                "target_days": target_days,
+                "pct_within_target": round(float((series <= target_days).mean() * 100.0), 1),
             }
         )
     return rows
@@ -1444,15 +1470,20 @@ def render_delay_snapshot_panel(payload: Dict[str, Any]) -> None:
     rows = []
     for item in delays:
         label = html.escape(str(item.get("label", "")))
-        full_label = html.escape(str(item.get("full_label", "")))
+        full_label = str(item.get("full_label", ""))
         median_days = float(item.get("median_days", 0.0))
         n_obs = int(item.get("n", 0))
+        target_days = item.get("target_days")
+        pct_within_target = item.get("pct_within_target")
+        sub_label = f"{full_label} · n={n_obs}"
+        if target_days is not None and pct_within_target is not None:
+            sub_label += f" · <= {float(target_days):.0f} j: {float(pct_within_target):.1f}%"
         rows.append(
             f"""
 <div class="cousp-kv-item">
   <div class="cousp-kv-label">{label}</div>
   <div class="cousp-kv-value">{median_days:.1f} j</div>
-  <div class="cousp-kv-sub">{full_label} · n={n_obs}</div>
+  <div class="cousp-kv-sub">{html.escape(sub_label)}</div>
 </div>
 """
         )

@@ -9,12 +9,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from dashboard_app.domain import (
+    compute_indicators,
     build_standard_followup_tables,
     build_standard_signal_table,
     build_standard_surveillance_chain_table,
+    standard_data_quality_summary,
     standardize_df,
     standardize_ll_by_disease,
 )
+from dashboard_app.overview import build_dashboard_kpi_payload, build_simple_lab_table
 
 
 def _guess_disease_key(path: Path) -> str:
@@ -50,8 +53,12 @@ class RealLineListRegressionTest(unittest.TestCase):
                 chain = build_standard_surveillance_chain_table(standardized)
                 followup_summary, followup_detail = build_standard_followup_tables(standardized)
                 signals = build_standard_signal_table(standardized)
+                indicators = compute_indicators(standardized)
+                lab_table = build_simple_lab_table(standardized)
+                quality_summary = standard_data_quality_summary(standardized)
+                payload = build_dashboard_kpi_payload(standardized)
 
-                checks_total += 4
+                checks_total += 8
 
                 if not chain.empty:
                     checks_passed += 1
@@ -83,6 +90,48 @@ class RealLineListRegressionTest(unittest.TestCase):
                     checks_passed += 1
                 else:
                     failures.append(f"{path.name}: table de signaux indisponible")
+
+                indicator_values = [
+                    indicators.get("prelev_pct"),
+                    indicators.get("tdr_pct"),
+                    indicators.get("hosp_pct"),
+                    indicators.get("cfr_pct"),
+                    indicators.get("invalid_pct"),
+                ]
+                invalid_indicator_values = [
+                    value for value in indicator_values
+                    if pd.notna(value) and (float(value) < 0 or float(value) > 100)
+                ]
+                if not invalid_indicator_values:
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: KPI hors bornes -> {invalid_indicator_values}")
+
+                if isinstance(lab_table, pd.DataFrame):
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: table labo profil indisponible")
+
+                if isinstance(quality_summary, pd.DataFrame):
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: résumé qualité indisponible")
+
+                quality_focus = payload.get("quality_focus", []) if isinstance(payload, dict) else []
+                delay_focus = payload.get("delay_focus", []) if isinstance(payload, dict) else []
+                quality_ok = isinstance(payload, dict) and all(
+                    pd.notna(item.get("value")) and 0.0 <= float(item.get("value", 0.0)) <= 100.0
+                    for item in quality_focus
+                )
+                delay_ok = isinstance(payload, dict) and all(
+                    float(item.get("median_days", 0.0)) >= 0.0
+                    and 0.0 <= float(item.get("pct_within_target", 0.0)) <= 100.0
+                    for item in delay_focus
+                )
+                if quality_ok and delay_ok:
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: payload accueil incohérent")
 
         success_rate = checks_passed / checks_total if checks_total else 0.0
         self.assertGreaterEqual(

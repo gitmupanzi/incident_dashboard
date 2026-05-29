@@ -211,6 +211,10 @@ def render_profile_tab(ctx: dict) -> None:
 
         st.divider()
         st.subheader("4. Composante laboratoire — résumé opérationnel")
+        st.caption(
+            "Les indicateurs ci-dessous utilisent la même logique standard que l'onglet Qualité: un prélèvement ou un test peut être "
+            "reconnu par preuve documentaire (date, réception, résultat, numéro labo) même si le statut Oui/Non n'est pas complet."
+        )
         lab_tbl = build_simple_lab_table(df_f)
         if not lab_tbl.empty:
             l1, l2 = st.columns([1, 1])
@@ -304,9 +308,27 @@ def render_profile_tab(ctx: dict) -> None:
                 c for c in ["Date_prelevement", "Date_reception_labo", "Date_resultat", "Date_derniere_vaccination"]
                 if c in df_f.columns
             ]
+            prevention_exposure_fields = [
+                c for c in [
+                    "Statut_vaccinal",
+                    "Vaccin_precedemment",
+                    "Nombre_dose",
+                    "Nombre_dose_recues",
+                    "Date_derniere_vaccination",
+                    "Lien_epid_avec_un_cas",
+                    "Cas_source_id",
+                    "Facteur_exposition",
+                    "Type_de_lien",
+                    "Type_contact",
+                    "Malade_etait_il_un_contact_connu",
+                    "Profession",
+                    "Autre_Profession",
+                ]
+                if c in df_f.columns and df_f[c].notna().any()
+            ]
 
-            if lab_detail_cols or lab_date_cols:
-                st.markdown("**Profil détaillé des variables laboratoire et vaccination**")
+            if lab_detail_cols or lab_date_cols or prevention_exposure_fields:
+                st.markdown("**Profil détaillé des variables laboratoire, vaccination et exposition**")
 
                 if lab_date_cols:
                     availability_rows = []
@@ -320,11 +342,22 @@ def render_profile_tab(ctx: dict) -> None:
                             }
                         )
                     st_dataframe_safe(pd.DataFrame(availability_rows), height=220)
+                    chain_builder = globals().get("build_standard_surveillance_chain_table")
+                    if callable(chain_builder):
+                        lab_chain = chain_builder(df_f)
+                        if isinstance(lab_chain, pd.DataFrame) and not lab_chain.empty:
+                            lab_chain = lab_chain[lab_chain["Bloc"].astype(str).isin(["Prélèvement", "Laboratoire", "Prévention", "Exposition", "Profil"])].copy()
+                            if not lab_chain.empty:
+                                st.caption(
+                                    "Résumé standard documentaire du circuit prélèvement/laboratoire, prévention et exposition sur le même périmètre filtré."
+                                )
+                                st_dataframe_safe(lab_chain, height=260)
 
-                if lab_detail_cols:
+                detail_options = lab_detail_cols + [c for c in prevention_exposure_fields if c not in lab_detail_cols]
+                if detail_options:
                     lab_profile_col = st.selectbox(
-                        "Variable laboratoire / vaccination à décrire",
-                        options=lab_detail_cols,
+                        "Variable laboratoire / vaccination / exposition à décrire",
+                        options=detail_options,
                         index=0,
                         key="profile_lab_detail_col",
                     )

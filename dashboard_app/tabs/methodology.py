@@ -48,7 +48,7 @@ def render_methodology_tab(ctx: dict) -> None:
         [
             ("Alerte", "N_alerte, Source_alerte, Localite si disponibles", "Identifier les alertes et leur origine dans la chaîne de surveillance."),
             ("Notification", "Lignes filtrées / N_epid si disponible", "Décrire les cas effectivement notifiés dans le périmètre actif."),
-            ("Investigation", "Investigation, Date_investigation, Classification_finale", "Vérifier que les cas ont fait l'objet d'une investigation ou d'une classification exploitable."),
+            ("Investigation", "Investigation, Date_investigation, Classification_finale", "Vérifier que les cas ont fait l'objet d'une investigation documentée ou fortement inférée par une classification exploitable."),
             ("Exposition", "Lien épidémiologique, cas source, facteur d'exposition", "Décrire les liens de transmission et les expositions documentées."),
             ("Prélèvement", "Prelevement, Date_prelevement, Type_de_prelevement", "Suivre la couverture de prélèvement parmi les cas éligibles."),
             ("Laboratoire", "Date_reception_labo, Resultat_labo / TDR_Resultat, Date_confirmation", "Suivre l'acheminement, l'analyse et l'interprétation des résultats."),
@@ -70,7 +70,7 @@ def render_methodology_tab(ctx: dict) -> None:
         [
             ("Alertes documentées", "Nombre d'identifiants d'alerte non vides", "Toutes les lignes filtrées", "Disponible seulement si `N_alerte` existe."),
             ("Cas / notifications", "Nombre de lignes/cas dans la liste filtrée", "Toutes les lignes du périmètre filtré", "Dépend de la déduplication, de la définition de cas et des filtres."),
-            ("Cas investigués", "Investigation=Oui ou investigation déduite des dates/classifications", "Alertes documentées si disponibles, sinon cas filtrés", "Le dashboard peut inférer `Oui` si une date d'investigation ou une classification exploitable existe."),
+            ("Cas investigués", "Investigation=Oui ou investigation documentée par date/classification", "Alertes documentées si disponibles, sinon cas filtrés", "Par convention standard, une classification exploitable est traitée comme une forte preuve d'investigation, même si la colonne `Investigation` manque."),
             ("Cas suspects / probables / confirmés", "Effectif par classification standardisée", "Cas investigués si possible, sinon cas filtrés", "La qualité de `Classification_finale` influence directement ces indicateurs."),
             ("Décès", "Cas dont l'issue est interprétée comme décès", "Tous les cas filtrés", "La qualité du champ Issue influence fortement l'indicateur."),
             ("Létalité / CFR (%)", "Décès / Cas × 100", "Tous les cas filtrés", "À interpréter avec prudence si le nombre de cas est faible."),
@@ -95,7 +95,7 @@ def render_methodology_tab(ctx: dict) -> None:
     st.markdown("### 4. Dénominateurs standard à retenir")
     denominator_rules = pd.DataFrame(
         [
-            ("Cas investigués", "Alertes documentées si `N_alerte` existe ; sinon cas filtrés", "Rester standard même quand la source ne sépare pas explicitement alerte et cas."),
+            ("Cas investigués", "Alertes documentées si `N_alerte` existe ; sinon cas filtrés", "Rester standard même quand la source ne sépare pas explicitement alerte et cas ; une classification exploitable compte comme preuve forte d'investigation."),
             ("Cas suspects / probables / confirmés", "Cas investigués si disponibles ; sinon cas filtrés", "Éviter d'imposer un dénominateur absent dans d'autres maladies."),
             ("Cas prélevés", "Cas suspects si la classification existe ; sinon cas filtrés", "Le plan standard COUSP privilégie les suspects quand l'information existe."),
             ("Réception labo documentée", "Cas prélevés", "Mesure la continuité de la chaîne d'acheminement."),
@@ -195,7 +195,7 @@ IREP = w_tendance × Score_tendance
             ("Dates", "Les dates ISO sont lues en year-first ; les autres formats sont interprétés avec prudence en day-first."),
             ("Âge", "L'âge est converti en années lorsque l'unité est disponible : jours, semaines, mois ou ans."),
             ("Sexe", "Les variantes usuelles sont harmonisées vers Masculin/Feminin lorsque possible."),
-            ("Investigation", "Une investigation peut être inférée à Oui si la date d'investigation ou une classification exploitable est renseignée alors que le champ Investigation est vide."),
+            ("Investigation", "Une investigation est considérée comme documentée si l'un des éléments suivants existe : `Investigation=Oui`, `Date_investigation`, ou une classification exploitable. Cette règle matérialise l'hypothèse métier selon laquelle une classification reflète très souvent une investigation déjà réalisée."),
             ("Issue", "Les libellés compatibles avec décès alimentent l'indicateur `is_death` et les guérisons peuvent être standardisées dans `Issue_std`."),
             ("Laboratoire", "Les résultats sont classés en positifs, négatifs, invalides ou non interprétables selon les valeurs disponibles ; `Resultat_labo` et `TDR_Resultat` sont rapprochés."),
             ("Promptitude", "Les délais standard sont calculés seulement quand les deux dates sources existent ; les délais négatifs sont conservés pour la qualité mais exclus des lectures opérationnelles."),
@@ -218,7 +218,7 @@ IREP = w_tendance × Score_tendance
             ("Chronologie", "Dates incohérentes : notification avant début, résultat avant prélèvement, issue avant admission, etc."),
             ("Âge", "Âges négatifs ou supérieurs aux limites plausibles."),
             ("Géographie", "Zone de santé renseignée sans province, ou aire de santé renseignée sans zone."),
-            ("Investigation", "Cas sans investigation documentée ou cas classés suspects/probables sans prélèvement."),
+            ("Investigation", "Cas sans investigation documentée selon la règle standard (statut, date ou classification) ; cas classés suspects/probables sans prélèvement."),
             ("Laboratoire", "Résultat renseigné alors que le prélèvement ou le test n'est pas documenté comme réalisé ; prélèvement sans réception ; réception sans résultat ; positif sans date de confirmation."),
             ("Issue", "Décès sans date d'issue lorsque la date est attendue."),
             ("Doublons", "Empreintes probables construites à partir de l'identité, de l'âge, des dates et de la géographie lorsque disponibles."),

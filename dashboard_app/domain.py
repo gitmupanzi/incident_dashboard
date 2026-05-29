@@ -1632,7 +1632,7 @@ def inject_professional_dashboard_css() -> None:
 
     .cousp-kv-grid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
         gap: 0.7rem;
     }
 
@@ -2164,23 +2164,18 @@ def _norm_txt_series(s: pd.Series) -> pd.Series:
     return s.str.strip().str.lower()
 
 YES_SET = {"oui", "o", "y", "yes", "1", "true", "vrai"}
-INVESTIGATION_CLASS_SET = {
-    "confirme",
-    "confirme",
-    "confirmee",
-    "confirme par labo",
-    "confirme au labo",
-    "positif",
-    "probable",
-    "suspect",
-    "cas suspect",
-    "compatible",
-    "non cas",
-    "non_cas",
-    "discarded",
-    "indetermine",
-    "indeterminee",
-    "indeterminee",
+INVESTIGATION_CLASS_MISSING_SET = {
+    "",
+    "na",
+    "n/a",
+    "nd",
+    "none",
+    "null",
+    "non documente",
+    "non documentee",
+    "inconnu",
+    "inconnue",
+    "unknown",
 }
 
 TDR_POS_SET = {"positif", "positive", "pos", "+", "tdr positif"}
@@ -2191,10 +2186,28 @@ def _is_yes_series(s: pd.Series) -> pd.Series:
 
 
 def _has_investigation_classification(series: pd.Series) -> pd.Series:
-    """Repère les statuts de classification qui impliquent qu'une investigation a eu lieu."""
+    """Repère les classifications exploitables qui impliquent très probablement une investigation."""
     norm = clean_str(series).apply(lambda v: _strip_accents(v).lower().strip() if pd.notna(v) else v)
     norm = norm.str.replace(r"\s+", " ", regex=True)
-    return norm.isin(INVESTIGATION_CLASS_SET)
+    return norm.notna() & norm.ne("") & ~norm.isin(INVESTIGATION_CLASS_MISSING_SET)
+
+
+def _standard_investigation_documented_mask(df: pd.DataFrame) -> pd.Series:
+    """Retourne les cas avec investigation documentée ou fortement inférée via classification."""
+    index = df.index
+    investigate_yes = _is_yes_series(df[COL_INVEST]) if COL_INVEST in df.columns else pd.Series(False, index=index)
+    investigate_date = pd.to_datetime(df[DATE_INV], errors="coerce").notna() if DATE_INV in df.columns else pd.Series(False, index=index)
+    if "Classification_finale_std" in df.columns:
+        classification_documented = _has_investigation_classification(df["Classification_finale_std"])
+    elif COL_CLASS in df.columns:
+        classification_documented = _has_investigation_classification(df[COL_CLASS])
+    else:
+        classification_documented = pd.Series(False, index=index)
+    return (
+        pd.Series(investigate_yes, index=index).fillna(False)
+        | pd.Series(investigate_date, index=index).fillna(False)
+        | pd.Series(classification_documented, index=index).fillna(False)
+    )
 
 def _normalize_lab_result_value(value) -> object:
     if value is None or pd.isna(value):
@@ -2358,9 +2371,9 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
 
     Définitions:
     - CFR% = décès / tous cas filtrés
-    - Prélèvement% = (Prelevement == Oui) / tous cas filtrés
-    - Hospitalisation% = (Hospitalisation == Oui) / tous cas filtrés
-    - TDR_réalisé% = (TDR_realise == Oui) / tous cas filtrés
+    - Prélèvement% = cas avec prélèvement documenté / tous cas filtrés
+    - Hospitalisation% = cas avec hospitalisation documentée / tous cas filtrés
+    - TDR_réalisé% = cas avec test documenté / tous cas filtrés
     - Couverture TDR% = identique à TDR_réalisé% mais renvoyée explicitement (num/den)
     - Positivité TDR% = positifs / (positifs + négatifs) parmi:
         (TDR_realise == Oui) ET (TDR_Resultat ∈ {pos, neg})
@@ -2376,30 +2389,24 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
     n_deaths = int(df["is_death"].sum()) if "is_death" in df.columns else 0
     cfr_pct = safe_pct(n_deaths, n_cases)
 
-    # -----------------------------
-    # Helper taux binaire Oui/Non (den = n_cases)
-    # -----------------------------
-    def _rate_yes(col_name: str) -> Tuple[float, int, int]:
-        """Retourne (taux%, num_oui, denom_cases)."""
-        if col_name not in df.columns or n_cases == 0:
-            return (np.nan, 0, n_cases)
-        num = int(_is_yes_series(df[col_name]).sum())
+    evidence = _standard_surveillance_evidence_masks(df)
+    vaccination_masks = _standard_vaccination_masks(df)
+    exposure_masks = _standard_exposure_masks(df)
+    profession_documented = _standard_profession_documented_mask(df)
+    prelev_documented = evidence["prelev_documented"]
+    test_documented = _standard_test_documented_mask(df)
+    hosp_documented = _standard_hospital_documented_mask(df)
+
+    def _rate_from_mask(mask: pd.Series) -> Tuple[float, int, int]:
+        """Retourne (taux%, num, denom_cases) à partir d'un masque documentaire."""
+        num = int(pd.Series(mask, index=df.index).fillna(False).sum())
+        if n_cases == 0:
+            return (np.nan, num, n_cases)
         return (num / n_cases * 100.0, num, n_cases)
 
-    prelev_pct, n_prelev_yes, den_cases = _rate_yes(COL_PREL)
-    hosp_pct, n_hosp_yes, _ = _rate_yes(COL_HOSP)
-    tdr_pct, n_tdr_yes, _ = _rate_yes(COL_TDR)
-    if (
-        ("Resultat_labo" in df.columns)
-        and (n_cases > 0)
-        and (
-            pd.isna(tdr_pct)
-            or (COL_TDR not in df.columns)
-            or (not df[COL_TDR].notna().any())
-        )
-    ):
-        n_tdr_yes = int(df["Resultat_labo"].notna().sum())
-        tdr_pct = safe_pct(n_tdr_yes, n_cases)
+    prelev_pct, n_prelev_yes, den_cases = _rate_from_mask(prelev_documented)
+    hosp_pct, n_hosp_yes, _ = _rate_from_mask(hosp_documented)
+    tdr_pct, n_tdr_yes, _ = _rate_from_mask(test_documented)
 
     # -----------------------------
     # Couverture TDR (explicite)
@@ -2419,17 +2426,16 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
         result_col = "Resultat_labo"
 
     if (result_col is not None) and (n_cases > 0):
-        tdr_yes = _is_yes_series(df[COL_TDR]) if (COL_TDR in df.columns and df[COL_TDR].notna().any()) else pd.Series(True, index=df.index)
         res_n = _tdr_result_norm(df[result_col])
 
         # Résultats valides = pos/neg uniquement
         valid_res = res_n.isin(TDR_POS_SET.union(TDR_NEG_SET))
 
-        # Dénominateur positivité = TDR=Oui & (pos/neg)
-        pos_den = int((tdr_yes & valid_res).sum())
+        # Dénominateur positivité = tests documentés avec résultat valide
+        pos_den = int((test_documented & valid_res).sum())
 
-        # Numérateur = TDR=Oui & positif
-        pos_num = int((tdr_yes & res_n.isin(TDR_POS_SET)).sum())
+        # Numérateur = tests documentés positifs
+        pos_num = int((test_documented & res_n.isin(TDR_POS_SET)).sum())
 
         pos_pct = safe_pct(pos_num, pos_den)
     else:
@@ -2444,14 +2450,13 @@ def compute_indicators(df_in: pd.DataFrame) -> Dict[str, Any]:
     invalid_pct = np.nan
 
     if (result_col is not None) and (n_cases > 0):
-        tdr_yes = _is_yes_series(df[COL_TDR]) if (COL_TDR in df.columns and df[COL_TDR].notna().any()) else pd.Series(True, index=df.index)
         res_n = _tdr_result_norm(df[result_col])
 
         # Définition "invalide" (ajuste au besoin)
         invalid_set = {"invalide", "invalid", "inba", "bande absente"}
 
-        invalid_den = int(tdr_yes.sum())
-        invalid_num = int((tdr_yes & res_n.isin(invalid_set)).sum())
+        invalid_den = int(test_documented.sum())
+        invalid_num = int((test_documented & res_n.isin(invalid_set)).sum())
         invalid_pct = safe_pct(invalid_num, invalid_den)
 
     # -----------------------------
@@ -2514,13 +2519,16 @@ def compute_group_indicators(df_in: pd.DataFrame, group_col: str) -> pd.DataFram
 
     df = df_in.copy()
     df = df[df[group_col].notna()]
+    evidence = _standard_surveillance_evidence_masks(df)
+    prelev_documented = evidence["prelev_documented"]
+    test_documented = _standard_test_documented_mask(df)
+    hosp_documented = _standard_hospital_documented_mask(df)
 
     result_col = None
     if COL_TDRR in df.columns and df[COL_TDRR].notna().any():
         result_col = COL_TDRR
     elif "Resultat_labo" in df.columns and df["Resultat_labo"].notna().any():
         result_col = "Resultat_labo"
-    has_tdr_chain = COL_TDR in df.columns and df[COL_TDR].notna().any()
 
     # Base (cas, décès)
     g = df.groupby(group_col, as_index=False).agg(
@@ -2546,23 +2554,17 @@ def compute_group_indicators(df_in: pd.DataFrame, group_col: str) -> pd.DataFram
         den = tmp.groupby(group_col).size()
         g[new_name] = [safe_pct(n, d) for n, d in zip(num.reindex(g[group_col]).fillna(0), den.reindex(g[group_col]).fillna(0))]
 
-    _add_rate(COL_PREL, "Prélèvement_%")
-    _add_rate(COL_HOSP, "Hospitalisation_%")
-    if has_tdr_chain:
-        _add_rate(COL_TDR, "TDR_réalisé_%")
-    elif result_col == "Resultat_labo":
-        _add_rate(None, "TDR_réalisé_%", yes_mask=df["Resultat_labo"].notna())
-    else:
-        g["TDR_réalisé_%"] = np.nan
+    _add_rate(None, "Prélèvement_%", yes_mask=prelev_documented)
+    _add_rate(None, "Hospitalisation_%", yes_mask=hosp_documented)
+    _add_rate(None, "TDR_réalisé_%", yes_mask=test_documented)
 
-    # Positivité (parmi TDR=Oui + résultat valide)
+    # Positivité (parmi tests documentés + résultat valide)
     if result_col is not None:
-        tdr_yes = _is_yes_series(df[COL_TDR]) if has_tdr_chain else pd.Series(True, index=df.index)
         res_n = _tdr_result_norm(df[result_col])
         valid_res = res_n.isin(TDR_POS_SET.union(TDR_NEG_SET))
         df_pos = df[[group_col]].copy()
-        df_pos["den_pos"] = (tdr_yes & valid_res).astype(int)
-        df_pos["num_pos"] = (tdr_yes & res_n.isin(TDR_POS_SET)).astype(int)
+        df_pos["den_pos"] = (test_documented & valid_res).astype(int)
+        df_pos["num_pos"] = (test_documented & res_n.isin(TDR_POS_SET)).astype(int)
         sums = df_pos.groupby(group_col, as_index=False).agg(den_pos=("den_pos", "sum"), num_pos=("num_pos", "sum"))
         g = g.merge(sums, on=group_col, how="left")
         g["Positivité_TDR_%"] = [safe_pct(n, d) for n, d in zip(g["num_pos"].fillna(0), g["den_pos"].fillna(0))]
@@ -2703,22 +2705,27 @@ def standardize_df(df):
     else:
         df[COL_INVEST] = clean_str(df[COL_INVEST]).apply(norm_yesno).astype("string")
 
-    investigated_evidence = pd.Series(False, index=df.index)
-    if DATE_INV in df.columns:
-        investigated_evidence |= pd.to_datetime(df[DATE_INV], errors="coerce").notna()
-    if "Classification_finale_std" in df.columns:
-        investigated_evidence |= _has_investigation_classification(df["Classification_finale_std"])
-    elif COL_CLASS in df.columns:
-        investigated_evidence |= _has_investigation_classification(df[COL_CLASS])
-
+    investigated_evidence = _standard_investigation_documented_mask(df)
     investigation_missing = df[COL_INVEST].isna() | df[COL_INVEST].astype("string").str.strip().eq("")
     df.loc[investigation_missing & investigated_evidence, COL_INVEST] = "Oui"
+
+    vaccination_masks = _standard_vaccination_masks(df)
+    exposure_masks = _standard_exposure_masks(df)
+    profession_documented = _standard_profession_documented_mask(df)
+    care_issue_masks = _standard_care_issue_masks(df)
 
     # indicateurs standards
     df["preleve_oui_non"] = _is_yes_series(df[COL_PREL]) if COL_PREL in df.columns else False
     df["tdr_realise_oui_non"] = _is_yes_series(df[COL_TDR]) if COL_TDR in df.columns else False
     df["hospitalise_oui_non"] = _is_yes_series(df[COL_HOSP]) if COL_HOSP in df.columns else False
-    df["investigated_oui_non"] = _is_yes_series(df[COL_INVEST]) if COL_INVEST in df.columns else False
+    df["investigated_oui_non"] = investigated_evidence.fillna(False)
+    df["vaccination_documented_oui_non"] = vaccination_masks["documented"]
+    df["vaccinated_oui_non"] = vaccination_masks["vaccinated_yes"]
+    df["exposure_documented_oui_non"] = exposure_masks["documented"]
+    df["linked_case_oui_non"] = exposure_masks["linked_yes"]
+    df["profession_documented_oui_non"] = profession_documented
+    df["care_documented_oui_non"] = care_issue_masks["care_documented"]
+    df["issue_documented_oui_non"] = care_issue_masks["issue_documented"]
     if "Resultat_labo" in df.columns:
         df["confirme_labo_oui_non"] = df["Resultat_labo"].apply(is_positive)
     else:
@@ -2906,27 +2913,41 @@ def qc_flags(df: pd.DataFrame) -> pd.DataFrame:
     if COL_ISSUE in df.columns:
         _add(df[COL_ISSUE].isna(), "Issue manquante")
 
+    evidence = _standard_surveillance_evidence_masks(df)
+
     if any(c in df.columns for c in [COL_INVEST, DATE_INV, COL_CLASS, "Classification_finale_std"]):
         investigate_yes = df["investigated_oui_non"] if "investigated_oui_non" in df.columns else (_is_yes_series(df[COL_INVEST]) if COL_INVEST in df.columns else pd.Series(False, index=df.index))
         _add(~pd.Series(investigate_yes, index=df.index).fillna(False), "Investigation non documentée")
 
-    if any(c in df.columns for c in [COL_CLASS, "Classification_finale_std"]) and COL_PREL in df.columns:
+    if any(c in df.columns for c in [COL_CLASS, "Classification_finale_std"]) and any(c in df.columns for c in [COL_PREL, DATE_PREL, DATE_RECEP, DATE_RES, "Date_analyse", "N_labo"]):
         classification = _standard_classification_series(df)
-        prelev_yes = df["preleve_oui_non"] if "preleve_oui_non" in df.columns else _is_yes_series(df[COL_PREL])
-        _add(classification.isin(["Suspect", "Probable"]) & ~prelev_yes, "Cas suspect/probable sans prélèvement")
+        _add(classification.isin(["Suspect", "Probable"]) & ~evidence["prelev_documented"], "Cas suspect/probable sans prélèvement")
 
-    if COL_PREL in df.columns and DATE_RECEP in df.columns:
-        prelev_yes = df["preleve_oui_non"] if "preleve_oui_non" in df.columns else _is_yes_series(df[COL_PREL])
-        receipt_yes = pd.to_datetime(df[DATE_RECEP], errors="coerce").notna()
-        _add(prelev_yes & ~receipt_yes, "Prélèvement sans réception labo")
+    if any(c in df.columns for c in [COL_PREL, DATE_PREL, DATE_RECEP, DATE_RES, "Date_analyse", "N_labo"]):
+        _add(evidence["prelev_documented"] & ~evidence["receipt_documented"], "Prélèvement sans réception labo")
 
-    if DATE_RECEP in df.columns:
-        receipt_yes = pd.to_datetime(df[DATE_RECEP], errors="coerce").notna()
-        lab_result = _standard_lab_result_series(df)
-        result_yes = lab_result.notna() & lab_result.ne("")
-        if DATE_RES in df.columns:
-            result_yes = result_yes | pd.to_datetime(df[DATE_RES], errors="coerce").notna()
-        _add(receipt_yes & ~result_yes, "Réception labo sans résultat")
+    if any(c in df.columns for c in [DATE_RECEP, DATE_RES, "Date_analyse", "Resultat_labo", COL_TDRR]):
+        _add(evidence["receipt_documented"] & ~evidence["result_documented"], "Réception labo sans résultat")
+
+    if any(c in df.columns for c in ["Statut_vaccinal", "Vaccin_precedemment", "Nombre_dose", "Nombre_dose_recues", "Date_derniere_vaccination"]):
+        vaccination_masks = _standard_vaccination_masks(df)
+        _add(vaccination_masks["date_documented"] & ~vaccination_masks["vaccinated_yes"], "Date vaccination sans statut ou dose")
+
+    if any(c in df.columns for c in ["Cas_source_id", "Type_de_lien", "Type_contact", "Facteur_exposition"]):
+        exposure_masks = _standard_exposure_masks(df)
+        _add(exposure_masks["detail_documented"] & ~exposure_masks["linked_documented"], "Détail exposition sans lien épid documenté")
+        _add(exposure_masks["linked_yes"] & ~exposure_masks["detail_documented"], "Lien épid / contact connu sans détail")
+
+    care_issue_masks = _standard_care_issue_masks(df)
+    if DATE_ADM in df.columns:
+        admission_without_status = (
+            care_issue_masks["admission_documented"] & ~_is_yes_series(df[COL_HOSP])
+            if COL_HOSP in df.columns
+            else care_issue_masks["admission_documented"]
+        )
+        _add(admission_without_status, "Admission documentée sans statut hospitalisation")
+    if DATE_ISSUE in df.columns:
+        _add(care_issue_masks["issue_date_documented"] & ~care_issue_masks["issue_status_documented"], "Date issue sans statut final")
 
     if "Date_confirmation" in df.columns:
         lab_result = _standard_lab_result_series(df)
@@ -3005,6 +3026,13 @@ def standard_data_quality_summary(df: pd.DataFrame) -> pd.DataFrame:
         ("hospitalise_oui_non", "Hospitalisation oui (%)"),
         ("investigated_oui_non", "Investigation documentée (%)"),
         ("confirme_labo_oui_non", "Confirmation/positivité labo (%)"),
+        ("vaccination_documented_oui_non", "Vaccination documentée (%)"),
+        ("vaccinated_oui_non", "Antécédent vaccinal positif (%)"),
+        ("exposure_documented_oui_non", "Exposition documentée (%)"),
+        ("linked_case_oui_non", "Lien épid / contact connu (%)"),
+        ("profession_documented_oui_non", "Profession documentée (%)"),
+        ("care_documented_oui_non", "Prise en charge documentée (%)"),
+        ("issue_documented_oui_non", "Issue documentée (%)"),
         ("is_death", "Décès (%)"),
     ]:
         if col in df.columns:
@@ -3189,6 +3217,145 @@ def _non_empty_mask(series: pd.Series) -> pd.Series:
     return ser.notna() & ser.ne("")
 
 
+def _standard_surveillance_evidence_masks(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Construit des preuves documentaires réutilisables pour la chaîne standard."""
+    index = df.index
+    prelev_yes = df["preleve_oui_non"] if "preleve_oui_non" in df.columns else (_is_yes_series(df[COL_PREL]) if COL_PREL in df.columns else pd.Series(False, index=index))
+    prelev_date_yes = pd.to_datetime(df[DATE_PREL], errors="coerce").notna() if DATE_PREL in df.columns else pd.Series(False, index=index)
+    receipt_yes = pd.to_datetime(df[DATE_RECEP], errors="coerce").notna() if DATE_RECEP in df.columns else pd.Series(False, index=index)
+    result_date_yes = pd.to_datetime(df[DATE_RES], errors="coerce").notna() if DATE_RES in df.columns else pd.Series(False, index=index)
+    if "Date_analyse" in df.columns:
+        result_date_yes |= pd.to_datetime(df["Date_analyse"], errors="coerce").notna()
+    lab_ticket_yes = _non_empty_mask(df["N_labo"]) if "N_labo" in df.columns else pd.Series(False, index=index)
+    lab_result = _standard_lab_result_series(df)
+    result_yes = lab_result.notna() & lab_result.ne("")
+
+    return {
+        "prelev_yes": pd.Series(prelev_yes, index=index).fillna(False),
+        "prelev_date_yes": pd.Series(prelev_date_yes, index=index).fillna(False),
+        "receipt_yes": pd.Series(receipt_yes, index=index).fillna(False),
+        "result_yes": pd.Series(result_yes, index=index).fillna(False),
+        "result_date_yes": pd.Series(result_date_yes, index=index).fillna(False),
+        "lab_ticket_yes": pd.Series(lab_ticket_yes, index=index).fillna(False),
+        "prelev_documented": pd.Series(prelev_yes | prelev_date_yes | receipt_yes | result_date_yes | lab_ticket_yes, index=index).fillna(False),
+        "receipt_documented": pd.Series(receipt_yes | result_date_yes | result_yes, index=index).fillna(False),
+        "result_documented": pd.Series(result_yes | result_date_yes, index=index).fillna(False),
+    }
+
+
+def _standard_test_documented_mask(df: pd.DataFrame) -> pd.Series:
+    """Retourne les cas avec test/laboratoire documenté, même si le statut Oui/Non est incomplet."""
+    evidence = _standard_surveillance_evidence_masks(df)
+    tdr_yes = _is_yes_series(df[COL_TDR]) if COL_TDR in df.columns else pd.Series(False, index=df.index)
+    return pd.Series(tdr_yes, index=df.index).fillna(False) | evidence["receipt_documented"] | evidence["result_documented"]
+
+
+def _standard_hospital_documented_mask(df: pd.DataFrame) -> pd.Series:
+    """Retourne les cas avec hospitalisation documentée via statut ou date d'admission."""
+    hosp_yes = _is_yes_series(df[COL_HOSP]) if COL_HOSP in df.columns else pd.Series(False, index=df.index)
+    adm_yes = pd.to_datetime(df[DATE_ADM], errors="coerce").notna() if DATE_ADM in df.columns else pd.Series(False, index=df.index)
+    return pd.Series(hosp_yes, index=df.index).fillna(False) | pd.Series(adm_yes, index=df.index).fillna(False)
+
+
+def _standard_vaccination_masks(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Retourne des masques documentaires standards pour la vaccination."""
+    index = df.index
+    documented = pd.Series(False, index=index)
+    vaccinated_yes = pd.Series(False, index=index)
+    doses_documented = pd.Series(False, index=index)
+    last_vaccination_date = pd.Series(False, index=index)
+
+    for col in ["Statut_vaccinal", "Vaccin_precedemment"]:
+        if col in df.columns:
+            documented |= _non_empty_mask(df[col])
+            vaccinated_yes |= _is_yes_series(df[col])
+
+    for col in ["Nombre_dose", "Nombre_dose_recues"]:
+        if col in df.columns:
+            dose_num = pd.to_numeric(df[col], errors="coerce")
+            dose_documented = dose_num.notna()
+            documented |= dose_documented
+            doses_documented |= dose_documented
+            vaccinated_yes |= dose_num.fillna(0).gt(0)
+
+    if "Date_derniere_vaccination" in df.columns:
+        last_vaccination_date = pd.to_datetime(df["Date_derniere_vaccination"], errors="coerce").notna()
+        documented |= last_vaccination_date
+        vaccinated_yes |= last_vaccination_date
+
+    return {
+        "documented": documented.fillna(False),
+        "vaccinated_yes": vaccinated_yes.fillna(False),
+        "doses_documented": doses_documented.fillna(False),
+        "date_documented": last_vaccination_date.fillna(False),
+    }
+
+
+def _standard_exposure_masks(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Retourne des masques documentaires standards pour l'exposition et le lien épid."""
+    index = df.index
+    linked_documented = pd.Series(False, index=index)
+    linked_yes = pd.Series(False, index=index)
+    detail_documented = pd.Series(False, index=index)
+
+    for col in ["Lien_epid_avec_un_cas", "Malade_etait_il_un_contact_connu"]:
+        if col in df.columns:
+            linked_documented |= _non_empty_mask(df[col])
+            linked_yes |= _is_yes_series(df[col])
+
+    for col in ["Cas_source_id", "Type_de_lien", "Type_contact"]:
+        if col in df.columns:
+            col_mask = _non_empty_mask(df[col])
+            linked_documented |= col_mask
+            linked_yes |= col_mask
+            detail_documented |= col_mask
+
+    if "Facteur_exposition" in df.columns:
+        detail_documented |= _non_empty_mask(df["Facteur_exposition"])
+
+    exposure_documented = linked_documented | detail_documented
+    return {
+        "documented": exposure_documented.fillna(False),
+        "linked_documented": linked_documented.fillna(False),
+        "linked_yes": linked_yes.fillna(False),
+        "detail_documented": detail_documented.fillna(False),
+    }
+
+
+def _standard_profession_documented_mask(df: pd.DataFrame) -> pd.Series:
+    """Retourne les cas avec profession documentée via la profession principale ou une précision."""
+    profession_documented = pd.Series(False, index=df.index)
+    for col in ["Profession", "Autre_Profession"]:
+        if col in df.columns:
+            profession_documented |= _non_empty_mask(df[col])
+    return profession_documented.fillna(False)
+
+
+def _standard_care_issue_masks(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Retourne des masques documentaires standards pour la prise en charge et l'issue."""
+    index = df.index
+    admission_documented = _standard_hospital_documented_mask(df)
+    issue_status_documented = _non_empty_mask(df[COL_ISSUE]) if COL_ISSUE in df.columns else pd.Series(False, index=index)
+    issue_date_documented = pd.to_datetime(df[DATE_ISSUE], errors="coerce").notna() if DATE_ISSUE in df.columns else pd.Series(False, index=index)
+    sortie_documented = pd.to_datetime(df["Date_sortie_au_CT"], errors="coerce").notna() if "Date_sortie_au_CT" in df.columns else pd.Series(False, index=index)
+    support_detail = pd.Series(False, index=index)
+    for col in ["Type_sortie_CT", "Patient_en_isolement", "Structure_de_prise_en_charge", "Structure_de_prise_en_charge_2", "Statut_avant_admission"]:
+        if col in df.columns:
+            support_detail |= _non_empty_mask(df[col])
+
+    care_documented = admission_documented | support_detail | issue_status_documented | issue_date_documented | sortie_documented
+    issue_documented = issue_status_documented | issue_date_documented | sortie_documented
+
+    return {
+        "admission_documented": admission_documented.fillna(False),
+        "issue_status_documented": issue_status_documented.fillna(False),
+        "issue_date_documented": issue_date_documented.fillna(False),
+        "sortie_documented": sortie_documented.fillna(False),
+        "care_documented": care_documented.fillna(False),
+        "issue_documented": issue_documented.fillna(False),
+    }
+
+
 def _choose_standard_denominator(
     value_count: int,
     candidates: List[Tuple[int, str]],
@@ -3236,22 +3403,23 @@ def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
     n_cases = int(len(work))
     classification = _standard_classification_series(work)
     lab_result = _standard_lab_result_series(work)
+    evidence = _standard_surveillance_evidence_masks(work)
     issue_std = work["Issue_std"] if "Issue_std" in work.columns else work.get(COL_ISSUE, pd.Series(pd.NA, index=work.index, dtype="string"))
 
     investigation_source_present = any(col in work.columns for col in [COL_INVEST, DATE_INV, COL_CLASS, "Classification_finale_std"])
     investigate_yes = work["investigated_oui_non"] if "investigated_oui_non" in work.columns else (_is_yes_series(work[COL_INVEST]) if COL_INVEST in work.columns else pd.Series(False, index=work.index))
-    prelev_yes = work["preleve_oui_non"] if "preleve_oui_non" in work.columns else (_is_yes_series(work[COL_PREL]) if COL_PREL in work.columns else pd.Series(False, index=work.index))
+    prelev_yes = evidence["prelev_yes"]
     hosp_yes = work["hospitalise_oui_non"] if "hospitalise_oui_non" in work.columns else (_is_yes_series(work[COL_HOSP]) if COL_HOSP in work.columns else pd.Series(False, index=work.index))
     deaths = work["is_death"] if "is_death" in work.columns else issue_std.apply(is_death)
-    prelev_date_yes = pd.to_datetime(work[DATE_PREL], errors="coerce").notna() if DATE_PREL in work.columns else pd.Series(False, index=work.index)
-    receipt_yes = pd.to_datetime(work[DATE_RECEP], errors="coerce").notna() if DATE_RECEP in work.columns else pd.Series(False, index=work.index)
-    result_date_yes = pd.to_datetime(work[DATE_RES], errors="coerce").notna() if DATE_RES in work.columns else pd.Series(False, index=work.index)
-    if "Date_analyse" in work.columns:
-        result_date_yes |= pd.to_datetime(work["Date_analyse"], errors="coerce").notna()
-    lab_ticket_yes = _non_empty_mask(work["N_labo"]) if "N_labo" in work.columns else pd.Series(False, index=work.index)
-    result_yes = lab_result.notna() & lab_result.ne("")
-    prelev_documented = prelev_yes | prelev_date_yes | receipt_yes | result_date_yes | lab_ticket_yes
-    receipt_documented = receipt_yes | result_date_yes | result_yes
+    receipt_yes = evidence["receipt_yes"]
+    result_yes = evidence["result_yes"]
+    result_date_yes = evidence["result_date_yes"]
+    prelev_documented = evidence["prelev_documented"]
+    receipt_documented = evidence["receipt_documented"]
+    vaccination_masks = _standard_vaccination_masks(work)
+    exposure_masks = _standard_exposure_masks(work)
+    profession_documented = _standard_profession_documented_mask(work)
+    care_issue_masks = _standard_care_issue_masks(work)
     hosp_documented = hosp_yes | (pd.to_datetime(work[DATE_ADM], errors="coerce").notna() if DATE_ADM in work.columns else pd.Series(False, index=work.index))
     gueri_norm = (
         issue_std.astype("string")
@@ -3339,11 +3507,19 @@ def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
         for label, display_label in class_labels.items():
             _append("Investigation", display_label, int((classification == label).sum()), class_den, class_base, "Classification_finale")
 
-    if "Lien_epid_avec_un_cas" in work.columns:
-        lien_yes = _is_yes_series(work["Lien_epid_avec_un_cas"])
-        _append("Exposition", "Lien épid documenté", int(lien_yes.sum()), n_cases, "Cas filtrés", "Lien_epid_avec_un_cas")
-    if "Facteur_exposition" in work.columns:
-        _append("Exposition", "Facteur d'exposition renseigné", _non_empty_count(work["Facteur_exposition"]), n_cases, "Cas filtrés", "Facteur_exposition")
+    if exposure_masks["documented"].any():
+        _append("Exposition", "Exposition ou lien épid documenté", int(exposure_masks["documented"].sum()), n_cases, "Cas filtrés", "Lien_epid_avec_un_cas / Cas_source_id / Facteur_exposition / Type_de_lien / Type_contact")
+    if exposure_masks["linked_yes"].any():
+        _append("Exposition", "Lien épid / contact connu déclaré", int(exposure_masks["linked_yes"].sum()), n_cases, "Cas filtrés", "Lien_epid_avec_un_cas / Malade_etait_il_un_contact_connu / Cas_source_id / Type_de_lien")
+    if exposure_masks["detail_documented"].any():
+        _append("Exposition", "Détails d'exposition renseignés", int(exposure_masks["detail_documented"].sum()), n_cases, "Cas filtrés", "Facteur_exposition / Type_de_lien / Type_contact / Cas_source_id")
+
+    if vaccination_masks["documented"].any():
+        _append("Prévention", "Vaccination documentée", int(vaccination_masks["documented"].sum()), n_cases, "Cas filtrés", "Statut_vaccinal / Vaccin_precedemment / Nombre_dose / Nombre_dose_recues / Date_derniere_vaccination")
+    if vaccination_masks["vaccinated_yes"].any():
+        _append("Prévention", "Antécédent vaccinal positif", int(vaccination_masks["vaccinated_yes"].sum()), n_cases, "Cas filtrés", "Statut_vaccinal / Vaccin_precedemment / Nombre_dose / Nombre_dose_recues / Date_derniere_vaccination")
+    if profession_documented.any():
+        _append("Profil", "Profession documentée", int(profession_documented.sum()), n_cases, "Cas filtrés", "Profession / Autre_Profession")
 
     if COL_PREL in work.columns or DATE_PREL in work.columns:
         _append("Prélèvement", "Cas prélevés", prelev_count, prelev_den, prelev_base, f"{COL_PREL} / {DATE_PREL} / {DATE_RECEP} / N_labo")
@@ -3359,9 +3535,11 @@ def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
 
     if COL_HOSP in work.columns or DATE_ADM in work.columns:
         _append("Prise en charge", "Cas hospitalisés", int(hosp_documented.sum()), n_cases, "Cas filtrés", f"{COL_HOSP} / {DATE_ADM}")
+        _append("Prise en charge", "Prise en charge documentée", int(care_issue_masks["care_documented"].sum()), n_cases, "Cas filtrés", f"{COL_HOSP} / {DATE_ADM} / {COL_ISSUE} / {DATE_ISSUE} / Date_sortie_au_CT")
     if COL_ISSUE in work.columns or "Issue_std" in work.columns:
         _append("Prise en charge", "Décès documentés", int(deaths.sum()), n_cases, "Cas filtrés", COL_ISSUE)
         _append("Prise en charge", "Guéris documentés", int(gueris.sum()), n_cases, "Cas filtrés", COL_ISSUE)
+        _append("Prise en charge", "Issues documentées", int(care_issue_masks["issue_documented"].sum()), n_cases, "Cas filtrés", f"{COL_ISSUE} / {DATE_ISSUE} / Date_sortie_au_CT")
 
     return pd.DataFrame(rows, columns=columns)
 
@@ -3378,9 +3556,13 @@ def build_standard_followup_tables(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.D
     n_cases = int(len(work))
     classification = _standard_classification_series(work)
     lab_result = _standard_lab_result_series(work)
+    evidence = _standard_surveillance_evidence_masks(work)
     investigate_yes = work["investigated_oui_non"] if "investigated_oui_non" in work.columns else (_is_yes_series(work[COL_INVEST]) if COL_INVEST in work.columns else pd.Series(False, index=work.index))
-    prelev_yes = work["preleve_oui_non"] if "preleve_oui_non" in work.columns else (_is_yes_series(work[COL_PREL]) if COL_PREL in work.columns else pd.Series(False, index=work.index))
-    receipt_yes = pd.to_datetime(work[DATE_RECEP], errors="coerce").notna() if DATE_RECEP in work.columns else pd.Series(False, index=work.index)
+    prelev_documented = evidence["prelev_documented"]
+    receipt_documented = evidence["receipt_documented"]
+    result_documented = evidence["result_documented"]
+    exposure_masks = _standard_exposure_masks(work)
+    care_issue_masks = _standard_care_issue_masks(work)
     deaths = work["is_death"] if "is_death" in work.columns else (work[COL_ISSUE].apply(is_death) if COL_ISSUE in work.columns else pd.Series(False, index=work.index))
     geo_missing = pd.Series(False, index=work.index)
     if COL_PROV in work.columns:
@@ -3404,25 +3586,29 @@ def build_standard_followup_tables(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.D
         rules.append((
             "Cas suspects ou probables sans prélèvement",
             "Prélèvement",
-            classification.isin(["Suspect", "Probable"]) & ~prelev_yes,
+            classification.isin(["Suspect", "Probable"]) & ~prelev_documented,
             "Vérifier le circuit de prélèvement et documenter les cas non prélevés.",
         ))
-    if DATE_RECEP in work.columns:
+    if DATE_RECEP in work.columns or receipt_documented.any():
         rules.append((
             "Cas prélevés sans réception labo",
             "Laboratoire",
-            prelev_yes & ~receipt_yes,
+            prelev_documented & ~receipt_documented,
             "Vérifier l'acheminement et la réception des échantillons au laboratoire.",
         ))
-    if DATE_RECEP in work.columns and (DATE_RES in work.columns or lab_result.notna().any()):
-        result_missing = ~pd.to_datetime(work[DATE_RES], errors="coerce").notna() if DATE_RES in work.columns else pd.Series(True, index=work.index)
-        if lab_result.notna().any():
-            result_missing &= ~(lab_result.notna() & lab_result.ne(""))
+    if (DATE_RECEP in work.columns or receipt_documented.any()) and (DATE_RES in work.columns or lab_result.notna().any() or result_documented.any()):
         rules.append((
             "Réceptions labo sans résultat documenté",
             "Laboratoire",
-            receipt_yes & result_missing,
+            receipt_documented & ~result_documented,
             "Relancer l'analyse ou la transmission du résultat final.",
+        ))
+    if exposure_masks["linked_yes"].any():
+        rules.append((
+            "Lien épid / contact connu sans détail",
+            "Exposition",
+            exposure_masks["linked_yes"] & ~exposure_masks["detail_documented"],
+            "Compléter le type de lien, le facteur d'exposition ou le cas source pour les contacts déjà identifiés.",
         ))
     if "Date_confirmation" in work.columns and lab_result.notna().any():
         rules.append((
@@ -3430,6 +3616,13 @@ def build_standard_followup_tables(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.D
             "Laboratoire",
             lab_result.isin(TDR_POS_SET) & pd.to_datetime(work["Date_confirmation"], errors="coerce").isna(),
             "Compléter la date de confirmation pour fiabiliser la chronologie de confirmation.",
+        ))
+    if care_issue_masks["care_documented"].any():
+        rules.append((
+            "Prise en charge documentée sans issue",
+            "Prise en charge",
+            care_issue_masks["care_documented"] & ~care_issue_masks["issue_documented"],
+            "Compléter l'issue clinique ou la date de sortie pour les cas déjà documentés en prise en charge.",
         ))
     if COL_ISSUE in work.columns or DATE_ISSUE in work.columns:
         issue_missing = pd.to_datetime(work[DATE_ISSUE], errors="coerce").isna() if DATE_ISSUE in work.columns else pd.Series(True, index=work.index)
@@ -3590,7 +3783,7 @@ def build_recommended_fields_matrix(df: pd.DataFrame) -> pd.DataFrame:
 
 def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Cascade prélèvement -> TDR -> résultat valide -> positif (sur les données filtrées).
+    Cascade prélèvement -> test documenté -> résultat valide -> positif (sur les données filtrées).
 
     Améliorations vs version initiale :
     - Cascade "entonnoir" avec dénominateurs séquentiels (prélevé -> TDR -> résultat).
@@ -3603,6 +3796,7 @@ def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
     n_all = int(len(df))
 
     # Colonnes (si absentes -> séries NA pour ne pas planter)
+    evidence = _standard_surveillance_evidence_masks(df)
     prelev = df[COL_PREL].astype("string") if COL_PREL in df.columns else pd.Series([pd.NA] * n_all)
     tdr    = df[COL_TDR].astype("string")  if COL_TDR  in df.columns else pd.Series([pd.NA] * n_all)
     result_col = None
@@ -3649,13 +3843,14 @@ def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
         patt = "|".join([p.replace("/", r"\/") for p in sorted(NON_RESULT_HINTS)])
         return s.str.contains(patt, case=False, na=False)
 
-    prelev_yes = _is_yes(prelev_n)
-    tdr_yes    = _is_yes(tdr_n) if COL_TDR in df.columns else pd.Series(True, index=df.index)
+    prelev_documented = evidence["prelev_documented"]
+    test_documented = _standard_test_documented_mask(df)
+    tdr_yes = _is_yes(tdr_n) if COL_TDR in df.columns else pd.Series(False, index=df.index)
 
     # Comptes séquentiels (entonnoir)
-    n_prelev = int(prelev_yes.sum())
-    n_tdr    = int((prelev_yes & tdr_yes).sum())  # TDR parmi les prélevés
-    valid_res_mask = (prelev_yes & tdr_yes & _is_valid_result(res_n))
+    n_prelev = int(prelev_documented.sum())
+    n_tdr    = int((prelev_documented & test_documented).sum())
+    valid_res_mask = (prelev_documented & test_documented & _is_valid_result(res_n))
     n_res = int(valid_res_mask.sum())
 
     # Positifs : priorité à is_tdr_pos si disponible, sinon via résultat
@@ -3664,11 +3859,11 @@ def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
         is_pos = df["is_tdr_pos"].fillna(0).astype(int) == 1
         n_pos = int((valid_res_mask & is_pos).sum())
     else:
-        n_pos = int((prelev_yes & tdr_yes & res_n.isin(POS_SET)).sum())
+        n_pos = int((prelev_documented & test_documented & res_n.isin(POS_SET)).sum())
 
     # Qualité / incohérences (diagnostic)
     # 1) Résultat renseigné (non NA) alors que TDR_realise != Oui
-    res_filled = tdr_res_raw.notna()
+    res_filled = evidence["result_documented"]
     incoh_res_without_tdr = int((res_filled & ~tdr_yes).sum())
 
     # 2) "TDR_Resultat" rempli avec un statut type "non réalisé/non prélevé"
@@ -3684,13 +3879,13 @@ def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
         ["Tous cas", n_all, n_all, 100.0],
 
         # Cascade séquentielle
-        ["Prélèvement=Oui", n_prelev, n_all, _pct(n_prelev, n_all)],
-        ["TDR réalisé=Oui (parmi prélevés)" if COL_TDR in df.columns else "Test documenté (parmi prélevés)", n_tdr, n_prelev, _pct(n_tdr, n_prelev)],
+        ["Prélèvement documenté", n_prelev, n_all, _pct(n_prelev, n_all)],
+        ["Test documenté (parmi prélèvements)", n_tdr, n_prelev, _pct(n_tdr, n_prelev)],
         ["Résultat valide (Positif/Négatif) (parmi tests)", n_res, n_tdr, _pct(n_res, n_tdr)],
         ["Positifs (parmi résultats valides)", n_pos, n_res, _pct(n_pos, n_res)],
 
         # Qualité des données (signaux)
-        ["⚠ Résultat renseigné mais TDR_realise != Oui", incoh_res_without_tdr, n_all, _pct(incoh_res_without_tdr, n_all)],
+        ["⚠ Résultat documenté mais TDR_realise != Oui", incoh_res_without_tdr, n_all, _pct(incoh_res_without_tdr, n_all)],
         ["⚠ Statut saisi dans TDR_Resultat (ex: non réalisé/non prélevé)", status_in_result, n_all, _pct(status_in_result, n_all)],
         ["⚠ Résultat valide (Pos/Nég) mais TDR_realise != Oui", incoh_validres_without_tdr, n_all, _pct(incoh_validres_without_tdr, n_all)],
     ]
@@ -4222,8 +4417,11 @@ def build_standard_signal_table(
         "Vérifier rapidement les décès, la prise en charge et les références dans les zones prioritaires.",
     )
 
-    if DATE_INV in latest_scope.columns and total_cases > 0:
-        investigated = int(pd.to_datetime(latest_scope[DATE_INV], errors="coerce").notna().sum())
+    investigation_mask = _standard_investigation_documented_mask(latest_scope)
+    investigation_sources_present = any(col in latest_scope.columns for col in [COL_INVEST, DATE_INV, COL_CLASS, "Classification_finale_std"])
+
+    if investigation_sources_present and total_cases > 0:
+        investigated = int(investigation_mask.sum())
         investigated_pct = safe_pct(investigated, total_cases)
         inv_status = "OK" if pd.notna(investigated_pct) and investigated_pct >= float(investigation_target_pct) else "Alerte"
         _add_row(
@@ -4245,9 +4443,9 @@ def build_standard_signal_table(
             "Cas investigués",
             "Non disponible",
             f">= {float(investigation_target_pct):.0f}%",
-            "Champ Date_investigation absent ou non exploitable",
+            "Champs Investigation / Date_investigation / Classification indisponibles",
             "Le suivi des investigations ne peut pas être calculé sur ce périmètre.",
-            "Renseigner la date d'investigation ou intégrer une variable équivalente.",
+            "Renseigner la date d'investigation, le statut Investigation ou une classification exploitable.",
         )
 
     if "delai_onset_to_notif" in latest_scope.columns:

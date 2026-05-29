@@ -557,8 +557,6 @@ def render_overview_dashboard_v2(
         st.write(
             f"Fenêtre couverte : **{format_range_label_for_display(payload.get('week_span', '-'))}** avec **{format_metric_value(payload.get('cases', 0))}** cas analysés."
         )
-        render_delay_snapshot_panel(payload)
-
     with c2:
         if not show_overview_maps:
             st.info("Cartes non chargées. Utilisez `Options des cartes de synthèse` pour les afficher.")
@@ -584,6 +582,8 @@ def render_overview_dashboard_v2(
             st.info("Cartes non chargées. Utilisez `Options des cartes de synthèse` pour les afficher.")
         else:
             render_static_map_overview("Carte statique par zone de santé", fig_map_zs, note_map_zs)
+
+    render_delay_snapshot_panel(payload)
 
     d1, d2 = st.columns(2)
     with d1:
@@ -1595,6 +1595,8 @@ def _legacy_render_overview_dashboard(
 
     with c3:
         render_static_map_overview("Carte statique par zone de santé", fig_map_zs, note_map_zs)
+
+    render_delay_snapshot_panel(payload)
 
     d1, d2 = st.columns(2)
     with d1:

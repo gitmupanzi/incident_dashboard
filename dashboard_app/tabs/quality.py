@@ -1179,12 +1179,13 @@ def render_quality_tab(ctx: dict) -> None:
             - **Indicateurs rapides** : quelques chiffres clés
             - **QC Flags** : incohérences (dates, TDR, âge…)
             - **Complétude champs clés** : niveau de remplissage par site
-            - **Cascade labo** : cas → prélèvement → TDR → résultat valide → positif
+            - **Cascade labo** : cas → prélèvement documenté → test documenté → résultat valide → positif
             - **Alertes tendance** : hausse inhabituelle par rapport aux semaines précédentes
         
             **⚠️ Points d’attention**
             - Un signal ne confirme pas à lui seul une épidémie : il faut vérifier sur le terrain.
             - Les % de cascade suivent une logique en étapes successives.
+            - Un prélèvement ou un test peut être reconnu par preuve documentaire (date, résultat, réception, numéro labo), même si une case Oui/Non est vide.
             """,
             expanded=False
         )
@@ -1230,14 +1231,14 @@ def render_quality_tab(ctx: dict) -> None:
         c2.metric(
             "% prélèvement",
             "-" if np.isnan(kpi["prelev_pct"]) else f"{kpi['prelev_pct']:.1f}",
-            help=f"Prélèvement=Oui / Tous les cas filtrés. n={kpi.get('prelev_num', 0)}/{kpi.get('prelev_den', kpi.get('n_cases', 0))}"
+            help=f"Prélèvement documenté / Tous les cas filtrés. n={kpi.get('prelev_num', 0)}/{kpi.get('prelev_den', kpi.get('n_cases', 0))}"
         )
         
         c3.metric(
             "Couverture TDR (%)" if has_tdr_chain else "Couverture test (%)",
             "-" if np.isnan(kpi["tdr_pct"]) else f"{kpi['tdr_pct']:.1f}",
             help=(
-                f"TDR_realise=Oui / Tous les cas filtrés. n={kpi.get('tdr_num', 0)}/{kpi.get('tdr_den', kpi.get('n_cases', 0))}"
+                f"TDR/tests documentés / Tous les cas filtrés. n={kpi.get('tdr_num', 0)}/{kpi.get('tdr_den', kpi.get('n_cases', 0))}"
                 if has_tdr_chain
                 else f"Tests documentés / Tous les cas filtrés. n={kpi.get('tdr_num', 0)}/{kpi.get('tdr_den', kpi.get('n_cases', 0))}"
             )
@@ -1264,7 +1265,7 @@ def render_quality_tab(ctx: dict) -> None:
         c5.metric(
             "Hospitalisation (%)",
             "-" if np.isnan(kpi["hosp_pct"]) else f"{kpi['hosp_pct']:.1f}",
-            help=f"Hospitalisation=Oui / Tous les cas filtrés. n={kpi.get('hosp_num', 0)}/{kpi.get('hosp_den', kpi.get('n_cases', 0))}"
+            help=f"Hospitalisation documentée / Tous les cas filtrés. n={kpi.get('hosp_num', 0)}/{kpi.get('hosp_den', kpi.get('n_cases', 0))}"
         )
         
         c6.metric(
@@ -1294,11 +1295,15 @@ def render_quality_tab(ctx: dict) -> None:
         if not np.isnan(kpi_incoh_res_wo_tdr) or not np.isnan(kpi_status_in_result):
             with st.expander("Signaux de qualité des données de laboratoire", expanded=False):
                 if not np.isnan(kpi_incoh_res_wo_tdr):
-                    st.write(f"- **% Résultat renseigné mais TDR_realise ≠ Oui / statut test absent**: **{kpi_incoh_res_wo_tdr:.1f}%**")
+                    st.write(f"- **% Résultat documenté mais TDR_realise ≠ Oui / statut test absent**: **{kpi_incoh_res_wo_tdr:.1f}%**")
                 if not np.isnan(kpi_status_in_result):
                     st.write(f"- **% Statut saisi dans la colonne de résultat** (ex: non réalisé/non prélevé): **{kpi_status_in_result:.1f}%**")
         
         with st.expander("Cascade de prélèvement et de confirmation", expanded=False):
+            st.caption(
+                "Cette cascade suit la même logique standard que la chaîne et les relances: un prélèvement ou un test peut être "
+                "reconnu par preuve documentaire (date de prélèvement, réception labo, résultat, numéro labo) si le statut Oui/Non manque."
+            )
             st_dataframe_safe(casc_global)
 
         # ==========================================================
@@ -1463,6 +1468,10 @@ def render_quality_tab(ctx: dict) -> None:
             st.caption(
                 "Ce tableau standard multi-maladies met en évidence les dossiers qui bloquent la chaîne alerte -> investigation -> "
                 "prélèvement -> laboratoire -> issue. Il aide à prioriser les relances terrain et labo."
+            )
+            st.caption(
+                "Les règles tiennent compte des preuves documentaires disponibles pour éviter de relancer à tort un dossier déjà prélevé "
+                "ou déjà documenté côté laboratoire."
             )
             followup_summary, followup_detail = build_standard_followup_tables(df_f)
             if followup_summary.empty:

@@ -26,7 +26,7 @@ L'application combine plusieurs briques dans une meme interface :
 - suivi standardise de la chaine alerte -> investigation -> prelevement -> laboratoire -> prise en charge
 - controle qualite, detection de doublons et revue de coherence
 - tableaux standard de cas a relancer dans la chaine de surveillance
-- generation d'une synthese SITREP orientee decision
+- generation d'une synthese COUSP orientee decision
 - calcul d'un indice composite IREP
 - cartographie statique et interactive
 - lecture IDSR agregee avec completude, incidence, taux d'attaque et tableaux standards
@@ -37,13 +37,14 @@ Le projet vise un cadre de lecture standard multi-maladies pour les listes linea
 
 - `Alerte` : `N_alerte`, `Source_alerte`, `Localite` quand ils existent
 - `Notification` : cas effectivement presents dans le perimetre filtre
-- `Investigation` : `Investigation`, `Date_investigation`, `Classification_finale`
+- `Investigation` : `Investigation`, `Date_investigation`, `Classification_investigation` ou, a defaut, une `Classification_finale` exploitable
 - `Exposition` : lien epidemiologique, cas source, facteur d'exposition
 - `Prelevement` : `Prelevement`, `Date_prelevement`, `Type_de_prelevement`
-- `Laboratoire` : `Date_reception_labo`, `Resultat_labo` ou `TDR_Resultat`, `Date_confirmation`
+- `Laboratoire` : `Date_reception_labo`, `Resultat_labo`, `Resultat_final_labo` ou `TDR_Resultat`, `Date_confirmation`
 - `Prise en charge / Issue` : `Hospitalisation`, `Date_admission_au_CT`, `Issue`, `Date_issue`
 
 Cette organisation permet de rester standard meme quand certaines maladies ont moins de variables que d'autres. Les blocs absents dans la source ne cassent pas le dashboard : ils sont simplement reduits ou ignores.
+Pour l'investigation, le dashboard applique une convention standard importante : une classification exploitable est consideree comme une forte preuve qu'une investigation a eu lieu, meme si la colonne `Investigation` est absente ou vide.
 
 ## Espaces analytiques de l'interface
 
@@ -53,7 +54,7 @@ L'interface principale expose aujourd'hui les onglets suivants :
 - `Surveillance` : dynamique epidemiologique, completude de surveillance, alertes, clusters, chaine analytique standard COUSP et delais de promptitude
 - `Profil` : lecture descriptive selon le modele Temps-Lieu-Personne, pyramides, distributions age/sexe, detail labo
 - `Qualite et export` : qualite des donnees, promptitude, coherence, cas a relancer, exports CSV/Excel, QC flags, doublons, tracker d'actions
-- `SITREP` : synthese narrative, foyers prioritaires, signaux utiles a la decision et export PDF
+- `COUSP` : synthese orientee decision, foyers prioritaires, signaux utiles a la decision et export standard
 - `IREP` : indice composite de risque epidemiologique avec sorties telechargeables
 - `Cartographie` : cartes detaillees par province et zone de sante
 - `Methodologie` : definitions, chaines standards, denominateurs, delais, conventions analytiques et limites d'interpretation
@@ -85,6 +86,7 @@ Quand elles existent dans les fichiers sources, les variables biologiques sont i
 - date de resultat
 - resultat TDR
 - resultat labo
+- resultat final labo
 - type de prelevement
 - nom et numero de laboratoire
 
@@ -153,7 +155,7 @@ Selon les modules, d'autres variables sont tres utiles :
 - `Sexe`
 - `Issue`
 - `Classification_finale`
-- `Investigation`
+- `Investigation` ou, a defaut, une `Classification_finale` ou une `Classification_investigation` exploitable
 - `Date_prelevement`, `Date_reception_labo`, `Date_resultat`, `Date_confirmation`
 - variables de laboratoire
 
@@ -178,7 +180,7 @@ Un fichier IDSR exploitable doit fournir, selon le format disponible, des inform
   alertes documentees, cas, cas investigues, suspects, probables, confirmes,
   prelevements, receptions labo, positivite labo, deces, gueris, promptitude, completude
 - calcul de la chaine standard COUSP avec denominateurs adaptes selon les colonnes disponibles
-- deduction robuste de `Investigation=Oui` quand la date ou la classification montrent qu'une investigation a eu lieu
+- prise en compte standard de l'investigation documentee a partir du statut, de la date ou d'une classification exploitable
 - alertes hebdomadaires et clusters spatio-temporels
 - tableaux standard de relance :
   cas sans investigation, suspects/probables sans prelevement, prelevements sans reception,
@@ -233,7 +235,6 @@ Selon les onglets, l'application propose des sorties comme :
 - CSV/Excel de tableaux analytiques
 - CSV des cas a relancer dans la chaine standard
 - CSV du suivi d'actions et du score de risque
-- PDF SITREP epidemiologique
 
 ## Structure actuelle du projet
 
@@ -255,7 +256,7 @@ incident_dashboard/
 |   |   |-- surveillance.py            # surveillance, chaine standard, delais, alertes, clusters
 |   |   |-- profile.py                 # analyses Temps-Lieu-Personne
 |   |   |-- quality.py                 # qualite, coherence, cas a relancer, extraction et export
-|   |   |-- sitrep.py                  # synthese SITREP et export PDF
+|   |   |-- cousp.py                   # synthese COUSP orientee decision
 |   |   |-- irep.py                    # indice composite IREP
 |   |   |-- maps.py                    # cartographie detaillee
 |   |   |-- methodology.py             # definitions, chaines standard, denominateurs et limites
@@ -349,7 +350,7 @@ streamlit run .\incident_dashboard.py
 - production de tableaux et exports pour diffusion
 - identification rapide des ruptures de chaine investigation -> prelevement -> labo -> issue
 - verification de la qualite des donnees avant partage
-- generation rapide de SITREP et d'outils d'aide a la decision
+- generation rapide d'outils d'aide a la decision multi-maladies
 
 ## Limites et points d'attention
 

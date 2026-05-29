@@ -53,6 +53,7 @@ from dashboard_app.domain import (
     compute_indicators,
     is_death,
     merge_standard_action_tracker_template,
+    standard_data_quality_summary,
     standardize_df,
     standardize_ll_by_disease,
     standardize_ll_core,
@@ -60,9 +61,12 @@ from dashboard_app.domain import (
 )
 from dashboard_app.narratives import _build_scope_overview_text
 from dashboard_app.overview import (
+    _build_delay_focus_metrics,
+    _build_quality_focus_metrics,
     build_dashboard_kpi_payload,
     build_geo_pair_key,
     build_geo_pair_label,
+    build_simple_lab_table,
     format_range_label_for_display,
     split_geo_pair_label,
 )
@@ -246,7 +250,8 @@ class StandardizationTest(unittest.TestCase):
         self.assertEqual(out.loc[1, COL_INVEST], "Oui")
         self.assertEqual(out.loc[2, COL_INVEST], "Non")
         self.assertEqual(out.loc[3, COL_INVEST], "Oui")
-        self.assertEqual(int(out["investigated_oui_non"].sum()), 3)
+        self.assertTrue(bool(out.loc[2, "investigated_oui_non"]))
+        self.assertEqual(int(out["investigated_oui_non"].sum()), 4)
 
     def test_standardize_df_derives_extended_promptitude_delays(self):
         raw = pd.DataFrame(
@@ -361,7 +366,7 @@ class StandardizationTest(unittest.TestCase):
         payload = build_dashboard_kpi_payload(standardize_df(raw))
         chain = {str(item["label"]): item.get("value") for item in payload.get("surveillance_chain", [])}
 
-        self.assertEqual(chain.get("Cas investigues"), 2)
+        self.assertEqual(chain.get("Cas investigues"), 3)
 
 
 class IndicatorTest(unittest.TestCase):
@@ -382,11 +387,107 @@ class IndicatorTest(unittest.TestCase):
         self.assertEqual(indicators["n_deaths"], 1)
         self.assertEqual(indicators["cfr_pct"], 25.0)
         self.assertEqual(indicators["prelev_pct"], 50.0)
-        self.assertEqual(indicators["tdr_pct"], 75.0)
+        self.assertEqual(indicators["tdr_pct"], 100.0)
         self.assertEqual(indicators["pos_num"], 2)
-        self.assertEqual(indicators["pos_den"], 2)
+        self.assertEqual(indicators["pos_den"], 3)
         self.assertEqual(indicators["invalid_num"], 1)
-        self.assertEqual(indicators["invalid_den"], 3)
+        self.assertEqual(indicators["invalid_den"], 4)
+
+    def test_compute_indicators_accepts_documentary_lab_evidence(self):
+        df = standardize_df(
+            pd.DataFrame(
+                {
+                    COL_PREL: ["Non", None, "Oui"],
+                    DATE_PREL: [None, None, "2026-01-05"],
+                    DATE_RECEP: ["2026-01-07", None, None],
+                    DATE_RES: ["2026-01-08", "2026-01-09", None],
+                    "Resultat_labo": ["positif", "negatif", None],
+                    COL_HOSP: ["Non", None, "Non"],
+                    DATE_ADM: [None, "2026-01-10", None],
+                    "is_death": [0, 0, 0],
+                }
+            )
+        )
+
+        indicators = compute_indicators(df)
+
+        self.assertEqual(indicators["prelev_num"], 3)
+        self.assertEqual(indicators["tdr_num"], 2)
+        self.assertEqual(indicators["hosp_num"], 1)
+        self.assertEqual(indicators["pos_num"], 1)
+        self.assertEqual(indicators["pos_den"], 2)
+
+    def test_build_simple_lab_table_uses_documentary_evidence_labels(self):
+        df = standardize_df(
+            pd.DataFrame(
+                {
+                    COL_PREL: ["Non", None],
+                    DATE_RECEP: ["2026-01-07", None],
+                    DATE_RES: ["2026-01-08", None],
+                    "Resultat_labo": ["positif", None],
+                    "N_labo": ["LAB-1", None],
+                }
+            )
+        )
+
+        lab_tbl = build_simple_lab_table(df)
+        labels = set(lab_tbl["Indicateur labo"].astype(str).tolist())
+        values = dict(zip(lab_tbl["Indicateur labo"], lab_tbl["n"]))
+
+        self.assertIn("Prélèvement documenté", labels)
+        self.assertIn("Test documenté", labels)
+        self.assertIn("Résultat labo documenté", labels)
+        self.assertEqual(values["Prélèvement documenté"], 1)
+        self.assertEqual(values["Test documenté"], 1)
+        self.assertEqual(values["Résultat labo documenté"], 1)
+
+    def test_build_quality_focus_metrics_uses_documentary_contact_and_care_evidence(self):
+        df = standardize_df(
+            pd.DataFrame(
+                {
+                    COL_CLASS: ["Suspect", "Probable", "Confirmé"],
+                    DATE_RES: ["2026-01-08", None, None],
+                    "Resultat_labo": ["positif", None, None],
+                    "Lien_epid_avec_un_cas": ["Oui", None, "Non"],
+                    DATE_ADM: [None, "2026-01-10", None],
+                    COL_ISSUE: [None, None, "gueri"],
+                }
+            )
+        )
+
+        metrics = {str(item["label"]): float(item["value"]) for item in _build_quality_focus_metrics(df)}
+
+        self.assertEqual(metrics["Suspects sans prélèvement"], 50.0)
+        self.assertEqual(metrics["Prélèvements sans résultat"], 0.0)
+        self.assertEqual(metrics["Contacts sans détail"], 33.3)
+        self.assertEqual(metrics["PEC sans issue"], 33.3)
+
+    def test_build_delay_focus_metrics_prioritizes_operational_chain(self):
+        df = standardize_df(
+            pd.DataFrame(
+                {
+                    DATE_ONSET: ["2026-01-01", "2026-01-01"],
+                    DATE_NOTIF: ["2026-01-02", "2026-01-05"],
+                    DATE_INV: ["2026-01-03", "2026-01-10"],
+                    DATE_PREL: ["2026-01-04", "2026-01-08"],
+                    DATE_RECEP: ["2026-01-05", "2026-01-09"],
+                    DATE_RES: ["2026-01-06", "2026-01-11"],
+                    DATE_ADM: ["2026-01-03", "2026-01-07"],
+                    DATE_ISSUE: ["2026-01-07", "2026-01-11"],
+                }
+            )
+        )
+
+        delays = _build_delay_focus_metrics(df)
+        labels = [str(item["label"]) for item in delays]
+        within_target = {str(item["label"]): float(item["pct_within_target"]) for item in delays}
+
+        self.assertEqual(
+            labels,
+            ["Notification", "Investigation", "Prélèvement", "Réception", "Résultat", "Admission", "Issue"],
+        )
+        self.assertEqual(within_target["Notification"], 50.0)
+        self.assertEqual(within_target["Issue"], 0.0)
 
     def test_is_death_recognizes_common_labels(self):
         self.assertTrue(is_death("deces"))
@@ -533,7 +634,7 @@ class StandardAnalyticsTest(unittest.TestCase):
 
         self.assertEqual(values["Alertes documentées"], 2)
         self.assertEqual(values["Cas notifiés"], 3)
-        self.assertEqual(values["Cas investigués"], 2)
+        self.assertEqual(values["Cas investigués"], 3)
         self.assertEqual(values["Cas suspects"], 1)
         self.assertEqual(values["Cas probables"], 1)
         self.assertEqual(values["Cas confirmés"], 1)
@@ -541,6 +642,31 @@ class StandardAnalyticsTest(unittest.TestCase):
         self.assertEqual(values["Réceptions labo documentées"], 2)
         self.assertEqual(values["Cas positifs"], 1)
         self.assertEqual(values["Décès documentés"], 1)
+
+    def test_build_standard_surveillance_chain_table_includes_prevention_and_exposure_evidence(self):
+        df = standardize_df(
+            pd.DataFrame(
+                {
+                    "Lien_epid_avec_un_cas": ["Oui", None, "Non"],
+                    "Cas_source_id": [None, "SRC-2", None],
+                    "Facteur_exposition": [None, "Soins", None],
+                    "Type_de_lien": [None, None, "Familial"],
+                    "Statut_vaccinal": ["Oui", None, "Non"],
+                    "Nombre_dose_recues": [2, None, None],
+                    "Date_derniere_vaccination": [None, "2025-12-01", None],
+                    "Profession": ["Infirmier", None, "Élève"],
+                }
+            )
+        )
+
+        chain = build_standard_surveillance_chain_table(df)
+        values = dict(zip(chain["Indicateur"], chain["Valeur"]))
+
+        self.assertEqual(values["Exposition ou lien épid documenté"], 3)
+        self.assertEqual(values["Lien épid / contact connu déclaré"], 3)
+        self.assertEqual(values["Vaccination documentée"], 3)
+        self.assertEqual(values["Antécédent vaccinal positif"], 2)
+        self.assertEqual(values["Profession documentée"], 2)
 
     def test_build_standard_followup_tables_detects_standard_relance_cases(self):
         df = standardize_df(
@@ -566,7 +692,7 @@ class StandardAnalyticsTest(unittest.TestCase):
         summary, detail = build_standard_followup_tables(df)
         counts = dict(zip(summary["Règle"], summary["Cas à relancer"]))
 
-        self.assertEqual(counts["Cas sans investigation documentée"], 1)
+        self.assertEqual(counts["Cas sans investigation documentée"], 0)
         self.assertEqual(counts["Cas suspects ou probables sans prélèvement"], 1)
         self.assertEqual(counts["Cas prélevés sans réception labo"], 1)
         self.assertEqual(counts["Réceptions labo sans résultat documenté"], 0)
@@ -574,6 +700,71 @@ class StandardAnalyticsTest(unittest.TestCase):
         self.assertEqual(counts["Décès sans date d'issue"], 1)
         self.assertEqual(counts["Localisation incomplète"], 2)
         self.assertFalse(detail.empty)
+
+    def test_standard_data_quality_summary_includes_vaccination_and_exposure_metrics(self):
+        df = standardize_df(
+            pd.DataFrame(
+                {
+                    "Statut_vaccinal": ["Oui", None],
+                    "Date_derniere_vaccination": [None, "2025-12-01"],
+                    "Lien_epid_avec_un_cas": ["Oui", None],
+                    "Facteur_exposition": [None, "Soins"],
+                    "Profession": ["Infirmier", None],
+                }
+            )
+        )
+
+        summary = standard_data_quality_summary(df)
+        values = dict(zip(summary["Indicateur"], summary["Valeur"]))
+
+        self.assertEqual(values["Vaccination documentée (%)"], 100.0)
+        self.assertEqual(values["Antécédent vaccinal positif (%)"], 100.0)
+        self.assertEqual(values["Exposition documentée (%)"], 100.0)
+        self.assertEqual(values["Lien épid / contact connu (%)"], 50.0)
+        self.assertEqual(values["Profession documentée (%)"], 50.0)
+
+    def test_build_standard_followup_tables_uses_documentary_lab_evidence(self):
+        df = standardize_df(
+            pd.DataFrame(
+                {
+                    "N_alerte": ["AL-1", "AL-2"],
+                    COL_INVEST: ["Oui", "Oui"],
+                    COL_CLASS: ["Probable", "Suspect"],
+                    COL_PREL: ["Non", "Oui"],
+                    DATE_PREL: [None, "2026-01-06"],
+                    DATE_RECEP: [None, None],
+                    DATE_RES: ["2026-01-08", None],
+                    "Resultat_labo": ["negatif", None],
+                    COL_PROV: ["Kinshasa", "Kinshasa"],
+                    COL_ZS: ["Gombe", "Gombe"],
+                }
+            )
+        )
+
+        summary, _ = build_standard_followup_tables(df)
+        counts = dict(zip(summary["Règle"], summary["Cas à relancer"]))
+
+        self.assertEqual(counts["Cas suspects ou probables sans prélèvement"], 0)
+        self.assertEqual(counts["Cas prélevés sans réception labo"], 1)
+        self.assertEqual(counts["Réceptions labo sans résultat documenté"], 0)
+
+    def test_build_standard_followup_tables_detects_contact_and_care_gaps(self):
+        df = standardize_df(
+            pd.DataFrame(
+                {
+                    "Lien_epid_avec_un_cas": ["Oui", "Non"],
+                    DATE_ADM: ["2026-01-10", None],
+                    COL_ISSUE: [None, "gueri"],
+                    DATE_ISSUE: [None, "2026-01-11"],
+                }
+            )
+        )
+
+        summary, _ = build_standard_followup_tables(df)
+        counts = dict(zip(summary["Règle"], summary["Cas à relancer"]))
+
+        self.assertEqual(counts["Lien épid / contact connu sans détail"], 1)
+        self.assertEqual(counts["Prise en charge documentée sans issue"], 1)
 
     def test_build_standard_signal_table_flags_core_operational_triggers(self):
         rows = []
@@ -667,6 +858,39 @@ class StandardAnalyticsTest(unittest.TestCase):
         self.assertEqual(status_by_indicator["Cas investigués"], "OK")
         self.assertEqual(status_by_indicator["Notification faite à temps"], "OK")
         self.assertEqual(status_by_indicator["Part des tests positifs"], "OK")
+
+    def test_build_standard_signal_table_uses_classification_when_investigation_date_is_missing(self):
+        rows = []
+        for week_idx, n_cases in enumerate([3, 3, 4, 5], start=1):
+            for _ in range(n_cases):
+                rows.append(
+                    {
+                        COL_PROV: "Kinshasa",
+                        COL_ZS: "ZS Classification",
+                        "YW": f"2026-W{week_idx:02d}",
+                        COL_CLASS: "Suspect",
+                        DATE_INV: None,
+                        DATE_ONSET: "2026-01-01",
+                        DATE_NOTIF: "2026-01-02",
+                        COL_ISSUE: "vivant",
+                    }
+                )
+
+        signals = build_standard_signal_table(
+            pd.DataFrame(rows),
+            week_col="YW",
+            completeness_threshold=80.0,
+            timeliness_threshold_days=2.0,
+            timeliness_target_pct=80.0,
+            investigation_target_pct=90.0,
+            positivity_high_threshold=40.0,
+            cfr_high_threshold=3.0,
+            min_alert_cases=5,
+            alert_ratio=1.5,
+        )
+
+        investigation_row = signals.loc[signals["Indicateur"] == "Cas investigués"].iloc[0]
+        self.assertEqual(investigation_row["Statut"], "OK")
 
     def test_build_standard_action_tracker_template_uses_only_active_triggers(self):
         signal_table = pd.DataFrame(

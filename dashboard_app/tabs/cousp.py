@@ -147,14 +147,14 @@ def _cousp_added_variables_dictionary() -> pd.DataFrame:
         {
             "N°": 5,
             "Nom": "Prelevement",
-            "Definition": "Variable renseignee ou derivee a Oui lorsqu'une date de prelevement est disponible.",
-            "Commentaire": "Permet de suivre le passage des cas suspects vers le laboratoire.",
+            "Definition": "Variable renseignee ou derivee a partir d'une preuve documentaire de prelevement: statut Oui, date de prelevement, reception labo, resultat labo ou numero labo.",
+            "Commentaire": "Evite de sous-estimer le passage des cas suspects vers le laboratoire lorsque la case Oui/Non est incomplete.",
         },
         {
             "N°": 6,
             "Nom": "Date_confirmation",
-            "Definition": "Date de confirmation derivee a partir de la date d'analyse lorsque le resultat labo est positif et que la date manque.",
-            "Commentaire": "Aide a completer la chaine de confirmation biologique.",
+            "Definition": "Date de confirmation derivee a partir de la date d'analyse ou du resultat positif documente lorsque la date de confirmation manque.",
+            "Commentaire": "Aide a completer la chaine de confirmation biologique sans casser la logique standard multi-sources.",
         },
         {
             "N°": 7,
@@ -1295,6 +1295,10 @@ def render_cousp_tab(ctx: dict) -> None:
             with st.expander("Dictionnaire des variables ajoutees", expanded=False):
                 st.caption(
                     "Ce tableau documente les variables derivees ou harmonisees ajoutees dans le dataset de recherche COUSP."
+                )
+                st.caption(
+                    "Pour les blocs laboratoire, certaines variables standards sont consolidees a partir de preuves documentaires "
+                    "(date, resultat, reception, numero labo) afin de rester robustes meme si les statuts Oui/Non sont incomplets."
                 )
                 dictionnaire_df = _cousp_added_variables_dictionary()
                 st_dataframe_safe(dictionnaire_df, height=420)
