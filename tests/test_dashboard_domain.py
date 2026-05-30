@@ -2,6 +2,7 @@ import math
 import sys
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -44,6 +45,7 @@ from dashboard_app.domain import (
     DATE_RES,
     build_cousp_standard_export_package,
     build_operational_risk_score,
+    cascade_metrics,
     build_standard_followup_tables,
     build_standard_action_tracker_template,
     build_standard_surveillance_chain_table,
@@ -784,6 +786,32 @@ class StandardAnalyticsTest(unittest.TestCase):
         self.assertEqual(counts["Cas suspects ou probables sans prélèvement"], 0)
         self.assertEqual(counts["Cas prélevés sans réception labo"], 1)
         self.assertEqual(counts["Réceptions labo sans résultat documenté"], 0)
+
+    def test_cascade_metrics_keeps_filtered_indexes_aligned_without_futurewarning(self):
+        df = standardize_df(
+            pd.DataFrame(
+                {
+                    COL_PREL: ["Oui", "Oui", "Non"],
+                    DATE_PREL: ["2026-01-05", "2026-01-06", None],
+                    DATE_RECEP: ["2026-01-07", "2026-01-08", None],
+                    "Resultat_labo": ["positif", "negatif", None],
+                },
+                index=[10, 20, 30],
+            ).loc[[10, 30]]
+        )
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cascade = cascade_metrics(df)
+
+        future_warnings = [w for w in caught if issubclass(w.category, FutureWarning)]
+        self.assertEqual(future_warnings, [])
+        values = dict(zip(cascade["Étape"], cascade["n"]))
+        self.assertEqual(values["Tous cas"], 2)
+        self.assertEqual(values["Prélèvement documenté"], 1)
+        self.assertEqual(values["Test documenté (parmi prélèvements)"], 1)
+        self.assertEqual(values["Résultat valide (Positif/Négatif) (parmi tests)"], 1)
+        self.assertEqual(values["Positifs (parmi résultats valides)"], 1)
 
     def test_build_standard_followup_tables_detects_contact_and_care_gaps(self):
         df = standardize_df(

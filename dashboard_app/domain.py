@@ -3797,14 +3797,15 @@ def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     # Colonnes (si absentes -> séries NA pour ne pas planter)
     evidence = _standard_surveillance_evidence_masks(df)
-    prelev = df[COL_PREL].astype("string") if COL_PREL in df.columns else pd.Series([pd.NA] * n_all)
-    tdr    = df[COL_TDR].astype("string")  if COL_TDR  in df.columns else pd.Series([pd.NA] * n_all)
+    empty_text = pd.Series(pd.NA, index=df.index, dtype="string")
+    prelev = df[COL_PREL].astype("string") if COL_PREL in df.columns else empty_text
+    tdr    = df[COL_TDR].astype("string")  if COL_TDR  in df.columns else empty_text
     result_col = None
     if COL_TDRR in df.columns and df[COL_TDRR].notna().any():
         result_col = COL_TDRR
     elif "Resultat_labo" in df.columns and df["Resultat_labo"].notna().any():
         result_col = "Resultat_labo"
-    tdr_res_raw = df[result_col].astype("string") if result_col is not None else pd.Series([pd.NA] * n_all)
+    tdr_res_raw = df[result_col].astype("string") if result_col is not None else empty_text
 
     # Normalisation minimale (trim + lower) pour gérer variantes d’écriture
     def _norm(s: pd.Series) -> pd.Series:
