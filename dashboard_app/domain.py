@@ -2686,7 +2686,8 @@ def standardize_df(df):
             issue_norm
             .map({
                 "decede": "Décédé", "décédé": "Décédé", "deces": "Décédé", "décès": "Décédé",
-                "gueri": "Guéri", "guéri": "Guéri", "sorti gueri": "Guéri",
+                "gueri": "Vivant", "guéri": "Vivant", "sorti gueri": "Vivant", "sorti vivant": "Vivant",
+                "vivant": "Vivant", "survivant": "Vivant", "sorti": "Vivant",
                 "en traitement": "En traitement", "transfere": "Transféré", "transféré": "Transféré"
             })
             .fillna(df[COL_ISSUE])
@@ -2697,7 +2698,6 @@ def standardize_df(df):
             "en cours": "En traitement",
             "traiter": "En traitement",
             "traite": "En traitement",
-            "sorti": "Sorti",
         })
 
     if COL_INVEST not in df.columns:
@@ -3047,6 +3047,7 @@ def standard_data_quality_summary(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@st.cache_data(show_spinner=False)
 def build_cousp_standard_export_package(
     df: pd.DataFrame,
     *,
@@ -3085,6 +3086,7 @@ def build_cousp_standard_export_package(
     return sheets, None
 
 
+@st.cache_data(show_spinner=False)
 def workbook_bytes_from_sheet_dict(
     sheets: Dict[str, pd.DataFrame],
 ) -> bytes:
@@ -3421,13 +3423,13 @@ def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
     profession_documented = _standard_profession_documented_mask(work)
     care_issue_masks = _standard_care_issue_masks(work)
     hosp_documented = hosp_yes | (pd.to_datetime(work[DATE_ADM], errors="coerce").notna() if DATE_ADM in work.columns else pd.Series(False, index=work.index))
-    gueri_norm = (
+    alive_issue_norm = (
         issue_std.astype("string")
         .str.strip()
         .str.lower()
         .apply(lambda v: _strip_accents(v) if pd.notna(v) else v)
     )
-    gueris = gueri_norm.str.contains("guer", na=False)
+    alive_documented = alive_issue_norm.str.contains("guer|vivan|surviv|sorti", na=False)
     suspect_like = classification.isin(["Suspect", "Probable"])
     sample_eligible = classification.isin(["Suspect", "Probable", "Compatible", "Confirmé"])
     investigated_non_noncas = investigate_yes & ~classification.eq("Non cas")
@@ -3538,7 +3540,7 @@ def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
         _append("Prise en charge", "Prise en charge documentée", int(care_issue_masks["care_documented"].sum()), n_cases, "Cas filtrés", f"{COL_HOSP} / {DATE_ADM} / {COL_ISSUE} / {DATE_ISSUE} / Date_sortie_au_CT")
     if COL_ISSUE in work.columns or "Issue_std" in work.columns:
         _append("Prise en charge", "Décès documentés", int(deaths.sum()), n_cases, "Cas filtrés", COL_ISSUE)
-        _append("Prise en charge", "Guéris documentés", int(gueris.sum()), n_cases, "Cas filtrés", COL_ISSUE)
+        _append("Prise en charge", "Vivants documentés", int(alive_documented.sum()), n_cases, "Cas filtrés", COL_ISSUE)
         _append("Prise en charge", "Issues documentées", int(care_issue_masks["issue_documented"].sum()), n_cases, "Cas filtrés", f"{COL_ISSUE} / {DATE_ISSUE} / Date_sortie_au_CT")
 
     return pd.DataFrame(rows, columns=columns)
@@ -3781,6 +3783,7 @@ def build_recommended_fields_matrix(df: pd.DataFrame) -> pd.DataFrame:
             })
     return pd.DataFrame(rows)
 
+@st.cache_data(show_spinner=False)
 def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """
     Cascade prélèvement -> test documenté -> résultat valide -> positif (sur les données filtrées).
@@ -4040,6 +4043,7 @@ def build_weekly_alerts(
     return weekly[out_cols]
 
 
+@st.cache_data(show_spinner=False)
 def build_spatiotemporal_cluster_table(
     df: pd.DataFrame,
     *,

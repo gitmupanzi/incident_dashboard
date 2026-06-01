@@ -1,5 +1,7 @@
 """Render the decision-oriented IREP tab."""
 
+from functools import lru_cache
+
 from dashboard_app.runtime_support import inject_runtime_support
 
 inject_runtime_support(globals())
@@ -33,25 +35,28 @@ PROVINCE_PATTERNS = [
     (r"^\s*tshuapa\s*$", "Tshuapa"),
     (r"^\s*tshopo\s*$", "Tshopo"),
 ]
+PROVINCE_PATTERNS_COMPILED = [
+    (re.compile(pattern, flags=re.IGNORECASE), replacement)
+    for pattern, replacement in PROVINCE_PATTERNS
+]
+
+
+@lru_cache(maxsize=8192)
+def _irep_normalize_text_cached(text: str) -> str:
+    """Normalise un libellé géographique scalaire de façon légère et réutilisable."""
+    cleaned = str(text).strip()
+    if not cleaned or cleaned in {"nan", "None", "<NA>"}:
+        return ""
+    normalized = unicodedata.normalize("NFKD", cleaned)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", normalized).strip().upper()
 
 
 def _irep_normalize_key(value: object) -> str:
     """Normalise une clé géographique pour les jointures de référence."""
     if value is None or pd.isna(value):
         return ""
-    text = str(value).strip()
-    if not text:
-        return ""
-    try:
-        cleaned = clean_str(pd.Series([text], dtype="string")).iloc[0]
-        cleaned = unicodedata.normalize("NFKD", str(cleaned))
-        cleaned = "".join(ch for ch in cleaned if not unicodedata.combining(ch))
-        cleaned = re.sub(r"\s+", " ", cleaned).strip().upper()
-        return cleaned
-    except Exception:
-        fallback = unicodedata.normalize("NFKD", text)
-        fallback = "".join(ch for ch in fallback if not unicodedata.combining(ch))
-        return re.sub(r"\s+", " ", fallback).strip().upper()
+    return _irep_normalize_text_cached(str(value))
 
 
 def _irep_reference_population_total(
@@ -115,12 +120,8 @@ def _irep_reference_population_total(
             pair_rows.append((_irep_normalize_key(row[COL_PROV]), _irep_normalize_key(row[COL_ZS])))
         pair_keys = {pair for pair in pair_rows if all(pair)}
         if pair_keys:
-            matched = ref[
-                ref.apply(
-                    lambda row: (str(row["_prov_norm"]), str(row["_zone_norm"])) in pair_keys,
-                    axis=1,
-                )
-            ].copy()
+            pair_index = pd.Index(list(zip(ref["_prov_norm"].astype(str), ref["_zone_norm"].astype(str))))
+            matched = ref.loc[pair_index.isin(pair_keys)].copy()
             if not matched.empty:
                 total = (
                     matched.dropna(subset=["_prov_norm", "_zone_norm"])
@@ -162,9 +163,35 @@ def _irep_reference_population_total(
 
 def _irep_clean_label_series(series: pd.Series) -> pd.Series:
     """Nettoie un libellé géographique tout en conservant sa casse d'affichage."""
-    out = series.astype("string").str.replace(r"\s+", " ", regex=True).str.strip()
-    out = out.replace({"": pd.NA, "<NA>": pd.NA, "nan": pd.NA, "None": pd.NA})
-    return out
+    as_text = series.astype("string")
+    unique_values = [value for value in as_text.dropna().unique().tolist()]
+    mapping = {
+        value: (_irep_clean_label_text_cached(str(value)) or pd.NA)
+        for value in unique_values
+    }
+    out = as_text.map(mapping)
+    return out.astype("string")
+
+
+@lru_cache(maxsize=8192)
+def _irep_clean_label_text_cached(text: str) -> str:
+    """Nettoie un libelle scalaire tout en conservant une casse d'affichage stable."""
+    cleaned = re.sub(r"\s+", " ", str(text).strip()).strip()
+    if not cleaned or cleaned in {"nan", "None", "<NA>"}:
+        return ""
+    return cleaned
+
+
+@lru_cache(maxsize=1024)
+def _irep_clean_province_text_cached(text: str) -> str:
+    """Ramene un libelle province scalaire vers une forme canonique."""
+    normalized = unicodedata.normalize("NFKD", text)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    for pattern, replacement in PROVINCE_PATTERNS_COMPILED:
+        if pattern.match(normalized):
+            return replacement
+    return _irep_clean_label_text_cached(text)
 
 
 def _irep_clean_province_value(value: object) -> object:
@@ -174,18 +201,19 @@ def _irep_clean_province_value(value: object) -> object:
     text = str(value).strip()
     if not text:
         return pd.NA
-    normalized = unicodedata.normalize("NFKD", text)
-    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    for pattern, replacement in PROVINCE_PATTERNS:
-        if re.match(pattern, normalized, flags=re.IGNORECASE):
-            return replacement
-    return _irep_clean_label_series(pd.Series([text], dtype="string")).iloc[0]
+    cleaned = _irep_clean_province_text_cached(text)
+    return cleaned if cleaned else pd.NA
 
 
 def _irep_clean_province_series(series: pd.Series) -> pd.Series:
     """Applique le nettoyage canonique des provinces à une série."""
-    out = series.apply(_irep_clean_province_value)
+    as_text = series.astype("string")
+    unique_values = [value for value in as_text.dropna().unique().tolist()]
+    mapping = {
+        value: (_irep_clean_province_text_cached(str(value).strip()) or pd.NA)
+        for value in unique_values
+    }
+    out = as_text.map(mapping)
     return out.astype("string")
 
 
@@ -549,40 +577,39 @@ def _irep_score_metric(series: pd.Series) -> pd.Series:
     return _score_quantile_0_100(values)
 
 
-def _irep_resolve_population(
-    row: pd.Series,
+def _irep_attach_population_exposure(
+    table: pd.DataFrame,
     geography_level: str,
     lookups: dict,
     group_cols: list[str],
     denominator_mode: str = "zs_sum",
-) -> float:
-    """Retrouve la population d'une province ou d'une zone de santé."""
+) -> pd.Series:
+    """Projette la population de référence sur la table IREP sans boucle ligne par ligne."""
+    if table is None or table.empty:
+        return pd.Series(dtype="float64")
+
+    out = table.copy()
+    prov_col = COL_PROV if COL_PROV in group_cols else (group_cols[0] if group_cols else COL_PROV)
+    out["_prov_norm_lookup"] = out[prov_col].map(_irep_normalize_key) if prov_col in out.columns else ""
+
     if geography_level == "province":
-        prov_val = row.get(COL_PROV if COL_PROV in group_cols else group_cols[0])
-        prov_key = _irep_normalize_key(prov_val)
-        province_map = lookups["province_max"] if denominator_mode == "group_max" else (lookups["province_sum"] or lookups["province_max"])
-        return province_map.get(prov_key, np.nan)
+        province_map = (
+            lookups["province_max"]
+            if denominator_mode == "group_max"
+            else (lookups["province_sum"] or lookups["province_max"])
+        )
+        return out["_prov_norm_lookup"].map(province_map)
 
-    zscode_candidates = [
-        "ZSCode",
-        "Code_ZS",
-        "Zone_de_sante_code",
-        "zs_code",
-    ]
-    for col in zscode_candidates:
-        if col in row.index:
-            code_key = _irep_normalize_key(row.get(col))
-            if code_key and code_key in lookups["zscode"]:
-                return lookups["zscode"][code_key]
-
-    prov_val = row.get(COL_PROV, row.get(group_cols[0] if group_cols else COL_PROV))
-    zone_val = row.get(COL_ZS, row.get(group_cols[-1] if group_cols else COL_ZS))
-    pair_key = (_irep_normalize_key(prov_val), _irep_normalize_key(zone_val))
-    if all(pair_key) and pair_key in lookups["zone_pair"]:
-        return lookups["zone_pair"][pair_key]
-
-    zone_key = _irep_normalize_key(zone_val)
-    return lookups["zone_name"].get(zone_key, np.nan)
+    zone_col = COL_ZS if COL_ZS in group_cols else (group_cols[-1] if group_cols else COL_ZS)
+    out["_zone_norm_lookup"] = out[zone_col].map(_irep_normalize_key) if zone_col in out.columns else ""
+    pair_index = pd.Index(
+        list(zip(out["_prov_norm_lookup"].astype(str), out["_zone_norm_lookup"].astype(str))),
+        dtype="object",
+    )
+    population = pd.Series(pair_index.map(lookups["zone_pair"]), index=out.index, dtype="float64")
+    if lookups["zone_name"]:
+        population = population.fillna(out["_zone_norm_lookup"].map(lookups["zone_name"]))
+    return population
 
 
 def _irep_factor_summary(row: pd.Series) -> str:
@@ -729,15 +756,12 @@ def _irep_build_window_risk_table(
         out["Ratio_tendance"] = np.nan
 
     lookups = _irep_build_population_lookups(pop_ref)
-    out["Population_exposée"] = out.apply(
-        lambda row: _irep_resolve_population(
-            row,
-            geography_level,
-            lookups,
-            valid_group_cols,
-            denominator_mode=denominator_mode,
-        ),
-        axis=1,
+    out["Population_exposée"] = _irep_attach_population_exposure(
+        out,
+        geography_level,
+        lookups,
+        valid_group_cols,
+        denominator_mode=denominator_mode,
     )
     out["Taux_attaque_%"] = np.where(
         out["Population_exposée"] > 0,
@@ -1377,7 +1401,7 @@ def _irep_render_window(
 def render_irep_tab(ctx: dict) -> None:
     """Render the decision-oriented IREP tab."""
     globals().update(ctx)
-    render_section_title(5, "Indice composite de risque épidémique (IREP)")
+    render_section_title(6, "Indice composite de risque épidémique (IREP)")
     render_tab_narrative("irep")
     tab_help(
         "Lecture et interprétation",

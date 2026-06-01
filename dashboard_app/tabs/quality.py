@@ -1,5 +1,13 @@
-"""Render the data quality and export tab."""
+﻿"""Render the data quality and export tab."""
 
+from dashboard_app.domain import (
+    TDR_NEG_SET,
+    TDR_POS_SET,
+    _is_yes_series,
+    _standard_surveillance_evidence_masks,
+    _standard_test_documented_mask,
+    _tdr_result_norm,
+)
 from dashboard_app.runtime_support import inject_runtime_support
 
 inject_runtime_support(globals())
@@ -28,21 +36,21 @@ def _quality_build_export_traceability_table(
             year_max_val = int(year_num.max())
 
     rows = [
-        {"ParamÃ¨tre": "Date export", "Valeur": str(date.today())},
-        {"ParamÃ¨tre": "Maladie / line list", "Valeur": DISEASE_SPECS.get(disease_key_value, {}).get("label", disease_key_value)},
-        {"ParamÃ¨tre": "Sources chargÃ©es", "Valeur": ", ".join(files_used_tuple) if files_used_tuple else "Non documentÃ©"},
-        {"ParamÃ¨tre": "Cas exportÃ©s", "Valeur": int(len(df_scope))},
-        {"ParamÃ¨tre": "Colonnes exportÃ©es", "Valeur": int(len(df_scope.columns))},
-        {"ParamÃ¨tre": "SE min observÃ©e", "Valeur": week_min_val},
-        {"ParamÃ¨tre": "SE max observÃ©e", "Valeur": week_max_val},
-        {"ParamÃ¨tre": "AnnÃ©e min observÃ©e", "Valeur": year_min_val},
-        {"ParamÃ¨tre": "AnnÃ©e max observÃ©e", "Valeur": year_max_val},
+        {"ParamÃƒÂ¨tre": "Date export", "Valeur": str(date.today())},
+        {"ParamÃƒÂ¨tre": "Maladie / line list", "Valeur": DISEASE_SPECS.get(disease_key_value, {}).get("label", disease_key_value)},
+        {"ParamÃƒÂ¨tre": "Sources chargÃƒÂ©es", "Valeur": ", ".join(files_used_tuple) if files_used_tuple else "Non documentÃƒÂ©"},
+        {"ParamÃƒÂ¨tre": "Cas exportÃƒÂ©s", "Valeur": int(len(df_scope))},
+        {"ParamÃƒÂ¨tre": "Colonnes exportÃƒÂ©es", "Valeur": int(len(df_scope.columns))},
+        {"ParamÃƒÂ¨tre": "SE min observÃƒÂ©e", "Valeur": week_min_val},
+        {"ParamÃƒÂ¨tre": "SE max observÃƒÂ©e", "Valeur": week_max_val},
+        {"ParamÃƒÂ¨tre": "AnnÃƒÂ©e min observÃƒÂ©e", "Valeur": year_min_val},
+        {"ParamÃƒÂ¨tre": "AnnÃƒÂ©e max observÃƒÂ©e", "Valeur": year_max_val},
         {
-            "ParamÃ¨tre": "Provinces distinctes",
+            "ParamÃƒÂ¨tre": "Provinces distinctes",
             "Valeur": int(_surveillance_clean_text_series(df_scope[COL_PROV]).nunique()) if COL_PROV in df_scope.columns else 0,
         },
         {
-            "ParamÃ¨tre": "Zones de santÃ© distinctes",
+            "ParamÃƒÂ¨tre": "Zones de santÃƒÂ© distinctes",
             "Valeur": int(_surveillance_clean_text_series(df_scope[COL_ZS]).nunique()) if COL_ZS in df_scope.columns else 0,
         },
     ]
@@ -52,14 +60,14 @@ def _quality_build_export_traceability_table(
 _QUALITY_NA_VALUES = {
     "", " ", "-", "n/a", "na", "nan", "null", "none",
     "<na>", "<nat>", "<null>",
-    "inconnu", "non renseigné", "non renseigne", "aucun", "aucune",
-    "aucune information", "aucune donnée", "aucune donnee",
-    "aucune donnée renseignée", "aucune donnee renseignee",
+    "inconnu", "non renseignÃ©", "non renseigne", "aucun", "aucune",
+    "aucune information", "aucune donnÃ©e", "aucune donnee",
+    "aucune donnÃ©e renseignÃ©e", "aucune donnee renseignee",
 }
 
 
 def _quality_is_na_like(val: object) -> bool:
-    """Retourne True si val doit être considéré comme manquant."""
+    """Retourne True si val doit Ãªtre considÃ©rÃ© comme manquant."""
     if val is None or pd.isna(val):
         return True
     if isinstance(val, str):
@@ -85,6 +93,7 @@ def _quality_decision_missing(
     return "Prioritaire"
 
 
+@st.cache_data(show_spinner=False)
 def analyser_missing_colonnes(
     df: pd.DataFrame,
     colonnes: Optional[Iterable[str]] = None,
@@ -99,14 +108,14 @@ def analyser_missing_colonnes(
     Analyse les valeurs manquantes des colonnes choisies.
 
     Si `colonnes=None`, la fonction analyse directement toutes les colonnes
-    présentes dans le DataFrame fourni.
+    prÃ©sentes dans le DataFrame fourni.
     """
     if not isinstance(df, pd.DataFrame):
-        raise TypeError("df doit être un DataFrame pandas.")
+        raise TypeError("df doit Ãªtre un DataFrame pandas.")
     if seuil_acceptable < 0 or seuil_surveillance < 0:
-        raise ValueError("Les seuils de missing doivent être positifs.")
+        raise ValueError("Les seuils de missing doivent Ãªtre positifs.")
     if seuil_acceptable > seuil_surveillance:
-        raise ValueError("seuil_acceptable ne peut pas être supérieur à seuil_surveillance.")
+        raise ValueError("seuil_acceptable ne peut pas Ãªtre supÃ©rieur Ã  seuil_surveillance.")
 
     observations = observations or {}
     total_lignes = len(df)
@@ -145,10 +154,10 @@ def analyser_missing_colonnes(
             {
                 "Variable": colonne,
                 "Total lignes": total_lignes,
-                "Renseignées": nb_renseignees,
+                "RenseignÃ©es": nb_renseignees,
                 "Manquantes": nb_manquantes,
                 "% missing": pct_missing,
-                "Décision / observation": observations.get(colonne, decision),
+                "DÃ©cision / observation": observations.get(colonne, decision),
             }
         )
 
@@ -161,7 +170,7 @@ def _quality_to_datetime_series(
     min_date: str = "2000-01-01",
     future_tolerance_days: int = 14,
 ) -> pd.Series:
-    """Convertit une série en dates plausibles pour l'analyse de promptitude."""
+    """Convertit une sÃ©rie en dates plausibles pour l'analyse de promptitude."""
     if pd.api.types.is_datetime64_any_dtype(serie):
         dt = pd.to_datetime(serie, errors="coerce")
     else:
@@ -178,6 +187,7 @@ def _quality_to_datetime_series(
     return dt
 
 
+@st.cache_data(show_spinner=False)
 def construire_table_promptitude(
     df: pd.DataFrame,
     date_pairs: Iterable[tuple[str, str, str]],
@@ -188,7 +198,7 @@ def construire_table_promptitude(
     Construit un tableau de promptitude entre paires de dates.
 
     Chaque tuple de `date_pairs` suit le format :
-    (libellé, colonne_date_debut, colonne_date_fin)
+    (libellÃ©, colonne_date_debut, colonne_date_fin)
     """
     lignes = []
 
@@ -225,18 +235,18 @@ def construire_table_promptitude(
 
         lignes.append(
             {
-                "Étape": libelle,
-                "Date début": col_debut,
+                "Ã‰tape": libelle,
+                "Date dÃ©but": col_debut,
                 "Date fin": col_fin,
-                "Lignes avec date début": n_source,
+                "Lignes avec date dÃ©but": n_source,
                 "Lignes avec date fin": n_cible,
                 "Lignes comparables": n_comparables,
                 "Date fin manquante (%)": round((n_cible_manquante / n_source) * 100, 2) if n_source > 0 else np.nan,
-                "Médiane délai (jours)": mediane,
-                "P90 délai (jours)": p90,
-                "Délai max (jours)": delai_max,
+                "MÃ©diane dÃ©lai (jours)": mediane,
+                "P90 dÃ©lai (jours)": p90,
+                "DÃ©lai max (jours)": delai_max,
                 f"% <= {int(seuil_jours)} jours": pct_seuil,
-                "% délais négatifs": pct_negatif,
+                "% dÃ©lais nÃ©gatifs": pct_negatif,
             }
         )
 
@@ -248,7 +258,7 @@ def construire_resume_coherence_par_groupe(
     flags: pd.DataFrame,
     group_col: str,
 ) -> pd.DataFrame:
-    """Résume les incohérences QC par groupe géographique ou temporel."""
+    """RÃ©sume les incohÃ©rences QC par groupe gÃ©ographique ou temporel."""
     if (
         not isinstance(df, pd.DataFrame)
         or not isinstance(flags, pd.DataFrame)
@@ -275,14 +285,14 @@ def construire_resume_coherence_par_groupe(
     rows_flagged = (
         flags_detail.groupby(group_col)["row_id"]
         .nunique()
-        .rename("Lignes avec incohérences")
+        .rename("Lignes avec incohÃ©rences")
         .reset_index()
     )
 
     total_flags = (
         flags_detail.groupby(group_col)
         .size()
-        .rename("Total incohérences")
+        .rename("Total incohÃ©rences")
         .reset_index()
     )
 
@@ -293,30 +303,105 @@ def construire_resume_coherence_par_groupe(
         .reset_index()
         .sort_values([group_col, "Occurrences"], ascending=[True, False])
         .drop_duplicates(subset=[group_col])
-        .rename(columns={"flag": "Incohérence dominante", "Occurrences": "Occurrences dominante"})
+        .rename(columns={"flag": "IncohÃ©rence dominante", "Occurrences": "Occurrences dominante"})
     )
 
     resume = total_cases.merge(rows_flagged, on=group_col, how="left")
     resume = resume.merge(total_flags, on=group_col, how="left")
-    resume = resume.merge(dominant[[group_col, "Incohérence dominante", "Occurrences dominante"]], on=group_col, how="left")
+    resume = resume.merge(dominant[[group_col, "IncohÃ©rence dominante", "Occurrences dominante"]], on=group_col, how="left")
 
-    for col in ["Lignes avec incohérences", "Total incohérences", "Occurrences dominante"]:
+    for col in ["Lignes avec incohÃ©rences", "Total incohÃ©rences", "Occurrences dominante"]:
         resume[col] = pd.to_numeric(resume[col], errors="coerce").fillna(0).astype(int)
 
-    resume["% lignes touchées"] = ((resume["Lignes avec incohérences"] / resume["Cas"]) * 100).round(2)
-    resume["Incohérences / 100 cas"] = ((resume["Total incohérences"] / resume["Cas"]) * 100).round(2)
+    resume["% lignes touchÃ©es"] = ((resume["Lignes avec incohÃ©rences"] / resume["Cas"]) * 100).round(2)
+    resume["IncohÃ©rences / 100 cas"] = ((resume["Total incohÃ©rences"] / resume["Cas"]) * 100).round(2)
     resume = resume.sort_values(
-        ["% lignes touchées", "Total incohérences", "Cas"],
+        ["% lignes touchÃ©es", "Total incohÃ©rences", "Cas"],
         ascending=[False, False, False],
     )
     return resume
+
+
+@st.cache_data(show_spinner=False)
+def _quality_build_cascade_group_summary(
+    df: pd.DataFrame,
+    group_col: str,
+) -> pd.DataFrame:
+    """Construit un rÃ©sumÃ© groupÃ© de la chaÃ®ne laboratoire en un seul passage."""
+    columns = [group_col, "n", "% prÃ©lÃ¨vement", "% test documentÃ©", "% rÃ©sultat valide", "% positif", "% incoh TDR"]
+    if df is None or df.empty or group_col not in df.columns:
+        return pd.DataFrame(columns=columns)
+
+    work = df.copy()
+    work[group_col] = work[group_col].fillna("Inconnu").astype(str).str.strip().replace("", "Inconnu")
+
+    evidence = _standard_surveillance_evidence_masks(work)
+    prelev_documented = evidence["prelev_documented"].fillna(False)
+    test_documented = _standard_test_documented_mask(work).fillna(False)
+    result_documented = evidence["result_documented"].fillna(False)
+
+    result_col = None
+    if COL_TDRR in work.columns and work[COL_TDRR].notna().any():
+        result_col = COL_TDRR
+    elif "Resultat_labo" in work.columns and work["Resultat_labo"].notna().any():
+        result_col = "Resultat_labo"
+
+    if result_col is not None:
+        res_n = _tdr_result_norm(work[result_col])
+    else:
+        res_n = pd.Series(pd.NA, index=work.index, dtype="string")
+
+    valid_result_mask = prelev_documented & test_documented & res_n.isin(TDR_POS_SET.union(TDR_NEG_SET))
+    if "is_tdr_pos" in work.columns:
+        is_pos = pd.to_numeric(work["is_tdr_pos"], errors="coerce").fillna(0).astype(int).eq(1)
+        positive_mask = valid_result_mask & is_pos
+    else:
+        positive_mask = prelev_documented & test_documented & res_n.isin(TDR_POS_SET)
+
+    if COL_TDR in work.columns:
+        tdr_yes = _is_yes_series(work[COL_TDR]).fillna(False)
+    else:
+        tdr_yes = pd.Series(False, index=work.index)
+    incoherent_result_mask = result_documented & ~tdr_yes
+
+    grouped = (
+        pd.DataFrame(
+            {
+                group_col: work[group_col],
+                "_n": 1,
+                "_prelev": prelev_documented.astype(int),
+                "_test": (prelev_documented & test_documented).astype(int),
+                "_valid": valid_result_mask.astype(int),
+                "_pos": positive_mask.astype(int),
+                "_incoh": incoherent_result_mask.astype(int),
+            }
+        )
+        .groupby(group_col, as_index=False)
+        .sum()
+        .rename(
+            columns={
+                "_n": "n",
+                "_prelev": "n_prelev",
+                "_test": "n_test",
+                "_valid": "n_valid",
+                "_pos": "n_pos",
+                "_incoh": "n_incoh",
+            }
+        )
+    )
+    grouped["% prÃ©lÃ¨vement"] = np.where(grouped["n"] > 0, grouped["n_prelev"] / grouped["n"] * 100.0, np.nan)
+    grouped["% test documentÃ©"] = np.where(grouped["n_prelev"] > 0, grouped["n_test"] / grouped["n_prelev"] * 100.0, np.nan)
+    grouped["% rÃ©sultat valide"] = np.where(grouped["n_test"] > 0, grouped["n_valid"] / grouped["n_test"] * 100.0, np.nan)
+    grouped["% positif"] = np.where(grouped["n_valid"] > 0, grouped["n_pos"] / grouped["n_valid"] * 100.0, np.nan)
+    grouped["% incoh TDR"] = np.where(grouped["n"] > 0, grouped["n_incoh"] / grouped["n"] * 100.0, np.nan)
+    return grouped[columns].sort_values("n", ascending=False).reset_index(drop=True)
 
 
 def masquer_identifiants_techniques(
     df: pd.DataFrame,
     colonnes: Optional[Iterable[str]] = None,
 ) -> pd.DataFrame:
-    """Retire des vues les identifiants techniques non utiles à la lecture."""
+    """Retire des vues les identifiants techniques non utiles Ã  la lecture."""
     if not isinstance(df, pd.DataFrame) or df.empty:
         return df
 
@@ -337,7 +422,7 @@ def masquer_identifiants_techniques(
 def render_quality_tab(ctx: dict) -> None:
     """Render the data quality and export tab."""
     globals().update(ctx)
-    render_section_title(3, "Qualité des données, promptitude et cohérence opérationnelle")
+    render_section_title(5, "QualitÃ© des donnÃ©es, promptitude et cohÃ©rence opÃ©rationnelle")
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")
     else:
@@ -345,21 +430,21 @@ def render_quality_tab(ctx: dict) -> None:
         tab_help(
             "Comment lire cet onglet",
             """
-            **Objectif** : appuyer la revue opérationnelle de la qualité des line lists pour la coordination du COUSP/RDC.
+            **Objectif** : appuyer la revue opÃ©rationnelle de la qualitÃ© des line lists pour la coordination du COUSP/RDC.
 
-            **Lecture recommandée**
-            - **Couverture de notification** : identifie les provinces attendues mais non observées dans le rapport courant.
-            - **Cohérence** : repère les anomalies de saisie et les enregistrements incompatibles avec les règles métier.
-            - **Complétude** : mesure le niveau de renseignement de l’ensemble des colonnes utiles à l’analyse.
-            - **Promptitude** : apprécie les délais entre détection, notification, investigation et étapes de laboratoire.
+            **Lecture recommandÃ©e**
+            - **Couverture de notification** : identifie les provinces attendues mais non observÃ©es dans le rapport courant.
+            - **CohÃ©rence** : repÃ¨re les anomalies de saisie et les enregistrements incompatibles avec les rÃ¨gles mÃ©tier.
+            - **ComplÃ©tude** : mesure le niveau de renseignement de lâ€™ensemble des colonnes utiles Ã  lâ€™analyse.
+            - **Promptitude** : apprÃ©cie les dÃ©lais entre dÃ©tection, notification, investigation et Ã©tapes de laboratoire.
 
-            **Point d’attention**
-            - Un signal de qualité ne confirme pas à lui seul une défaillance opérationnelle ; il doit guider la vérification.
+            **Point dâ€™attention**
+            - Un signal de qualitÃ© ne confirme pas Ã  lui seul une dÃ©faillance opÃ©rationnelle ; il doit guider la vÃ©rification.
             """,
             expanded=False
         )     
         
-        with st.expander("Paramétrage des provinces attendues", expanded=False):
+        with st.expander("ParamÃ©trage des provinces attendues", expanded=False):
 
             # ---- Init states ----
             if "epidemie_state_tab5" not in st.session_state:
@@ -370,7 +455,7 @@ def render_quality_tab(ctx: dict) -> None:
 
             # ---- Callbacks (ne modifient PAS les keys existantes) ----
             def _apply_bulk_tab5(value: bool):
-                # Met à jour le dict + change de version -> recrée les checkboxes
+                # Met Ã  jour le dict + change de version -> recrÃ©e les checkboxes
                 for p in EPIDEMIE.keys():
                     st.session_state.epidemie_state_tab5[p] = value
                 st.session_state.epid_version_tab5 += 1
@@ -380,19 +465,19 @@ def render_quality_tab(ctx: dict) -> None:
                 st.session_state.epid_version_tab5 += 1
 
             def _sync_one_tab5(prov: str, widget_key: str):
-                # Synchronise le dict à partir de l'état réel du widget
+                # Synchronise le dict Ã  partir de l'Ã©tat rÃ©el du widget
                 st.session_state.epidemie_state_tab5[prov] = bool(st.session_state.get(widget_key, False))
 
-            st.markdown("Sélectionner les provinces considérées comme attendues dans la line list pour le suivi de couverture.")
+            st.markdown("SÃ©lectionner les provinces considÃ©rÃ©es comme attendues dans la line list pour le suivi de couverture.")
 
             provs = sorted(list(EPIDEMIE.keys()))
             cols = st.columns(3)
 
-            # ---- Checkboxes (keys versionnées) ----
+            # ---- Checkboxes (keys versionnÃ©es) ----
             v = st.session_state.epid_version_tab5
             for i, prov in enumerate(provs):
                 with cols[i % 3]:
-                    wkey = f"chk_epid_{prov}_v{v}"  # <-- clé versionnée
+                    wkey = f"chk_epid_{prov}_v{v}"  # <-- clÃ© versionnÃ©e
                     st.checkbox(
                         prov,
                         value=st.session_state.epidemie_state_tab5.get(prov, False),
@@ -404,27 +489,27 @@ def render_quality_tab(ctx: dict) -> None:
             # ---- Boutons (on_click = safe) ----
             c1, c2, c3 = st.columns([1, 1, 2])
             with c1:
-                st.button("Sélectionner toutes les provinces", key="tab5_all", on_click=_apply_bulk_tab5, args=(True,))
+                st.button("SÃ©lectionner toutes les provinces", key="tab5_all", on_click=_apply_bulk_tab5, args=(True,))
             with c2:
-                st.button("Désélectionner toutes les provinces", key="tab5_none", on_click=_apply_bulk_tab5, args=(False,))
+                st.button("DÃ©sÃ©lectionner toutes les provinces", key="tab5_none", on_click=_apply_bulk_tab5, args=(False,))
             with c3:
-                st.button("Réinitialiser selon les paramètres par défaut du script", key="tab5_reset", on_click=_reset_defaults_tab5)
+                st.button("RÃ©initialiser selon les paramÃ¨tres par dÃ©faut du script", key="tab5_reset", on_click=_reset_defaults_tab5)
 
-            # ✅ Provinces attendues (UI Tab5)
+            # âœ… Provinces attendues (UI Tab5)
             PROVINCES_EPID = [p for p, ok in st.session_state.epidemie_state_tab5.items() if ok]
        
         st.subheader("Couverture de notification des provinces attendues")
         
         if COL_PROV not in df_f.columns:
-            st.info("La variable Province_notification est absente du fichier analysé.")
+            st.info("La variable Province_notification est absente du fichier analysÃ©.")
         else:
             if COL_WNUM in df_f.columns and df_f[COL_WNUM].notna().any():
                 last_w = int(df_f[COL_WNUM].max())
                 present = sorted(df_f.loc[df_f[COL_WNUM] == last_w, COL_PROV].dropna().unique().tolist())
-                st.caption(f"Lecture effectuée sur la semaine épidémiologique la plus récente du périmètre filtré : SE{last_w:02d}")
+                st.caption(f"Lecture effectuÃ©e sur la semaine Ã©pidÃ©miologique la plus rÃ©cente du pÃ©rimÃ¨tre filtrÃ© : SE{last_w:02d}")
             else:
                 present = sorted(df_f[COL_PROV].dropna().unique().tolist())
-                st.caption("Lecture effectuée sur l’ensemble filtré, faute de semaine épidémiologique exploitable.")
+                st.caption("Lecture effectuÃ©e sur lâ€™ensemble filtrÃ©, faute de semaine Ã©pidÃ©miologique exploitable.")
         
             missing = [p for p in PROVINCES_EPID if p not in present]
             nb_att = len(PROVINCES_EPID)
@@ -433,20 +518,20 @@ def render_quality_tab(ctx: dict) -> None:
         
             c1, c2, c3 = st.columns(3)
             c1.metric("Provinces attendues", str(nb_att))
-            c2.metric("Provinces trouvées", str(nb_rec))
-            c3.metric("Complétude (%)", f"{compl:.1f}")
+            c2.metric("Provinces trouvÃ©es", str(nb_rec))
+            c3.metric("ComplÃ©tude (%)", f"{compl:.1f}")
             if missing:
-                st.warning("Provinces attendues non observées dans les données : " + ", ".join(missing))
+                st.warning("Provinces attendues non observÃ©es dans les donnÃ©es : " + ", ".join(missing))
         
             with st.expander("Tableau de couverture des provinces attendues"):
                 df_comp = pd.DataFrame({
                     "Province attendue": PROVINCES_EPID,
-                    "Présente": [p in present for p in PROVINCES_EPID],
+                    "PrÃ©sente": [p in present for p in PROVINCES_EPID],
                     "Manquante": [p if p in missing else "" for p in PROVINCES_EPID],
                 })
                 st_dataframe_safe(df_comp)
         
-            with st.expander("Volume de cas rapportés par province", expanded=True):
+            with st.expander("Volume de cas rapportÃ©s par province", expanded=True):
                 prov_counts = df_f[COL_PROV].fillna("Inconnu").value_counts().reset_index()
                 prov_counts.columns = [COL_PROV, "Cas"]
                 figp = px.bar(prov_counts, x=COL_PROV, y="Cas", title=" ")
@@ -455,10 +540,10 @@ def render_quality_tab(ctx: dict) -> None:
                 st.plotly_chart(figp, width="stretch")
         
             # TCD
-            with st.expander("Répartition détaillée des occurrences", expanded=False):
-                # --- Scope: même logique que ton calcul "semaine max filtrée"
+            with st.expander("RÃ©partition dÃ©taillÃ©e des occurrences", expanded=False):
+                # --- Scope: mÃªme logique que ton calcul "semaine max filtrÃ©e"
                 scope_last_week = st.checkbox(
-                    "Calculer uniquement sur la semaine max filtrée (même scope que la complétude)",
+                    "Calculer uniquement sur la semaine max filtrÃ©e (mÃªme scope que la complÃ©tude)",
                     value=True,
                     key="ct_scope_last_week"
                 )
@@ -468,7 +553,7 @@ def render_quality_tab(ctx: dict) -> None:
                     df_scope = df_scope.loc[df_scope[COL_WNUM] == last_w].copy()
                     st.caption(f"Scope: SE{last_w:02d}")
                 else:
-                    st.caption("Scope: ensemble filtré")
+                    st.caption("Scope: ensemble filtrÃ©")
         
                 # --- Outils UX (global)
                 cUX1, cUX2, cUX3, cUX4 = st.columns([1.1, 1.1, 1.1, 0.9])
@@ -479,12 +564,12 @@ def render_quality_tab(ctx: dict) -> None:
                 with cUX3:
                     tbl_height = st.number_input("Hauteur du tableau", min_value=250, max_value=1200, value=520, step=50, key="ct_tbl_height")
                 with cUX4:
-                    do_download = st.checkbox("Activer l’export", value=True, key="ct_export_on")
+                    do_download = st.checkbox("Activer lâ€™export", value=True, key="ct_export_on")
         
-                # --- Choix du niveau d’agrégation (on maintient les 3 options)
+                # --- Choix du niveau dâ€™agrÃ©gation (on maintient les 3 options)
                 level = st.radio(
-                    "Niveau d’agrégation",
-                    ["Province (occurrences)", "Province + Zone de santé", "Tableau croisé Province × Zone"],
+                    "Niveau dâ€™agrÃ©gation",
+                    ["Province (occurrences)", "Province + Zone de santÃ©", "Tableau croisÃ© Province Ã— Zone"],
                     index=0,
                     horizontal=True,
                     key="ct_level"
@@ -500,7 +585,7 @@ def render_quality_tab(ctx: dict) -> None:
                     if do_download:
                         csv = df_to_show.to_csv(index=True).encode("utf-8")
                         st.download_button(
-                            f"Télécharger {name} (CSV)",
+                            f"TÃ©lÃ©charger {name} (CSV)",
                             data=csv,
                             file_name=f"{name}.csv".replace(" ", "_").lower(),
                             mime="text/csv",
@@ -510,7 +595,7 @@ def render_quality_tab(ctx: dict) -> None:
                 # 1) Province (occurrences)
                 if level == "Province (occurrences)":
                     if COL_PROV not in df_scope.columns:
-                        st.info("La variable Province_notification est absente du fichier analysé.")
+                        st.info("La variable Province_notification est absente du fichier analysÃ©.")
                     else:
                         piv = (
                             df_scope.assign(_prov=df_scope[COL_PROV].fillna("Inconnu"))
@@ -541,7 +626,7 @@ def render_quality_tab(ctx: dict) -> None:
                             if do_download:
                                 csv = df_to_csv_bytes(piv)
                                 st.download_button(
-                                    "Télécharger province_occurrences (CSV)",
+                                    "TÃ©lÃ©charger province_occurrences (CSV)",
                                     data=csv,
                                     file_name="province_occurrences.csv",
                                     mime="text/csv",
@@ -551,14 +636,14 @@ def render_quality_tab(ctx: dict) -> None:
                             _show_table(piv, "province_occurrences")
         
                     with st.expander("Graphique (top provinces)"):
-                        topk = st.number_input("Nombre de provinces à afficher", min_value=5, max_value=30, value=15, step=1, key="ct_topk_prov")
-                        figp = px.bar(piv.head(int(topk)), x=COL_PROV, y="Occurrences", title="Top provinces – occurrences")
+                        topk = st.number_input("Nombre de provinces Ã  afficher", min_value=5, max_value=30, value=15, step=1, key="ct_topk_prov")
+                        figp = px.bar(piv.head(int(topk)), x=COL_PROV, y="Occurrences", title="Top provinces â€“ occurrences")
                         figp.update_layout(xaxis_tickangle=-45)
                         figp = apply_plotly_value_annotations(figp, annot_vals)
                         st.plotly_chart(figp, width="stretch")
         
-                # 2) Province + Zone de santé
-                elif level == "Province + Zone de santé":
+                # 2) Province + Zone de santÃ©
+                elif level == "Province + Zone de santÃ©":
                     if (COL_PROV not in df_scope.columns) or (COL_ZS not in df_scope.columns):
                         st.info("Les variables Province_notification et/ou Zone_de_sante_notification sont absentes.")
                     else:
@@ -566,15 +651,15 @@ def render_quality_tab(ctx: dict) -> None:
                         with colA:
                             view_mode = st.radio(
                                 "Vue",
-                                ["Top N (table longue)", "Déroulable Province → Zone"],
+                                ["Top N (table longue)", "DÃ©roulable Province â†’ Zone"],
                                 index=1,
                                 horizontal=True,
                                 key="ct_view_mode_pz"
                             )
                         with colB:
-                            limit_zones = st.checkbox("Limiter le nombre de zones de santé (performance)", value=True, key="ct_limit_zones_pz")
+                            limit_zones = st.checkbox("Limiter le nombre de zones de santÃ© (performance)", value=True, key="ct_limit_zones_pz")
                         with colC:
-                            top_z = st.number_input("Nombre maximum de zones de santé", min_value=10, max_value=2000, value=250, step=25, key="ct_top_z_pz")
+                            top_z = st.number_input("Nombre maximum de zones de santÃ©", min_value=10, max_value=2000, value=250, step=25, key="ct_top_z_pz")
         
                         df_scope2 = df_scope.copy()
                         if limit_zones:
@@ -610,7 +695,7 @@ def render_quality_tab(ctx: dict) -> None:
                         )
         
                         if view_mode == "Top N (table longue)":
-                            top_n = st.number_input("Nombre maximum de lignes à afficher", min_value=10, max_value=20000, value=500, step=50, key="ct_topn_long")
+                            top_n = st.number_input("Nombre maximum de lignes Ã  afficher", min_value=10, max_value=20000, value=500, step=50, key="ct_topn_long")
                             df_show = piv.head(int(top_n)).copy()
         
                             if show_bar:
@@ -635,13 +720,13 @@ def render_quality_tab(ctx: dict) -> None:
                             )
                             tcd = tcd.reindex(tot_prov[COL_PROV].tolist(), level=0)
         
-                            st.caption("Clique sur les triangles à gauche pour dérouler/replier Province → Zone.")
+                            st.caption("Clique sur les triangles Ã  gauche pour dÃ©rouler/replier Province â†’ Zone.")
                             st.dataframe(tcd, width='stretch', height=int(tbl_height))
         
                             if do_download:
                                 csv = tcd.reset_index().to_csv(index=False).encode("utf-8")
                                 st.download_button(
-                                    "Télécharger province_zone_deroulable (CSV)",
+                                    "TÃ©lÃ©charger province_zone_deroulable (CSV)",
                                     data=csv,
                                     file_name="province_zone_deroulable.csv",
                                     mime="text/csv",
@@ -665,20 +750,20 @@ def render_quality_tab(ctx: dict) -> None:
                                 st_dataframe_safe(tot_prov)
         
                         with st.expander("Graphique (top provinces)"):
-                            topk = st.number_input("Nombre de provinces à afficher", min_value=5, max_value=30, value=15, step=1, key="ct_topk_pz")
-                            figp = px.bar(tot_prov.head(int(topk)), x=COL_PROV, y="Occurrences", title="Top provinces – occurrences (scope)")
+                            topk = st.number_input("Nombre de provinces Ã  afficher", min_value=5, max_value=30, value=15, step=1, key="ct_topk_pz")
+                            figp = px.bar(tot_prov.head(int(topk)), x=COL_PROV, y="Occurrences", title="Top provinces â€“ occurrences (scope)")
                             figp.update_layout(xaxis_tickangle=-45)
                             figp = apply_plotly_value_annotations(figp, annot_vals)
                             st.plotly_chart(figp, width="stretch")
         
-                # 3) Tableau croisé Province × Zone
+                # 3) Tableau croisÃ© Province Ã— Zone
                 else:
                     if (COL_PROV not in df_scope.columns) or (COL_ZS not in df_scope.columns):
                         st.info("Les variables Province_notification et/ou Zone_de_sante_notification sont absentes.")
                     else:
                         cA, cB, cC = st.columns([1.1, 1.3, 1.6])
                         with cA:
-                            limit_zones = st.checkbox("Limiter aux zones les plus fréquentes", value=True, key="ct_limit_zones_wide")
+                            limit_zones = st.checkbox("Limiter aux zones les plus frÃ©quentes", value=True, key="ct_limit_zones_wide")
                         with cB:
                             top_z = st.number_input("Top zones", min_value=10, max_value=1500, value=120, step=10, key="ct_topz_wide")
                         with cC:
@@ -703,7 +788,7 @@ def render_quality_tab(ctx: dict) -> None:
                             dropna=False
                         )
         
-                        sort_totals = st.checkbox("Trier par total décroissant", value=True, key="ct_sort_totals")
+                        sort_totals = st.checkbox("Trier par total dÃ©croissant", value=True, key="ct_sort_totals")
                         if sort_totals and "Total" in ct.columns and "Total" in ct.index:
                             rows = ct.drop(index="Total", errors="ignore").sort_values("Total", ascending=False)
                             cols_tot = ct.drop(columns="Total", errors="ignore").loc["Total"].sort_values(ascending=False).index.tolist() \
@@ -718,7 +803,7 @@ def render_quality_tab(ctx: dict) -> None:
                         if do_download:
                             csv = ct.to_csv(index=True).encode("utf-8")
                             st.download_button(
-                                "Télécharger province_x_zone (CSV)",
+                                "TÃ©lÃ©charger province_x_zone (CSV)",
                                 data=csv,
                                 file_name="province_x_zone.csv",
                                 mime="text/csv",
@@ -730,8 +815,8 @@ def render_quality_tab(ctx: dict) -> None:
                             fig_hm = px.imshow(
                                 ct_heat,
                                 aspect="auto",
-                                labels=dict(x="Zone de santé", y="Province", color="Occurrences"),
-                                title="Heatmap – Occurrences Province × Zone"
+                                labels=dict(x="Zone de santÃ©", y="Province", color="Occurrences"),
+                                title="Heatmap â€“ Occurrences Province Ã— Zone"
                             )
                             fig_hm.update_layout(height=700)
                             st.plotly_chart(fig_hm, width="stretch")
@@ -740,7 +825,7 @@ def render_quality_tab(ctx: dict) -> None:
     # TAB 6: DATA & EXPORT
     # =========================
     st.divider()
-    st.markdown("### Extraction, revue et export des données")
+    st.markdown("### Extraction, revue et export des donnÃ©es")
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")
     else:
@@ -748,23 +833,23 @@ def render_quality_tab(ctx: dict) -> None:
         tab_help(
             "Comment lire cet onglet",
             """
-            **🎯 Objectif** : consulter et exporter les données filtrées pour analyse et partage.
+            **ðŸŽ¯ Objectif** : consulter et exporter les donnÃ©es filtrÃ©es pour analyse et partage.
         
-            **📖 Utilisation**
-            - Exportation **CSV/Excel** pour analyses complémentaires (R/Python/DHIS2).
-            - Vérifier les filtres actifs avant export.
+            **ðŸ“– Utilisation**
+            - Exportation **CSV/Excel** pour analyses complÃ©mentaires (R/Python/DHIS2).
+            - VÃ©rifier les filtres actifs avant export.
         
-            **⚠️ Points d’attention**
-            - Les exports reflètent exactement les filtres actifs (province/ZS/AS/semaine/classification).
+            **âš ï¸ Points dâ€™attention**
+            - Les exports reflÃ¨tent exactement les filtres actifs (province/ZS/AS/semaine/classification).
             """,
             expanded=False
         )
         
-        st.subheader("Extraction des données filtrées, traçabilité et options d’export")
+        st.subheader("Extraction des donnÃ©es filtrÃ©es, traÃ§abilitÃ© et options dâ€™export")
 
         @st.cache_data(show_spinner=False)
         def _build_export_traceability_table(df_scope: pd.DataFrame) -> pd.DataFrame:
-            """Construit une table simple de traçabilité pour les exports."""
+            """Construit une table simple de traÃ§abilitÃ© pour les exports."""
             week_min_val = "-"
             week_max_val = "-"
             year_min_val = "-"
@@ -783,34 +868,41 @@ def render_quality_tab(ctx: dict) -> None:
                     year_max_val = int(year_num.max())
 
             rows = [
-                {"Paramètre": "Date export", "Valeur": str(date.today())},
-                {"Paramètre": "Maladie / line list", "Valeur": DISEASE_SPECS.get(disease_key, {}).get("label", disease_key)},
-                {"Paramètre": "Sources chargées", "Valeur": ", ".join(files_used) if isinstance(files_used, list) and files_used else "Non documenté"},
-                {"Paramètre": "Cas exportés", "Valeur": int(len(df_scope))},
-                {"Paramètre": "Colonnes exportées", "Valeur": int(len(df_scope.columns))},
-                {"Paramètre": "SE min observée", "Valeur": week_min_val},
-                {"Paramètre": "SE max observée", "Valeur": week_max_val},
-                {"Paramètre": "Année min observée", "Valeur": year_min_val},
-                {"Paramètre": "Année max observée", "Valeur": year_max_val},
+                {"ParamÃ¨tre": "Date export", "Valeur": str(date.today())},
+                {"ParamÃ¨tre": "Maladie / line list", "Valeur": DISEASE_SPECS.get(disease_key, {}).get("label", disease_key)},
+                {"ParamÃ¨tre": "Sources chargÃ©es", "Valeur": ", ".join(files_used) if isinstance(files_used, list) and files_used else "Non documentÃ©"},
+                {"ParamÃ¨tre": "Cas exportÃ©s", "Valeur": int(len(df_scope))},
+                {"ParamÃ¨tre": "Colonnes exportÃ©es", "Valeur": int(len(df_scope.columns))},
+                {"ParamÃ¨tre": "SE min observÃ©e", "Valeur": week_min_val},
+                {"ParamÃ¨tre": "SE max observÃ©e", "Valeur": week_max_val},
+                {"ParamÃ¨tre": "AnnÃ©e min observÃ©e", "Valeur": year_min_val},
+                {"ParamÃ¨tre": "AnnÃ©e max observÃ©e", "Valeur": year_max_val},
                 {
-                    "Paramètre": "Provinces distinctes",
+                    "ParamÃ¨tre": "Provinces distinctes",
                     "Valeur": int(_surveillance_clean_text_series(df_scope[COL_PROV]).nunique()) if COL_PROV in df_scope.columns else 0,
                 },
                 {
-                    "Paramètre": "Zones de santé distinctes",
+                    "ParamÃ¨tre": "Zones de santÃ© distinctes",
                     "Valeur": int(_surveillance_clean_text_series(df_scope[COL_ZS]).nunique()) if COL_ZS in df_scope.columns else 0,
                 },
             ]
             return pd.DataFrame(rows)
 
+        export_base_name = f"{str(disease_key).strip().lower()}_filtre"
+        prepare_export_pack = st.checkbox(
+            "Préparer le pack d'export qualité (Excel + tableaux avancés)",
+            value=False,
+            key="quality_prepare_export_pack",
+            help="Laisse l'onglet chargé immédiatement et ne prépare les tableaux avancés et l'Excel complet que si nécessaire.",
+        )
         export_traceability = _build_export_traceability_table(df_f)
-        export_quality_summary = standard_data_quality_summary(df_f)
-        export_qc_flags = qc_flags(df_f)
+        export_quality_summary = standard_data_quality_summary(df_f) if prepare_export_pack else pd.DataFrame()
+        export_qc_flags = qc_flags(df_f) if prepare_export_pack else pd.DataFrame()
         export_qc_resume = (
             export_qc_flags["flag"].value_counts().rename_axis("Flag").reset_index(name="Occurrences")
             if not export_qc_flags.empty else pd.DataFrame(columns=["Flag", "Occurrences"])
         )
-        export_duplicates = duplicate_candidates_table(df_f)
+        export_duplicates = duplicate_candidates_table(df_f) if prepare_export_pack else pd.DataFrame()
         export_risk_group = COL_ZS if COL_ZS in df_f.columns and df_f[COL_ZS].notna().any() else (
             COL_PROV if COL_PROV in df_f.columns and df_f[COL_PROV].notna().any() else None
         )
@@ -822,7 +914,7 @@ def render_quality_tab(ctx: dict) -> None:
                 recent_weeks=4,
                 threshold_days=int(seuil_jours),
             )
-            if export_risk_group else pd.DataFrame()
+            if prepare_export_pack and export_risk_group else pd.DataFrame()
         )
         export_alerts = (
             build_weekly_alerts(
@@ -834,7 +926,7 @@ def render_quality_tab(ctx: dict) -> None:
                 min_cases=10,
                 alert_ratio=1.5,
             )
-            if export_risk_group and (("YW" in df_f.columns) or (COL_WEEK in df_f.columns)) else pd.DataFrame()
+            if prepare_export_pack and export_risk_group and (("YW" in df_f.columns) or (COL_WEEK in df_f.columns)) else pd.DataFrame()
         )
         export_clusters = (
             build_spatiotemporal_cluster_table(
@@ -846,25 +938,31 @@ def render_quality_tab(ctx: dict) -> None:
                 min_recent_cases=5,
                 growth_ratio=1.5,
             )
-            if (("YW" in df_f.columns) or (COL_WEEK in df_f.columns)) else pd.DataFrame()
+            if prepare_export_pack and (("YW" in df_f.columns) or (COL_WEEK in df_f.columns)) else pd.DataFrame()
         )
-        export_standard_signals = build_standard_signal_table(
-            df_f,
-            week_col="YW" if "YW" in df_f.columns else COL_WEEK,
-            completeness_threshold=80.0,
-            timeliness_threshold_days=float(seuil_jours),
-            timeliness_target_pct=80.0,
-            investigation_target_pct=90.0,
-            positivity_high_threshold=40.0,
-            cfr_high_threshold=3.0,
-            min_alert_cases=10,
-            alert_ratio=1.5,
+        export_standard_signals = (
+            build_standard_signal_table(
+                df_f,
+                week_col="YW" if "YW" in df_f.columns else COL_WEEK,
+                completeness_threshold=80.0,
+                timeliness_threshold_days=float(seuil_jours),
+                timeliness_target_pct=80.0,
+                investigation_target_pct=90.0,
+                positivity_high_threshold=40.0,
+                cfr_high_threshold=3.0,
+                min_alert_cases=10,
+                alert_ratio=1.5,
+            )
+            if prepare_export_pack else pd.DataFrame()
         )
-        export_standard_tracker = build_standard_action_tracker_template(
-            export_standard_signals,
-            disease_label=DISEASE_SPECS.get(disease_key, {}).get("label", disease_key),
-            analysis_label=compute_analysis_period_value(df_f),
-            generated_on=str(date.today()),
+        export_standard_tracker = (
+            build_standard_action_tracker_template(
+                export_standard_signals,
+                disease_label=DISEASE_SPECS.get(disease_key, {}).get("label", disease_key),
+                analysis_label=compute_analysis_period_value(df_f),
+                generated_on=str(date.today()),
+            )
+            if prepare_export_pack else pd.DataFrame()
         )
 
         export_completeness = pd.DataFrame()
@@ -874,17 +972,16 @@ def render_quality_tab(ctx: dict) -> None:
             COL_UNIT, DATE_ONSET, COL_PREL, COL_TDR, COL_TDRR, COL_HOSP,
             COL_ISSUE, COL_CLASS,
         ]
-        for group_col in [COL_PROV, COL_ZS, "YW", COL_WNUM]:
-            if group_col in df_f.columns and df_f[group_col].notna().any():
-                export_completeness = completeness_table(df_f, export_required_fields, by=group_col)
-                if not export_completeness.empty:
-                    export_completeness_by = group_col
-                    break
-
-        export_base_name = f"{str(disease_key).strip().lower()}_filtre"
+        if prepare_export_pack:
+            for group_col in [COL_PROV, COL_ZS, "YW", COL_WNUM]:
+                if group_col in df_f.columns and df_f[group_col].notna().any():
+                    export_completeness = completeness_table(df_f, export_required_fields, by=group_col)
+                    if not export_completeness.empty:
+                        export_completeness_by = group_col
+                        break
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Cas exportés", format_metric_value(len(df_f)))
+        m1.metric("Cas exportÃ©s", format_metric_value(len(df_f)))
         m2.metric("Colonnes", format_metric_value(len(df_f.columns)))
         m3.metric(
             "Provinces distinctes",
@@ -894,24 +991,28 @@ def render_quality_tab(ctx: dict) -> None:
             "ZS distinctes",
             format_metric_value(int(_surveillance_clean_text_series(df_f[COL_ZS]).nunique()) if COL_ZS in df_f.columns else 0),
         )
+        if not prepare_export_pack:
+            st.caption(
+                "Préparation avancée désactivée : les tableaux secondaires et l'Excel complet seront calculés uniquement si vous activez l'option ci-dessus."
+            )
 
         info1, info2 = st.columns([0.9, 1.1])
         with info1:
-            st.markdown("**Traçabilité de l’export**")
+            st.markdown("**TraÃ§abilitÃ© de lâ€™export**")
             st_dataframe_safe(export_traceability, height=360)
         with info2:
-            st.markdown("**Résumé qualité inclus dans le pack d’export**")
+            st.markdown("**RÃ©sumÃ© qualitÃ© inclus dans le pack dâ€™export**")
             if not export_quality_summary.empty:
                 st_dataframe_safe(export_quality_summary, height=360)
             else:
-                st.info("Aucun résumé qualité n’est disponible pour le périmètre filtré.")
+                st.info("Aucun rÃ©sumÃ© qualitÃ© nâ€™est disponible pour le pÃ©rimÃ¨tre filtrÃ©.")
 
-        with st.expander("Prévisualiser les contenus additionnels du pack d’export", expanded=False):
+        with st.expander("PrÃ©visualiser les contenus additionnels du pack dâ€™export", expanded=False):
             if not export_qc_resume.empty:
-                st.markdown("**Résumé des incohérences détectées**")
+                st.markdown("**RÃ©sumÃ© des incohÃ©rences dÃ©tectÃ©es**")
                 st_dataframe_safe(export_qc_resume, height=260)
             else:
-                st.caption("Aucune incohérence détectée par `qc_flags` sur le périmètre filtré.")
+                st.caption("Aucune incohÃ©rence dÃ©tectÃ©e par `qc_flags` sur le pÃ©rimÃ¨tre filtrÃ©.")
 
             if not export_duplicates.empty:
                 st.markdown("**Doublons potentiels**")
@@ -920,30 +1021,30 @@ def render_quality_tab(ctx: dict) -> None:
                     height=260,
                 )
             else:
-                st.caption("Aucun doublon potentiel n’a été identifié.")
+                st.caption("Aucun doublon potentiel nâ€™a Ã©tÃ© identifiÃ©.")
 
             if export_completeness_by and not export_completeness.empty:
-                st.markdown(f"**Complétude par {export_completeness_by}**")
+                st.markdown(f"**ComplÃ©tude par {export_completeness_by}**")
                 st_dataframe_safe(export_completeness.head(100), height=260)
             else:
-                st.caption("Aucun tableau de complétude additionnel n’a pu être préparé pour l’export.")
+                st.caption("Aucun tableau de complÃ©tude additionnel nâ€™a pu Ãªtre prÃ©parÃ© pour lâ€™export.")
 
             if not export_risk_score.empty:
-                st.markdown(f"**Score de risque opérationnel ({export_risk_group})**")
+                st.markdown(f"**Score de risque opÃ©rationnel ({export_risk_group})**")
                 st_dataframe_safe(export_risk_score.head(100), height=300)
             else:
-                st.caption("Aucun score de risque opérationnel n’a pu être préparé pour l’export.")
+                st.caption("Aucun score de risque opÃ©rationnel nâ€™a pu Ãªtre prÃ©parÃ© pour lâ€™export.")
 
             if not export_alerts.empty:
                 st.markdown("**Alertes hebdomadaires automatiques**")
                 st_dataframe_safe(export_alerts.tail(100), height=300)
 
             if not export_clusters.empty:
-                st.markdown("**Clusters spatio-temporels récents**")
+                st.markdown("**Clusters spatio-temporels rÃ©cents**")
                 st_dataframe_safe(export_clusters.head(100), height=300)
 
             if not export_standard_signals.empty:
-                st.markdown("**Points à suivre en priorité**")
+                st.markdown("**Points Ã  suivre en prioritÃ©**")
                 st_dataframe_safe(
                     masquer_identifiants_techniques(export_standard_signals),
                     height=300,
@@ -952,8 +1053,8 @@ def render_quality_tab(ctx: dict) -> None:
         st.divider()
         st.markdown("**Suivi des actions**")
         st.caption(
-            "Le tableau ci-dessous est prérempli à partir des points à suivre. "
-            "Tu peux compléter les responsables, les échéances, l'avancement et les commentaires avant export."
+            "Le tableau ci-dessous est prÃ©rempli Ã  partir des points Ã  suivre. "
+            "Tu peux complÃ©ter les responsables, les Ã©chÃ©ances, l'avancement et les commentaires avant export."
         )
         tracker_signature = hashlib.md5(
             "|".join(export_standard_tracker.get("Signal_ID", pd.Series(dtype="string")).astype(str).tolist()).encode("utf-8")
@@ -968,12 +1069,12 @@ def render_quality_tab(ctx: dict) -> None:
 
         tracker_col1, tracker_col2 = st.columns([1, 1])
         with tracker_col1:
-            if st.button("Réinitialiser le tracker", key="quality_standard_tracker_reset"):
+            if st.button("RÃ©initialiser le tracker", key="quality_standard_tracker_reset"):
                 st.session_state[tracker_state_key] = export_standard_tracker.copy()
                 st.session_state[tracker_signature_key] = tracker_signature
         with tracker_col2:
             if not export_standard_tracker.empty:
-                st.caption(f"{len(export_standard_tracker)} action(s) proposée(s) pour le périmètre courant.")
+                st.caption(f"{len(export_standard_tracker)} action(s) proposÃ©e(s) pour le pÃ©rimÃ¨tre courant.")
 
         current_tracker = st.session_state.get(tracker_state_key, export_standard_tracker.copy())
         if current_tracker is None or not isinstance(current_tracker, pd.DataFrame):
@@ -981,7 +1082,7 @@ def render_quality_tab(ctx: dict) -> None:
         current_tracker = merge_standard_action_tracker_template(export_standard_tracker, current_tracker)
 
         if current_tracker.empty:
-            st.success("Aucun point prioritaire n'alimente le suivi des actions pour le périmètre filtré.")
+            st.success("Aucun point prioritaire n'alimente le suivi des actions pour le pÃ©rimÃ¨tre filtrÃ©.")
         else:
             edited_tracker = st.data_editor(
                 current_tracker,
@@ -992,12 +1093,12 @@ def render_quality_tab(ctx: dict) -> None:
                 column_config={
                     "Signal_ID": None,
                     "Maladie_source": st.column_config.TextColumn("Maladie", disabled=True),
-                    "Perimetre_analyse": st.column_config.TextColumn("Périmètre", disabled=True),
+                    "Perimetre_analyse": st.column_config.TextColumn("PÃ©rimÃ¨tre", disabled=True),
                     "Bloc": st.column_config.TextColumn("Bloc", disabled=True),
                     "Indicateur": st.column_config.TextColumn("Indicateur", disabled=True),
                     "Statut_signal": st.column_config.TextColumn("Niveau d'alerte", disabled=True),
                     "Priorite_action": st.column_config.SelectboxColumn(
-                        "Priorité",
+                        "PrioritÃ©",
                         options=["Urgent", "Cette semaine", "Routine"],
                     ),
                     "Niveau_reponse": st.column_config.SelectboxColumn(
@@ -1005,62 +1106,62 @@ def render_quality_tab(ctx: dict) -> None:
                         options=["Province", "Surveillance", "Technique / soins", "Coordination", "National", "Autre"],
                     ),
                     "Constat": st.column_config.TextColumn("Ce qu'on observe", disabled=True, width="large"),
-                    "Action_a_suivre": st.column_config.TextColumn("Action proposée", width="large"),
+                    "Action_a_suivre": st.column_config.TextColumn("Action proposÃ©e", width="large"),
                     "Responsable": st.column_config.TextColumn("Responsable"),
-                    "Echeance": st.column_config.TextColumn("Échéance"),
+                    "Echeance": st.column_config.TextColumn("Ã‰chÃ©ance"),
                     "Statut_action": st.column_config.SelectboxColumn(
                         "Avancement",
-                        options=["À démarrer", "À suivre", "En cours", "Terminé", "Bloqué", "Planifié"],
+                        options=["Ã€ dÃ©marrer", "Ã€ suivre", "En cours", "TerminÃ©", "BloquÃ©", "PlanifiÃ©"],
                     ),
                     "Commentaire": st.column_config.TextColumn("Commentaire", width="large"),
-                    "Date_generation": st.column_config.TextColumn("Date de génération", disabled=True),
+                    "Date_generation": st.column_config.TextColumn("Date de gÃ©nÃ©ration", disabled=True),
                 },
                 key="quality_standard_action_tracker_editor",
             )
             st.session_state[tracker_state_key] = edited_tracker.copy()
             current_tracker = edited_tracker.copy()
 
-            tracker_open = int(current_tracker["Statut_action"].astype(str).isin(["À démarrer", "À suivre", "En cours"]).sum())
-            tracker_done = int(current_tracker["Statut_action"].astype(str).eq("Terminé").sum())
-            tracker_blocked = int(current_tracker["Statut_action"].astype(str).eq("Bloqué").sum())
+            tracker_open = int(current_tracker["Statut_action"].astype(str).isin(["Ã€ dÃ©marrer", "Ã€ suivre", "En cours"]).sum())
+            tracker_done = int(current_tracker["Statut_action"].astype(str).eq("TerminÃ©").sum())
+            tracker_blocked = int(current_tracker["Statut_action"].astype(str).eq("BloquÃ©").sum())
             t1, t2, t3 = st.columns(3)
             t1.metric("Actions ouvertes", format_metric_value(tracker_open))
-            t2.metric("Actions terminées", format_metric_value(tracker_done))
-            t3.metric("Actions bloquées", format_metric_value(tracker_blocked))
+            t2.metric("Actions terminÃ©es", format_metric_value(tracker_done))
+            t3.metric("Actions bloquÃ©es", format_metric_value(tracker_blocked))
 
             tracker_export = current_tracker.rename(
                 columns={
                     "Signal_ID": "ID signal",
                     "Maladie_source": "Maladie",
-                    "Perimetre_analyse": "Périmètre",
+                    "Perimetre_analyse": "PÃ©rimÃ¨tre",
                     "Statut_signal": "Niveau d'alerte",
-                    "Priorite_action": "Priorité",
+                    "Priorite_action": "PrioritÃ©",
                     "Niveau_reponse": "Niveau",
                     "Constat": "Ce qu'on observe",
-                    "Action_a_suivre": "Action proposée",
-                    "Echeance": "Échéance",
+                    "Action_a_suivre": "Action proposÃ©e",
+                    "Echeance": "Ã‰chÃ©ance",
                     "Statut_action": "Avancement",
-                    "Date_generation": "Date de génération",
+                    "Date_generation": "Date de gÃ©nÃ©ration",
                 }
             )
             tracker_csv = tracker_export.to_csv(index=False).encode("utf-8")
             st.download_button(
-                "Télécharger le suivi des actions (CSV)",
+                "TÃ©lÃ©charger le suivi des actions (CSV)",
                 data=tracker_csv,
                 file_name=f"{export_base_name}_tracker_actions.csv",
                 mime="text/csv",
                 key="dl_quality_export_csv_tracker",
             )
 
-        st.markdown("**Aperçu de la line list filtrée**")
+        st.markdown("**AperÃ§u de la line list filtrÃ©e**")
         st_dataframe_safe(
             masquer_identifiants_techniques(df_f),
             height=420,
         )
 
         export_mode = st.radio(
-            "Type d’export",
-            ["Pack qualité + line list", "Line list uniquement"],
+            "Type dâ€™export",
+            ["Pack qualitÃ© + line list", "Line list uniquement"],
             index=0,
             horizontal=True,
             key="qualite_export_mode",
@@ -1069,46 +1170,47 @@ def render_quality_tab(ctx: dict) -> None:
         excel_bytes = None
         excel_name = None
         excel_export_error = False
-        try:
-            buffer = BytesIO()
-            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                df_f.to_excel(writer, sheet_name="LL_filtre", index=False)
+        if prepare_export_pack:
+            try:
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                    df_f.to_excel(writer, sheet_name="LL_filtre", index=False)
 
-                if export_mode == "Pack qualité + line list":
-                    export_traceability.to_excel(writer, sheet_name="Traceabilite", index=False)
-                    export_quality_summary.to_excel(writer, sheet_name="Resume_qualite", index=False)
-                    if not export_qc_resume.empty:
-                        export_qc_resume.to_excel(writer, sheet_name="QC_resume", index=False)
-                    if not export_qc_flags.empty:
-                        export_qc_flags.to_excel(writer, sheet_name="QC_detail", index=False)
-                    if not export_duplicates.empty:
-                        export_duplicates.to_excel(writer, sheet_name="Doublons", index=False)
-                    if not export_completeness.empty:
-                        export_completeness.to_excel(writer, sheet_name="Completude", index=False)
-                    if not export_risk_score.empty:
-                        export_risk_score.to_excel(writer, sheet_name="Score_risque", index=False)
-                    if not export_alerts.empty:
-                        export_alerts.to_excel(writer, sheet_name="Alertes", index=False)
-                    if not export_clusters.empty:
-                        export_clusters.to_excel(writer, sheet_name="Clusters", index=False)
-                    if not export_standard_signals.empty:
-                        export_standard_signals.to_excel(writer, sheet_name="Points_prioritaires", index=False)
-                    if current_tracker is not None and isinstance(current_tracker, pd.DataFrame) and not current_tracker.empty:
-                        tracker_export.to_excel(writer, sheet_name="Suivi_actions", index=False)
+                    if export_mode == "Pack qualitÃ© + line list":
+                        export_traceability.to_excel(writer, sheet_name="Traceabilite", index=False)
+                        export_quality_summary.to_excel(writer, sheet_name="Resume_qualite", index=False)
+                        if not export_qc_resume.empty:
+                            export_qc_resume.to_excel(writer, sheet_name="QC_resume", index=False)
+                        if not export_qc_flags.empty:
+                            export_qc_flags.to_excel(writer, sheet_name="QC_detail", index=False)
+                        if not export_duplicates.empty:
+                            export_duplicates.to_excel(writer, sheet_name="Doublons", index=False)
+                        if not export_completeness.empty:
+                            export_completeness.to_excel(writer, sheet_name="Completude", index=False)
+                        if not export_risk_score.empty:
+                            export_risk_score.to_excel(writer, sheet_name="Score_risque", index=False)
+                        if not export_alerts.empty:
+                            export_alerts.to_excel(writer, sheet_name="Alertes", index=False)
+                        if not export_clusters.empty:
+                            export_clusters.to_excel(writer, sheet_name="Clusters", index=False)
+                        if not export_standard_signals.empty:
+                            export_standard_signals.to_excel(writer, sheet_name="Points_prioritaires", index=False)
+                        if current_tracker is not None and isinstance(current_tracker, pd.DataFrame) and not current_tracker.empty:
+                            tracker_export.to_excel(writer, sheet_name="Suivi_actions", index=False)
 
-            excel_name = (
-                f"{export_base_name}_pack_qualite.xlsx"
-                if export_mode == "Pack qualité + line list"
-                else f"{export_base_name}.xlsx"
-            )
-            excel_bytes = buffer.getvalue()
-        except Exception:
-            excel_export_error = True
+                excel_name = (
+                    f"{export_base_name}_pack_qualite.xlsx"
+                    if export_mode == "Pack qualitÃ© + line list"
+                    else f"{export_base_name}.xlsx"
+                )
+                excel_bytes = buffer.getvalue()
+            except Exception:
+                excel_export_error = True
 
         csv_col, excel_col = st.columns(2)
         with csv_col:
             st.download_button(
-                "Télécharger CSV line list",
+                "TÃ©lÃ©charger CSV line list",
                 data=df_to_csv_bytes(df_f),
                 file_name=f"{export_base_name}.csv",
                 mime="text/csv",
@@ -1118,7 +1220,7 @@ def render_quality_tab(ctx: dict) -> None:
         with excel_col:
             if excel_bytes is not None and excel_name is not None:
                 st.download_button(
-                    "Télécharger Excel",
+                    "TÃ©lÃ©charger Excel",
                     data=excel_bytes,
                     file_name=excel_name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1127,12 +1229,14 @@ def render_quality_tab(ctx: dict) -> None:
                 )
             elif excel_export_error:
                 st.info("Export Excel indisponible.")
+            elif not prepare_export_pack:
+                st.info("Activez la préparation du pack pour générer l'Excel.")
 
         extra_exports = []
         if not export_qc_flags.empty:
             extra_exports.append(
                 (
-                    "Télécharger QC flags (CSV)",
+                    "TÃ©lÃ©charger QC flags (CSV)",
                     export_qc_flags.to_csv(index=False).encode("utf-8"),
                     f"{export_base_name}_qc_flags.csv",
                     "dl_quality_export_csv_qc",
@@ -1141,7 +1245,7 @@ def render_quality_tab(ctx: dict) -> None:
         if not export_duplicates.empty:
             extra_exports.append(
                 (
-                    "Télécharger doublons (CSV)",
+                    "TÃ©lÃ©charger doublons (CSV)",
                     export_duplicates.to_csv(index=False).encode("utf-8"),
                     f"{export_base_name}_doublons.csv",
                     "dl_quality_export_csv_dup",
@@ -1162,10 +1266,10 @@ def render_quality_tab(ctx: dict) -> None:
                     )
         
     # =========================
-    # TAB 7 — Labo / qualité / signaux
+    # TAB 7 â€” Labo / qualitÃ© / signaux
     # =========================
     st.divider()
-    st.markdown("### Qualité des données et alertes de gestion")
+    st.markdown("### QualitÃ© des donnÃ©es et alertes de gestion")
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")
     else:
@@ -1173,31 +1277,31 @@ def render_quality_tab(ctx: dict) -> None:
         tab_help(
             "Comment lire cet onglet",
             """
-            **🎯 Objectif** : repérer les incohérences, les données manquantes, les difficultés de laboratoire et les alertes.
+            **ðŸŽ¯ Objectif** : repÃ©rer les incohÃ©rences, les donnÃ©es manquantes, les difficultÃ©s de laboratoire et les alertes.
         
-            **📖 Sections**
-            - **Indicateurs rapides** : quelques chiffres clés
-            - **QC Flags** : incohérences (dates, TDR, âge…)
-            - **Complétude champs clés** : niveau de remplissage par site
-            - **Cascade labo** : cas → prélèvement documenté → test documenté → résultat valide → positif
-            - **Alertes tendance** : hausse inhabituelle par rapport aux semaines précédentes
+            **ðŸ“– Sections**
+            - **Indicateurs rapides** : quelques chiffres clÃ©s
+            - **QC Flags** : incohÃ©rences (dates, TDR, Ã¢geâ€¦)
+            - **ComplÃ©tude champs clÃ©s** : niveau de remplissage par site
+            - **Cascade labo** : cas â†’ prÃ©lÃ¨vement documentÃ© â†’ test documentÃ© â†’ rÃ©sultat valide â†’ positif
+            - **Alertes tendance** : hausse inhabituelle par rapport aux semaines prÃ©cÃ©dentes
         
-            **⚠️ Points d’attention**
-            - Un signal ne confirme pas à lui seul une épidémie : il faut vérifier sur le terrain.
-            - Les % de cascade suivent une logique en étapes successives.
-            - Un prélèvement ou un test peut être reconnu par preuve documentaire (date, résultat, réception, numéro labo), même si une case Oui/Non est vide.
+            **âš ï¸ Points dâ€™attention**
+            - Un signal ne confirme pas Ã  lui seul une Ã©pidÃ©mie : il faut vÃ©rifier sur le terrain.
+            - Les % de cascade suivent une logique en Ã©tapes successives.
+            - Un prÃ©lÃ¨vement ou un test peut Ãªtre reconnu par preuve documentaire (date, rÃ©sultat, rÃ©ception, numÃ©ro labo), mÃªme si une case Oui/Non est vide.
             """,
             expanded=False
         )
         
-        st.subheader("Revue opérationnelle de la qualité des données")
+        st.subheader("Revue opÃ©rationnelle de la qualitÃ© des donnÃ©es")
         
         # -------- Helpers (robustes) --------
         def _get_pct_from_cascade(casc: pd.DataFrame, key: str) -> float:
-            """Récupère le % de la première ligne dont Étape contient key (robuste aux libellés)."""
-            if casc is None or casc.empty or "Étape" not in casc.columns or "%" not in casc.columns:
+            """RÃ©cupÃ¨re le % de la premiÃ¨re ligne dont Ã‰tape contient key (robuste aux libellÃ©s)."""
+            if casc is None or casc.empty or "Ã‰tape" not in casc.columns or "%" not in casc.columns:
                 return np.nan
-            m = casc.loc[casc["Étape"].astype(str).str.contains(key, regex=False, na=False), "%"]
+            m = casc.loc[casc["Ã‰tape"].astype(str).str.contains(key, regex=False, na=False), "%"]
             return float(m.iloc[0]) if len(m) else np.nan
         
         def _safe_num(x):
@@ -1215,63 +1319,63 @@ def render_quality_tab(ctx: dict) -> None:
         casc_global = cascade_metrics(df_f) if n_total else pd.DataFrame()
         has_tdr_chain = COL_TDR in df_f.columns and df_f[COL_TDR].notna().any()
         
-        # KPI “qualité TDR” (sur cascade)
-        kpi_incoh_res_wo_tdr = _get_pct_from_cascade(casc_global, "Résultat renseigné mais TDR_realise != Oui")
+        # KPI â€œqualitÃ© TDRâ€ (sur cascade)
+        kpi_incoh_res_wo_tdr = _get_pct_from_cascade(casc_global, "RÃ©sultat renseignÃ© mais TDR_realise != Oui")
         kpi_status_in_result = _get_pct_from_cascade(casc_global, "Statut saisi dans TDR_Resultat")
         
-        # ✅ 7 colonnes (ajout hospitalisation)
+        # âœ… 7 colonnes (ajout hospitalisation)
         c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         
         c1.metric(
             "Cas (n)",
             f"{kpi['n_cases']:,}".replace(",", " "),
-            help="Nombre total de cas après application des filtres (Province/ZS/SE, etc.)."
+            help="Nombre total de cas aprÃ¨s application des filtres (Province/ZS/SE, etc.)."
         )
         
         c2.metric(
-            "% prélèvement",
+            "% prÃ©lÃ¨vement",
             "-" if np.isnan(kpi["prelev_pct"]) else f"{kpi['prelev_pct']:.1f}",
-            help=f"Prélèvement documenté / Tous les cas filtrés. n={kpi.get('prelev_num', 0)}/{kpi.get('prelev_den', kpi.get('n_cases', 0))}"
+            help=f"PrÃ©lÃ¨vement documentÃ© / Tous les cas filtrÃ©s. n={kpi.get('prelev_num', 0)}/{kpi.get('prelev_den', kpi.get('n_cases', 0))}"
         )
         
         c3.metric(
             "Couverture TDR (%)" if has_tdr_chain else "Couverture test (%)",
             "-" if np.isnan(kpi["tdr_pct"]) else f"{kpi['tdr_pct']:.1f}",
             help=(
-                f"TDR/tests documentés / Tous les cas filtrés. n={kpi.get('tdr_num', 0)}/{kpi.get('tdr_den', kpi.get('n_cases', 0))}"
+                f"TDR/tests documentÃ©s / Tous les cas filtrÃ©s. n={kpi.get('tdr_num', 0)}/{kpi.get('tdr_den', kpi.get('n_cases', 0))}"
                 if has_tdr_chain
-                else f"Tests documentés / Tous les cas filtrés. n={kpi.get('tdr_num', 0)}/{kpi.get('tdr_den', kpi.get('n_cases', 0))}"
+                else f"Tests documentÃ©s / Tous les cas filtrÃ©s. n={kpi.get('tdr_num', 0)}/{kpi.get('tdr_den', kpi.get('n_cases', 0))}"
             )
         )
         
-        # ✅ Positivité
+        # âœ… PositivitÃ©
         pos_label = "-"
         if not np.isnan(kpi["pos_pct"]):
             pos_label = f"{kpi['pos_pct']:.1f}"
         c4.metric(
-            "Positivité TDR" if has_tdr_chain else "Positivité test",
+            "PositivitÃ© TDR" if has_tdr_chain else "PositivitÃ© test",
             pos_label,
             help=(
                 (
-                    "Positifs / (Positifs + Négatifs) parmi les TDR interprétables "
-                    "(TDR_realise=Oui ET résultat valide Pos/Nég). "
+                    "Positifs / (Positifs + NÃ©gatifs) parmi les TDR interprÃ©tables "
+                    "(TDR_realise=Oui ET rÃ©sultat valide Pos/NÃ©g). "
                 )
                 if has_tdr_chain
-                else "Positifs / (Positifs + Négatifs) parmi les résultats labo interprétables. "
+                else "Positifs / (Positifs + NÃ©gatifs) parmi les rÃ©sultats labo interprÃ©tables. "
             ) + f"n={kpi.get('pos_num', 0)}/{kpi.get('pos_den', 0)}"
         )
         
-        # 🆕 Taux hospitalisation
+        # ðŸ†• Taux hospitalisation
         c5.metric(
             "Hospitalisation (%)",
             "-" if np.isnan(kpi["hosp_pct"]) else f"{kpi['hosp_pct']:.1f}",
-            help=f"Hospitalisation documentée / Tous les cas filtrés. n={kpi.get('hosp_num', 0)}/{kpi.get('hosp_den', kpi.get('n_cases', 0))}"
+            help=f"Hospitalisation documentÃ©e / Tous les cas filtrÃ©s. n={kpi.get('hosp_num', 0)}/{kpi.get('hosp_den', kpi.get('n_cases', 0))}"
         )
         
         c6.metric(
             "CFR (%)",
             "-" if np.isnan(kpi["cfr_pct"]) else f"{kpi['cfr_pct']:.2f}",
-            help=f"Décès / Tous les cas filtrés. n={kpi.get('n_deaths', 0)}/{kpi.get('n_cases', 0)}"
+            help=f"DÃ©cÃ¨s / Tous les cas filtrÃ©s. n={kpi.get('n_deaths', 0)}/{kpi.get('n_cases', 0)}"
         )
         
         # % invalides
@@ -1283,26 +1387,26 @@ def render_quality_tab(ctx: dict) -> None:
             inv_label,
             help=(
                 (
-                    "Invalides (ex: INBA/bande absente) / TDR réalisés (TDR_realise=Oui). "
+                    "Invalides (ex: INBA/bande absente) / TDR rÃ©alisÃ©s (TDR_realise=Oui). "
                     if has_tdr_chain
-                    else "Invalides / tests documentés. "
+                    else "Invalides / tests documentÃ©s. "
                 )
                 + f"n={kpi.get('invalid_num', 0)}/{kpi.get('invalid_den', 0)}"
             )
         )
         
-        # Alertes qualité tests (si dispo)
+        # Alertes qualitÃ© tests (si dispo)
         if not np.isnan(kpi_incoh_res_wo_tdr) or not np.isnan(kpi_status_in_result):
-            with st.expander("Signaux de qualité des données de laboratoire", expanded=False):
+            with st.expander("Signaux de qualitÃ© des donnÃ©es de laboratoire", expanded=False):
                 if not np.isnan(kpi_incoh_res_wo_tdr):
-                    st.write(f"- **% Résultat documenté mais TDR_realise ≠ Oui / statut test absent**: **{kpi_incoh_res_wo_tdr:.1f}%**")
+                    st.write(f"- **% RÃ©sultat documentÃ© mais TDR_realise â‰  Oui / statut test absent**: **{kpi_incoh_res_wo_tdr:.1f}%**")
                 if not np.isnan(kpi_status_in_result):
-                    st.write(f"- **% Statut saisi dans la colonne de résultat** (ex: non réalisé/non prélevé): **{kpi_status_in_result:.1f}%**")
+                    st.write(f"- **% Statut saisi dans la colonne de rÃ©sultat** (ex: non rÃ©alisÃ©/non prÃ©levÃ©): **{kpi_status_in_result:.1f}%**")
         
-        with st.expander("Cascade de prélèvement et de confirmation", expanded=False):
+        with st.expander("Cascade de prÃ©lÃ¨vement et de confirmation", expanded=False):
             st.caption(
-                "Cette cascade suit la même logique standard que la chaîne et les relances: un prélèvement ou un test peut être "
-                "reconnu par preuve documentaire (date de prélèvement, réception labo, résultat, numéro labo) si le statut Oui/Non manque."
+                "Cette cascade suit la mÃªme logique standard que la chaÃ®ne et les relances: un prÃ©lÃ¨vement ou un test peut Ãªtre "
+                "reconnu par preuve documentaire (date de prÃ©lÃ¨vement, rÃ©ception labo, rÃ©sultat, numÃ©ro labo) si le statut Oui/Non manque."
             )
             st_dataframe_safe(casc_global)
 
@@ -1314,17 +1418,17 @@ def render_quality_tab(ctx: dict) -> None:
             if c in df_f.columns and df_f[c].notna().any()
         ]
         if risk_group_options:
-            with st.expander("Priorisation opérationnelle des zones et provinces", expanded=True):
+            with st.expander("Priorisation opÃ©rationnelle des zones et provinces", expanded=True):
                 r1, r2, r3 = st.columns([1.15, 0.95, 0.95])
                 with r1:
                     risk_group_col = st.selectbox(
-                        "Niveau géographique",
+                        "Niveau gÃ©ographique",
                         options=risk_group_options,
                         key="operational_risk_group_col",
                     )
                 with r2:
                     risk_recent_weeks = st.number_input(
-                        "Semaines récentes",
+                        "Semaines rÃ©centes",
                         min_value=2,
                         max_value=8,
                         value=4,
@@ -1333,7 +1437,7 @@ def render_quality_tab(ctx: dict) -> None:
                     )
                 with r3:
                     risk_topn = st.slider(
-                        "Groupes à afficher",
+                        "Groupes Ã  afficher",
                         min_value=5,
                         max_value=50,
                         value=20,
@@ -1353,8 +1457,8 @@ def render_quality_tab(ctx: dict) -> None:
                 else:
                     risk_view = risk_tbl.head(int(risk_topn)).copy()
                     k_r1, k_r2, k_r3 = st.columns(3)
-                    k_r1.metric("Groupes évalués", f"{len(risk_tbl):,}".replace(",", " "))
-                    k_r2.metric("Priorité très élevée", str(int((risk_tbl["Priorite"] == "Tres elevee").sum())))
+                    k_r1.metric("Groupes Ã©valuÃ©s", f"{len(risk_tbl):,}".replace(",", " "))
+                    k_r2.metric("PrioritÃ© trÃ¨s Ã©levÃ©e", str(int((risk_tbl["Priorite"] == "Tres elevee").sum())))
                     k_r3.metric("Score max", f"{pd.to_numeric(risk_tbl['Score_risque'], errors='coerce').max():.1f}")
 
                     left_risk, right_risk = st.columns([1.15, 1.35])
@@ -1368,7 +1472,7 @@ def render_quality_tab(ctx: dict) -> None:
                             y=risk_group_col,
                             orientation="h",
                             color="Priorite",
-                            title="Score de risque opérationnel",
+                            title="Score de risque opÃ©rationnel",
                         )
                         fig_risk.update_layout(xaxis_title="Score 0-100", yaxis_title=risk_group_col)
                         fig_risk = apply_plotly_value_annotations(fig_risk, annot_vals)
@@ -1376,7 +1480,7 @@ def render_quality_tab(ctx: dict) -> None:
 
                     csv_risk = risk_tbl.to_csv(index=False).encode("utf-8")
                     st.download_button(
-                        "Télécharger le score de risque (CSV)",
+                        "TÃ©lÃ©charger le score de risque (CSV)",
                         data=csv_risk,
                         file_name="score_risque_operationnel.csv",
                         mime="text/csv",
@@ -1384,25 +1488,25 @@ def render_quality_tab(ctx: dict) -> None:
                     )
 
         # ==========================================================
-        # 1) QC Flags (incohérences)
+        # 1) QC Flags (incohÃ©rences)
         # ==========================================================
-        with st.expander("Contrôle de cohérence des enregistrements", expanded=False):
+        with st.expander("ContrÃ´le de cohÃ©rence des enregistrements", expanded=False):
         
         
             flags = qc_flags(df_f)
             if flags.empty:
-                st.success("Aucune incohérence n’a été détectée selon les règles de contrôle actuellement appliquées.")
+                st.success("Aucune incohÃ©rence nâ€™a Ã©tÃ© dÃ©tectÃ©e selon les rÃ¨gles de contrÃ´le actuellement appliquÃ©es.")
             else:
-                # Résumé
+                # RÃ©sumÃ©
                 resume = flags["flag"].value_counts().reset_index()
                 resume.columns = ["Flag", "Occurrences"]
                 st_dataframe_safe(resume)
         
                 # Filtre par flag
                 flag_list = sorted(flags["flag"].dropna().unique().tolist())
-                flag_sel = st.selectbox("Type d’incohérence à afficher", ["Tous"] + flag_list, index=0)
+                flag_sel = st.selectbox("Type dâ€™incohÃ©rence Ã  afficher", ["Tous"] + flag_list, index=0)
         
-                # Détail (merge + colonnes utiles)
+                # DÃ©tail (merge + colonnes utiles)
                 cols_show = [c for c in [
                     "Nom_complet", COL_PROV, COL_ZS, COL_AS, COL_SEX, COL_AGE, COL_UNIT,
                     "YW", COL_WNUM, DATE_ONSET, DATE_ADM, DATE_PREL,
@@ -1417,14 +1521,14 @@ def render_quality_tab(ctx: dict) -> None:
                 if flag_sel != "Tous":
                     detail = detail[detail["flag"] == flag_sel]
         
-                st.caption("Détail des enregistrements concernés, limité à 500 lignes.")
+                st.caption("DÃ©tail des enregistrements concernÃ©s, limitÃ© Ã  500 lignes.")
                 st.dataframe(detail[["flag"] + cols_show].head(500), width="stretch", height=420)
 
                 coherence_group_choices = [c for c in [COL_PROV, COL_ZS, COL_AS, "YW", COL_WNUM] if c in df_f.columns]
                 if coherence_group_choices:
-                    st.markdown("**Synthèse territoriale des incohérences**")
+                    st.markdown("**SynthÃ¨se territoriale des incohÃ©rences**")
                     coherence_group_col = st.selectbox(
-                        "Niveau de synthèse",
+                        "Niveau de synthÃ¨se",
                         coherence_group_choices,
                         index=0,
                         key="quality_coherence_group_col",
@@ -1433,7 +1537,7 @@ def render_quality_tab(ctx: dict) -> None:
                     if not coherence_tbl.empty:
                         st_dataframe_safe(coherence_tbl, height=360)
                         st.download_button(
-                            "Télécharger la synthèse de cohérence (CSV)",
+                            "TÃ©lÃ©charger la synthÃ¨se de cohÃ©rence (CSV)",
                             data=coherence_tbl.to_csv(index=False).encode("utf-8"),
                             file_name="quality_coherence_summary.csv",
                             mime="text/csv",
@@ -1441,56 +1545,65 @@ def render_quality_tab(ctx: dict) -> None:
                         )
 
                         topn_coh = st.slider(
-                            "Nombre de groupes prioritaires à afficher",
+                            "Nombre de groupes prioritaires Ã  afficher",
                             min_value=5,
                             max_value=min(50, max(5, len(coherence_tbl))),
                             value=min(20, len(coherence_tbl)),
                             step=5,
                             key="quality_coherence_topn",
                         )
-                        coherence_plot = coherence_tbl.head(topn_coh).sort_values("% lignes touchées", ascending=True)
+                        coherence_plot = coherence_tbl.head(topn_coh).sort_values("% lignes touchÃ©es", ascending=True)
                         fig_coh = px.bar(
                             coherence_plot,
-                            x="% lignes touchées",
+                            x="% lignes touchÃ©es",
                             y=coherence_group_col,
                             orientation="h",
-                            color="Total incohérences",
-                            title="Groupes prioritaires selon le taux d’incohérences"
+                            color="Total incohÃ©rences",
+                            title="Groupes prioritaires selon le taux dâ€™incohÃ©rences"
                         )
-                        fig_coh.update_layout(xaxis_title="% lignes touchées", yaxis_title=coherence_group_col)
+                        fig_coh.update_layout(xaxis_title="% lignes touchÃ©es", yaxis_title=coherence_group_col)
                         fig_coh = apply_plotly_value_annotations(fig_coh, annot_vals)
                         st.plotly_chart(fig_coh, width="stretch")
 
         # ==========================================================
-        # 1b) Cas à relancer dans la chaîne standard
+        # 1b) Cas Ã  relancer dans la chaÃ®ne standard
         # ==========================================================
-        with st.expander("Cas à relancer dans la chaîne standard", expanded=False):
+        with st.expander("Cas Ã  relancer dans la chaÃ®ne standard", expanded=False):
             st.caption(
-                "Ce tableau standard multi-maladies met en évidence les dossiers qui bloquent la chaîne alerte -> investigation -> "
-                "prélèvement -> laboratoire -> issue. Il aide à prioriser les relances terrain et labo."
+                "Ce tableau standard multi-maladies met en Ã©vidence les dossiers qui bloquent la chaÃ®ne alerte -> investigation -> "
+                "prÃ©lÃ¨vement -> laboratoire -> issue. Il aide Ã  prioriser les relances terrain et labo."
             )
             st.caption(
-                "Les règles tiennent compte des preuves documentaires disponibles pour éviter de relancer à tort un dossier déjà prélevé "
-                "ou déjà documenté côté laboratoire."
+                "Les rÃ¨gles tiennent compte des preuves documentaires disponibles pour Ã©viter de relancer Ã  tort un dossier dÃ©jÃ  prÃ©levÃ© "
+                "ou dÃ©jÃ  documentÃ© cÃ´tÃ© laboratoire."
             )
             followup_summary, followup_detail = build_standard_followup_tables(df_f)
             if followup_summary.empty:
                 render_absence_narrative("quality")
             else:
+                followup_count_col = next(
+                    (col for col in followup_summary.columns if "relancer" in str(col).casefold()),
+                    followup_summary.columns[2],
+                )
+                followup_rule_col = next(
+                    (col for col in followup_summary.columns if "gle" in str(col).casefold()),
+                    followup_summary.columns[0],
+                )
+                followup_count_series = pd.to_numeric(followup_summary[followup_count_col], errors="coerce").fillna(0)
                 k_fu1, k_fu2, k_fu3 = st.columns(3)
-                k_fu1.metric("Règles suivies", str(len(followup_summary)))
+                k_fu1.metric("RÃ¨gles suivies", str(len(followup_summary)))
                 k_fu2.metric(
-                    "Règles avec cas à relancer",
-                    str(int((pd.to_numeric(followup_summary["Cas à relancer"], errors="coerce").fillna(0) > 0).sum())),
+                    "RÃ¨gles avec cas Ã  relancer",
+                    str(int((followup_count_series > 0).sum())),
                 )
                 k_fu3.metric(
-                    "Cas à relancer cumulés",
-                    format_metric_value(pd.to_numeric(followup_summary["Cas à relancer"], errors="coerce").fillna(0).sum()),
+                    "Cas Ã  relancer cumulÃ©s",
+                    format_metric_value(followup_count_series.sum()),
                 )
 
                 st_dataframe_safe(followup_summary, height=320)
                 st.download_button(
-                    "Télécharger le résumé des relances (CSV)",
+                    "TÃ©lÃ©charger le rÃ©sumÃ© des relances (CSV)",
                     data=followup_summary.to_csv(index=False).encode("utf-8"),
                     file_name="quality_cas_a_relancer_resume.csv",
                     mime="text/csv",
@@ -1499,19 +1612,23 @@ def render_quality_tab(ctx: dict) -> None:
 
                 if not followup_detail.empty:
                     followup_rules = followup_summary.loc[
-                        pd.to_numeric(followup_summary["Cas à relancer"], errors="coerce").fillna(0) > 0,
-                        "Règle",
+                        followup_count_series > 0,
+                        followup_rule_col,
                     ].astype(str).tolist()
+                    detail_rule_col = next(
+                        (col for col in followup_detail.columns if "gle" in str(col).casefold()),
+                        followup_detail.columns[0],
+                    )
                     selected_rule = st.selectbox(
-                        "Règle à détailler",
+                        "RÃ¨gle Ã  dÃ©tailler",
                         options=followup_rules,
                         key="quality_followup_rule_select",
                     )
-                    detail_view = followup_detail[followup_detail["Règle"].astype(str) == str(selected_rule)].copy()
-                    st.caption("Détail des dossiers à relancer pour la règle sélectionnée.")
+                    detail_view = followup_detail[followup_detail[detail_rule_col].astype(str) == str(selected_rule)].copy()
+                    st.caption("DÃ©tail des dossiers Ã  relancer pour la rÃ¨gle sÃ©lectionnÃ©e.")
                     st.dataframe(detail_view.head(500), width="stretch", height=420, hide_index=True)
                     st.download_button(
-                        "Télécharger le détail des relances (CSV)",
+                        "TÃ©lÃ©charger le dÃ©tail des relances (CSV)",
                         data=detail_view.to_csv(index=False).encode("utf-8"),
                         file_name="quality_cas_a_relancer_detail.csv",
                         mime="text/csv",
@@ -1519,21 +1636,21 @@ def render_quality_tab(ctx: dict) -> None:
                     )
 
         # ==========================================================
-        # 2) Complétude de l'ensemble des colonnes
+        # 2) ComplÃ©tude de l'ensemble des colonnes
         # ==========================================================
-        with st.expander("Complétude de l'ensemble des variables", expanded=False):
+        with st.expander("ComplÃ©tude de l'ensemble des variables", expanded=False):
             df_missing_scope = (
                 df_f_source
                 if "df_f_source" in globals() and isinstance(df_f_source, pd.DataFrame) and not df_f_source.empty
                 else df_f
             )
             st.caption(
-                "Le tableau ci-dessous présente, pour les colonnes du fichier chargé dans le périmètre filtré, "
-                "la présence de la colonne, le volume renseigné, le volume manquant et le niveau de priorité du missing."
+                "Le tableau ci-dessous prÃ©sente, pour les colonnes du fichier chargÃ© dans le pÃ©rimÃ¨tre filtrÃ©, "
+                "la prÃ©sence de la colonne, le volume renseignÃ©, le volume manquant et le niveau de prioritÃ© du missing."
             )
 
-            st.markdown("**Paramètres de classification du missing**")
-            st.caption("Modifiez ici les seuils utilisés pour classer le niveau de complétude des colonnes.")
+            st.markdown("**ParamÃ¨tres de classification du missing**")
+            st.caption("Modifiez ici les seuils utilisÃ©s pour classer le niveau de complÃ©tude des colonnes.")
             seuil_col1, seuil_col2 = st.columns(2)
             with seuil_col1:
                 seuil_missing_acceptable = st.number_input(
@@ -1556,8 +1673,8 @@ def render_quality_tab(ctx: dict) -> None:
 
             if seuil_missing_acceptable > seuil_missing_surveillance:
                 st.warning(
-                    "Le seuil acceptable ne peut pas dépasser le seuil de surveillance. "
-                    "Les valeurs ont été réalignées automatiquement."
+                    "Le seuil acceptable ne peut pas dÃ©passer le seuil de surveillance. "
+                    "Les valeurs ont Ã©tÃ© rÃ©alignÃ©es automatiquement."
                 )
                 seuil_missing_surveillance = seuil_missing_acceptable
 
@@ -1574,32 +1691,32 @@ def render_quality_tab(ctx: dict) -> None:
                 k_m1.metric("Variables suivies", str(len(missing_tbl)))
                 k_m2.metric(
                     "Variables prioritaires",
-                    str(int((missing_tbl["Décision / observation"] == "Prioritaire").sum()))
+                    str(int((missing_tbl["DÃ©cision / observation"] == "Prioritaire").sum()))
                 )
                 k_m3.metric(
                     "Variables sans missing",
-                    str(int((missing_tbl["Décision / observation"] == "OK").sum()))
+                    str(int((missing_tbl["DÃ©cision / observation"] == "OK").sum()))
                 )
                 k_m4.metric(
                     "Missing moyen (%)",
                     f"{pd.to_numeric(missing_tbl['% missing'], errors='coerce').mean():.1f}"
                 )
 
-                decision_options = sorted(missing_tbl["Décision / observation"].dropna().unique().tolist())
+                decision_options = sorted(missing_tbl["DÃ©cision / observation"].dropna().unique().tolist())
                 decision_sel = st.multiselect(
-                    "Niveau de priorité à afficher",
+                    "Niveau de prioritÃ© Ã  afficher",
                     options=decision_options,
                     default=decision_options,
                     key="quality_missing_decision_filter",
                 )
                 if decision_sel:
-                    missing_view = missing_tbl[missing_tbl["Décision / observation"].isin(decision_sel)].copy()
+                    missing_view = missing_tbl[missing_tbl["DÃ©cision / observation"].isin(decision_sel)].copy()
                 else:
                     missing_view = missing_tbl.copy()
 
                 st_dataframe_safe(missing_view, height=520)
                 st.download_button(
-                    "Télécharger le tableau de complétude (CSV)",
+                    "TÃ©lÃ©charger le tableau de complÃ©tude (CSV)",
                     data=missing_view.to_csv(index=False).encode("utf-8"),
                     file_name="quality_missing_colonnes.csv",
                     mime="text/csv",
@@ -1607,7 +1724,7 @@ def render_quality_tab(ctx: dict) -> None:
                 )
 
                 topn = st.slider(
-                    "Nombre de colonnes à afficher",
+                    "Nombre de colonnes Ã  afficher",
                     min_value=5,
                     max_value=min(80, max(5, len(missing_view))),
                     value=min(20, len(missing_view)),
@@ -1620,7 +1737,7 @@ def render_quality_tab(ctx: dict) -> None:
                     comp_plot,
                     x="Variable",
                     y="% missing",
-                    color="Décision / observation",
+                    color="DÃ©cision / observation",
                     title=f"Variables prioritaires selon le taux de missing ({topn})"
                 )
                 figc.update_layout(xaxis_tickangle=-45, yaxis=dict(range=[0, 100]))
@@ -1628,24 +1745,24 @@ def render_quality_tab(ctx: dict) -> None:
                 st.plotly_chart(figc, width="stretch")
 
         # ==========================================================
-        # 2b) Promptitude des dates clés
+        # 2b) Promptitude des dates clÃ©s
         # ==========================================================
-        with st.expander("Promptitude des étapes clés", expanded=False):
+        with st.expander("Promptitude des Ã©tapes clÃ©s", expanded=False):
             promptitude_pairs = [
-                ("Début maladie → notification", DATE_ONSET, "Date_notification"),
-                ("Début maladie → investigation", DATE_ONSET, "Date_investigation"),
-                ("Début maladie → admission", "Date_debut_maladie", "Date_admission_au_CT"),
-                ("Début maladie → prélèvement", DATE_ONSET, DATE_PREL),
-                ("Notification → investigation", DATE_NOTIF, DATE_INV),
-                ("Notification → prélèvement", DATE_NOTIF, DATE_PREL),
-                ("Notification → admission", DATE_NOTIF, DATE_ADM),
-                ("Prélèvement → réception labo", DATE_PREL, DATE_RECEP),
-                ("Réception labo → résultat", DATE_RECEP, DATE_RES),
-                ("Admission → issue", DATE_ADM, DATE_ISSUE),
+                ("DÃ©but maladie â†’ notification", DATE_ONSET, "Date_notification"),
+                ("DÃ©but maladie â†’ investigation", DATE_ONSET, "Date_investigation"),
+                ("DÃ©but maladie â†’ admission", "Date_debut_maladie", "Date_admission_au_CT"),
+                ("DÃ©but maladie â†’ prÃ©lÃ¨vement", DATE_ONSET, DATE_PREL),
+                ("Notification â†’ investigation", DATE_NOTIF, DATE_INV),
+                ("Notification â†’ prÃ©lÃ¨vement", DATE_NOTIF, DATE_PREL),
+                ("Notification â†’ admission", DATE_NOTIF, DATE_ADM),
+                ("PrÃ©lÃ¨vement â†’ rÃ©ception labo", DATE_PREL, DATE_RECEP),
+                ("RÃ©ception labo â†’ rÃ©sultat", DATE_RECEP, DATE_RES),
+                ("Admission â†’ issue", DATE_ADM, DATE_ISSUE),
             ]
 
             seuil_prompt = st.number_input(
-                "Seuil opérationnel (jours)",
+                "Seuil opÃ©rationnel (jours)",
                 min_value=1.0,
                 max_value=30.0,
                 value=float(seuil_jours),
@@ -1664,14 +1781,14 @@ def render_quality_tab(ctx: dict) -> None:
             else:
                 st_dataframe_safe(prompt_tbl, height=360)
 
-                valid_prompt = prompt_tbl.dropna(subset=["Médiane délai (jours)"]).copy()
+                valid_prompt = prompt_tbl.dropna(subset=["MÃ©diane dÃ©lai (jours)"]).copy()
                 if not valid_prompt.empty:
                     figp_delay = px.bar(
                         valid_prompt,
-                        x="Étape",
-                        y="Médiane délai (jours)",
+                        x="Ã‰tape",
+                        y="MÃ©diane dÃ©lai (jours)",
                         color=f"% <= {int(seuil_prompt)} jours",
-                        title="Délais médians par étape"
+                        title="DÃ©lais mÃ©dians par Ã©tape"
                     )
                     figp_delay.update_layout(xaxis_tickangle=-35)
                     figp_delay = apply_plotly_value_annotations(figp_delay, annot_vals)
@@ -1679,9 +1796,9 @@ def render_quality_tab(ctx: dict) -> None:
         
         
         # ==========================================================
-        # 3) Cascade prélèvement → TDR → résultat → positif
+        # 3) Cascade prÃ©lÃ¨vement â†’ TDR â†’ rÃ©sultat â†’ positif
         # ==========================================================
-        with st.expander("Performance de la chaîne laboratoire", expanded=False):
+        with st.expander("Performance de la chaÃ®ne laboratoire", expanded=False):
         
             cascad = cascade_metrics(df_f) if n_total else pd.DataFrame()
             if cascad.empty:
@@ -1689,31 +1806,17 @@ def render_quality_tab(ctx: dict) -> None:
             else:
                 st_dataframe_safe(cascad)
         
-            # Cascade par province (résumé robuste)
+            # Cascade par province (rÃ©sumÃ© robuste)
             if COL_PROV in df_f.columns and n_total:
-                st.caption("Lecture provinciale synthétique de la chaîne laboratoire")
+                st.caption("Lecture provinciale synthÃ©tique de la chaÃ®ne laboratoire")
         
-                rows = []
-                for prov, sub in df_f.groupby(COL_PROV, dropna=False):
-                    c = cascade_metrics(sub)
-                    rows.append([
-                        prov,
-                        len(sub),
-                        _get_pct_from_cascade(c, "Prélèvement=Oui"),
-                        _get_pct_from_cascade(c, "TDR réalisé=Oui"),
-                        _get_pct_from_cascade(c, "Résultat valide"),
-                        _get_pct_from_cascade(c, "Positifs"),
-                        _get_pct_from_cascade(c, "Résultat renseigné mais TDR_realise != Oui"),
-                    ])
-        
-                df_cas = pd.DataFrame(
-                    rows,
-                    columns=[COL_PROV, "n", "% prélèvement", "% TDR", "% résultat valide", "% positif", "% incoh TDR"]
+                df_cas = _quality_build_cascade_group_summary(df_f, COL_PROV).rename(
+                    columns={"% test documentÃ©": "% TDR"}
                 )
         
                 sort_col = st.selectbox(
                     "Indicateur de tri",
-                    ["n", "% prélèvement", "% TDR", "% résultat valide", "% positif", "% incoh TDR"],
+                    ["n", "% prÃ©lÃ¨vement", "% TDR", "% rÃ©sultat valide", "% positif", "% incoh TDR"],
                     index=0
                 )
                 df_cas_sorted = df_cas.sort_values(sort_col, ascending=False if sort_col == "n" else True)
@@ -1761,16 +1864,16 @@ def render_quality_tab(ctx: dict) -> None:
             if alerts.empty:
                 render_absence_narrative("alerts")
             else:
-                # Dernière semaine observée
+                # DerniÃ¨re semaine observÃ©e
                 last_yw = alerts["YW"].dropna().max()
                 st.caption(
-                    f"Dernière semaine observée : {last_yw}. "
-                    "Les signaux ci-dessous servent à prioriser la vérification, pas à confirmer seuls une épidémie."
+                    f"DerniÃ¨re semaine observÃ©e : {last_yw}. "
+                    "Les signaux ci-dessous servent Ã  prioriser la vÃ©rification, pas Ã  confirmer seuls une Ã©pidÃ©mie."
                 )
         
                 last = alerts[alerts["YW"] == last_yw].copy()
         
-                # sécurité var_% (éviter inf)
+                # sÃ©curitÃ© var_% (Ã©viter inf)
                 if "Cas_prev" in last.columns and "Cas" in last.columns:
                     last["Cas_prev"] = last["Cas_prev"].fillna(0)
                     last["var_%"] = np.where(
@@ -1779,7 +1882,7 @@ def render_quality_tab(ctx: dict) -> None:
                         np.nan
                     )
         
-                # classement: signal d’abord, puis plus gros volumes
+                # classement: signal dâ€™abord, puis plus gros volumes
                 last["signal"] = last["signal"].fillna(False)
                 last = last.sort_values(["signal", "Cas"], ascending=[False, False])
         
@@ -1789,12 +1892,12 @@ def render_quality_tab(ctx: dict) -> None:
                 # Top signaux
                 sig = last[last["signal"] == True].head(30)
                 if len(sig):
-                    figa = px.bar(sig, x=alert_group, y="Cas", title=f"Signaux (semaine {last_yw}) – top 30")
+                    figa = px.bar(sig, x=alert_group, y="Cas", title=f"Signaux (semaine {last_yw}) â€“ top 30")
                     figa.update_layout(xaxis_tickangle=-45)
                     figa = apply_plotly_value_annotations(figa, annot_vals)
                     st.plotly_chart(figa, width="stretch")
                 else:
-                    st.success("Aucun signal n’a été détecté avec les seuils actuellement définis (baseline × 1,5 et cas ≥ 10).")
+                    st.success("Aucun signal nâ€™a Ã©tÃ© dÃ©tectÃ© avec les seuils actuellement dÃ©finis (baseline Ã— 1,5 et cas â‰¥ 10).")
 
                 cluster_quality = build_spatiotemporal_cluster_table(
                     df_f,

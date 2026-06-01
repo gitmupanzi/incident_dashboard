@@ -98,7 +98,7 @@ def render_profile_tab(ctx: dict) -> None:
     # TAB 4B: Analyse descriptive standard
     # =========================
     st.divider()
-    render_section_title(2, "Analyse descriptive selon le modèle Temps-Lieu-Personne")
+    render_section_title(4, "Analyse descriptive selon le modèle Temps-Lieu-Personne")
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")
     else:

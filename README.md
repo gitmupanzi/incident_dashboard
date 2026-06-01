@@ -179,7 +179,7 @@ Un fichier IDSR exploitable doit fournir, selon le format disponible, des inform
 - harmonisation geographique avec referentiels et jointures fuzzy
 - calcul d'indicateurs standards :
   alertes documentees, cas, cas investigues, suspects, probables, confirmes,
-  prelevements, receptions labo, positivite labo, deces, gueris, promptitude, completude
+  prelevements, receptions labo, positivite labo, deces, vivants documentes, promptitude, completude
 - calcul de la chaine standard COUSP avec denominateurs adaptes selon les colonnes disponibles
 - prise en compte standard de l'investigation documentee a partir du statut, de la date ou d'une classification exploitable
 - alertes hebdomadaires et clusters spatio-temporels

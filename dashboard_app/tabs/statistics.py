@@ -487,7 +487,7 @@ def _render_statistics_hero(
         <span class="stats-chip">Exemples dynamiques : {examples_count}</span>
       </div>
       <div class="stats-lead-note">
-        Cet onglet rappelle ce que mesurent les indicateurs, comment ils sont calculés dans votre projet,
+        Cet onglet rappelle ce que mesurent les indicateurs, comment ils sont calculés dans ce projet,
         et pourquoi ils doivent être relus avec le périmètre filtré, la qualité des données et le contexte terrain.
       </div>
     </div>
@@ -664,7 +664,7 @@ def render_statistics_tab(ctx: dict) -> None:
     globals().update(ctx)
 
     _render_statistics_styles()
-    render_section_title(0, "Notions statistiques utilisées dans le projet")
+    render_section_title(1, "Notions statistiques utilisées dans le projet")
     render_reader_narrative(
         "Pourquoi cet onglet existe",
         "Cette page explique les notions statistiques et les indicateurs utilisés dans le dashboard, afin que les résultats "

@@ -433,7 +433,7 @@ def render_surveillance_tab(ctx: dict) -> None:
             expanded=False
         )
 
-        render_section_title(1, "Surveillance épidémiologique")
+        render_section_title(3, "Surveillance épidémiologique")
         render_tab_narrative("surveillance")
         st.caption(
             "Cette organisation aide à lire la situation pas à pas, à partir de la période active choisie dans la barre latérale."

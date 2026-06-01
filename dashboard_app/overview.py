@@ -779,8 +779,8 @@ def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
             "color": "#5d6d86",
         },
         {
-            "label": "Guéris",
-            "value": int(issue_counts.get("Guéri", 0)),
+            "label": "Vivants",
+            "value": int(issue_counts.get("Vivant", 0)),
             "subtitle": "Issue documentée",
             "theme": "green",
             "color": "#1f8d57",
@@ -946,7 +946,7 @@ def render_dashboard_kpis(payload: Dict[str, Any]) -> None:
     cards = [
         ("Total cas", format_metric_value(payload.get("cases", 0)), "Périmètre filtré", "blue compact", 1),
         ("Total décès", format_metric_value(payload.get("deaths", 0)), "Périmètre filtré", "navy compact", 1),
-        ("Guéris", format_metric_value(_estimate_alive_issue_count(payload)), "Vivants documentés", "green compact", 1),
+        ("Vivants", format_metric_value(_estimate_alive_issue_count(payload)), "Vivants documentés", "green compact", 1),
         ("CFR (%)", format_metric_value(payload.get("cfr"), decimals=2), "Létalité observée", "orange compact", 1),
         ("Période", payload.get("week_span", "-"), "Fenêtre analytique", "blue compact", 2),
         (

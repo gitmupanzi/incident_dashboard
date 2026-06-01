@@ -533,6 +533,15 @@ class IndicatorTest(unittest.TestCase):
         self.assertTrue(is_death("mort"))
         self.assertFalse(is_death("gueri"))
 
+    def test_standardize_df_maps_legacy_gueri_issue_to_vivant(self):
+        df = standardize_df(pd.DataFrame({COL_ISSUE: ["gueri", "guéri", "vivant", "deces"]}))
+        values = df["Issue_std"].astype(str).tolist()
+
+        self.assertEqual(values[0], "Vivant")
+        self.assertEqual(values[1], "Vivant")
+        self.assertEqual(values[2], "Vivant")
+        self.assertEqual(values[3], "Décédé")
+
 
 class IrepTest(unittest.TestCase):
     def test_compute_irep_province_returns_current_week_ranked_rows(self):

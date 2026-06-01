@@ -8,7 +8,7 @@ inject_runtime_support(globals())
 def render_methodology_tab(ctx: dict) -> None:
     """Render the methodology and interpretation tab."""
     globals().update(ctx)
-    render_section_title(7, "Méthodologie, définitions et limites d'interprétation")
+    render_section_title(2, "Méthodologie, définitions et limites d'interprétation")
     render_reader_narrative(
         "Pourquoi cet onglet existe",
         "Cette page documente les règles de lecture du tableau de bord. Elle permet de rendre les résultats plus transparents "
@@ -80,7 +80,7 @@ def render_methodology_tab(ctx: dict) -> None:
             ("Résultats labo disponibles (%)", "Résultats documentés / Cas × 100", "Réceptions labo si possible, sinon cas prélevés ou cas filtrés", "Exclut l'absence de résultat et dépend de la chaîne laboratoire."),
             ("Positivité (%)", "Résultats positifs / Résultats valides positifs ou négatifs × 100", "Résultats valides", "Exclut les résultats invalides, en attente ou non interprétables."),
             ("Résultats invalides (%)", "Résultats invalides / Tests ou résultats documentés × 100", "Tests ou résultats documentés", "Sert à repérer des difficultés analytiques ou de saisie."),
-            ("Guéris documentés", "Issues standardisées contenant une guérison documentée", "Tous les cas filtrés", "Dépend de la qualité du champ Issue."),
+            ("Vivants documentés", "Issues standardisées contenant un statut vivant documenté, y compris les sorties avec patient vivant", "Tous les cas filtrés", "Dépend de la qualité du champ Issue."),
             ("Promptitude ≤ seuil", "Cas dont le délai est inférieur ou égal au seuil choisi", "Cas avec dates valides et délai non négatif", "Un délai manquant n'est pas classé comme rapide ou lent."),
             ("Complétude (%)", "Proportion moyenne de champs clés renseignés", "Champs standards disponibles", "Mesure la documentation, pas la qualité clinique intrinsèque."),
             ("Alerte hebdomadaire", "Cas récents comparés à une moyenne historique courte", "Groupe géographique et semaine", "Signal à investiguer, sensible au faible historique."),
@@ -101,7 +101,7 @@ def render_methodology_tab(ctx: dict) -> None:
             ("Réception labo documentée", "Cas prélevés", "Mesure la continuité de la chaîne d'acheminement."),
             ("Résultats labo disponibles", "Réceptions labo si disponibles ; sinon cas prélevés", "Évite de surévaluer la performance labo quand la réception manque."),
             ("Cas positifs / négatifs / invalides", "Résultats documentés ou valides selon l'indicateur", "Sépare la performance analytique de la couverture de prélèvement."),
-            ("Décès, guéris, hospitalisés", "Cas filtrés", "Lecture simple et stable multi-maladies."),
+            ("Décès, vivants, hospitalisés", "Cas filtrés", "Lecture simple et stable multi-maladies."),
             ("Promptitude", "Cas avec dates valides et délai non négatif", "Les cas sans dates comparables sont exclus du calcul."),
         ],
         columns=["Indicateur", "Dénominateur standard", "Pourquoi"],
@@ -196,7 +196,7 @@ IREP = w_tendance × Score_tendance
             ("Âge", "L'âge est converti en années lorsque l'unité est disponible : jours, semaines, mois ou ans."),
             ("Sexe", "Les variantes usuelles sont harmonisées vers Masculin/Feminin lorsque possible."),
             ("Investigation", "Une investigation est considérée comme documentée si l'un des éléments suivants existe : `Investigation=Oui`, `Date_investigation`, ou une classification exploitable. Cette règle matérialise l'hypothèse métier selon laquelle une classification reflète très souvent une investigation déjà réalisée."),
-            ("Issue", "Les libellés compatibles avec décès alimentent l'indicateur `is_death` et les guérisons peuvent être standardisées dans `Issue_std`."),
+            ("Issue", "Les libellés compatibles avec décès alimentent l'indicateur `is_death` et les statuts vivants, y compris les sorties avec patient vivant, sont standardisés dans `Issue_std`."),
             ("Laboratoire", "Les résultats sont classés en positifs, négatifs, invalides ou non interprétables selon les valeurs disponibles ; `Resultat_labo` et `TDR_Resultat` sont rapprochés."),
             ("Promptitude", "Les délais standard sont calculés seulement quand les deux dates sources existent ; les délais négatifs sont conservés pour la qualité mais exclus des lectures opérationnelles."),
         ],

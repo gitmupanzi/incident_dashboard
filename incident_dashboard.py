@@ -1772,25 +1772,25 @@ st.caption("Sélectionnez un onglet détaillé ci-dessous. Le contenu s'affiche 
 (
     tab_overview_detail,
     tab_statistics,
+    tab_methodology,
     tab_surveillance,
     tab_profil,
     tab_qualite,
-    tab_cousp,
     tab_irep,
+    tab_cousp,
     tab_maps,
-    tab_methodology,
     tab_idsr,
 ) = st.tabs(
     [
         "Vue d’ensemble",
         "Notions statistiques",
+        "Méthodologie",
         "Surveillance",
         "Profil",
         "Qualité et export",
-        "COUSP",
         "IREP",
+        "COUSP",
         "Cartographie",
-        "Méthodologie",
         "IDSR",
     ]
 )
@@ -1802,8 +1802,11 @@ with tab_statistics:
     render_statistics_tab(build_runtime_context(**globals()))
 
 # =========================
-# TAB 1: DYNAMIQUE ÉPIDÉMIOLOGIQUE ET PROMPTITUDE
+# ONGLET DÉTAILLÉ : MÉTHODOLOGIE
 # =========================
+with tab_methodology:
+    render_methodology_tab(build_runtime_context(**globals()))
+
 with tab_surveillance:
     render_surveillance_tab(build_runtime_context(**globals()))
 
@@ -1812,18 +1815,15 @@ with tab_profil:
 
 with tab_qualite:
     render_quality_tab(build_runtime_context(**globals()))
+    
+with tab_irep:
+    render_irep_tab(build_runtime_context(**globals()))
 
 with tab_cousp:
     render_cousp_tab(build_runtime_context(**globals()))
 
-with tab_irep:
-    render_irep_tab(build_runtime_context(**globals()))
-
 with tab_maps:
     render_maps_tab(build_runtime_context(**globals()))
-
-with tab_methodology:
-    render_methodology_tab(build_runtime_context(**globals()))
 
 with tab_idsr:
     render_idsr_tab(build_runtime_context(**globals()))

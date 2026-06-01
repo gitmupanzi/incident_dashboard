@@ -30,6 +30,7 @@ except Exception:
 inject_runtime_support(globals())
 
 
+@st.cache_data(show_spinner=False)
 def _fallback_build_cousp_standard_export_package(
     df: pd.DataFrame,
     *,
@@ -63,6 +64,7 @@ def _fallback_build_cousp_standard_export_package(
     return sheets, None
 
 
+@st.cache_data(show_spinner=False)
 def _fallback_workbook_bytes_from_sheet_dict(sheets: dict[str, pd.DataFrame]) -> bytes:
     """Fallback local pour sérialiser un dictionnaire de DataFrame en Excel."""
     if not isinstance(sheets, dict) or not sheets:
@@ -102,6 +104,7 @@ def _resolve_cousp_helpers():
     return build_package, workbook_builder
 
 
+@st.cache_data(show_spinner=False)
 def _cousp_sheet_overview_table(sheets: dict[str, pd.DataFrame]) -> pd.DataFrame:
     rows = []
     for sheet_name, sheet_df in sheets.items():
@@ -340,6 +343,7 @@ def _cousp_added_variables_dictionary() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@st.cache_data(show_spinner=False)
 def _cousp_candidate_filter_columns(df: pd.DataFrame) -> list[str]:
     """Retourne les colonnes clés/catégorielles les plus utiles au filtrage COUSP."""
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
@@ -497,6 +501,7 @@ def _cousp_pick_reference_join_key(
     return best_key
 
 
+@st.cache_data(show_spinner=False)
 def _cousp_enrich_anomalies_with_reference_data(
     anomalies_df: pd.DataFrame,
     reference_df: pd.DataFrame,
@@ -570,6 +575,7 @@ def _cousp_parse_epi_week_label(value) -> tuple[int, int] | None:
     return None
 
 
+@st.cache_data(show_spinner=False)
 def _cousp_build_temporal_series(
     df: pd.DataFrame,
     *,
@@ -639,6 +645,7 @@ def _cousp_build_temporal_series(
     return pd.DataFrame(columns=["Periode", "Cas", "Libelle"])
 
 
+@st.cache_data(show_spinner=False)
 def _cousp_build_category_counts(
     df: pd.DataFrame,
     category_col: str,
@@ -738,7 +745,7 @@ def render_cousp_tab(ctx: dict) -> None:
 
     build_package, workbook_builder = _resolve_cousp_helpers()
 
-    render_section_title(4, "Pack d'analyse COUSP standard")
+    render_section_title(7, "Pack d'analyse COUSP standard")
     if bool(globals().get("IDSR_MODE", False)):
         render_absence_narrative("idsr_line_list")
         return
@@ -881,20 +888,30 @@ def render_cousp_tab(ctx: dict) -> None:
     st.markdown("**Resume du pack genere**")
     st_dataframe_safe(summary_df, height=220)
 
-    try:
-        cousp_excel_bytes = workbook_builder(sheets)
-    except Exception as exc:
-        st.warning(f"Le telechargement du pack COUSP est indisponible : {exc}")
-    else:
-        export_base_name = f"{str(globals().get('disease_key', 'maladie')).strip().lower()}_filtre"
-        st.download_button(
-            "Telecharger le pack COUSP standard (Excel)",
-            data=cousp_excel_bytes,
-            file_name=f"{export_base_name}_pack_cousp_standard.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="dl_cousp_tab_pack_xlsx",
-            use_container_width=True,
-        )
+    st.caption(
+        "Le pack Excel complet peut etre lourd a serialiser. Il n'est prepare que si vous activez l'export ci-dessous."
+    )
+    prepare_cousp_excel = st.checkbox(
+        "Preparer le pack COUSP standard (Excel)",
+        value=False,
+        key="cousp_prepare_excel_export",
+        help="Activez cette option uniquement si vous avez besoin du fichier Excel complet.",
+    )
+    if prepare_cousp_excel:
+        try:
+            cousp_excel_bytes = workbook_builder(sheets)
+        except Exception as exc:
+            st.warning(f"Le telechargement du pack COUSP est indisponible : {exc}")
+        else:
+            export_base_name = f"{str(globals().get('disease_key', 'maladie')).strip().lower()}_filtre"
+            st.download_button(
+                "Telecharger le pack COUSP standard (Excel)",
+                data=cousp_excel_bytes,
+                file_name=f"{export_base_name}_pack_cousp_standard.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_cousp_tab_pack_xlsx",
+                use_container_width=True,
+            )
 
     (
         tab_synthese,
