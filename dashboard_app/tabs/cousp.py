@@ -501,6 +501,90 @@ def _cousp_pick_reference_join_key(
     return best_key
 
 
+_COUSP_ANOMALY_DATE_COLUMNS = [
+    "Date_debut_maladie",
+    "Date_notification",
+    "Date_investigation",
+    "Date_prelevement",
+    "Date_reception_labo",
+    "Date_resultat",
+    "Date_confirmation",
+    "Date_admission_au_CT",
+    "Date_issue",
+]
+
+_COUSP_ANOMALY_DATE_ALIAS_MAP = {
+    "Date_debut_maladie": "Date_debut_symptomes",
+    "Date_reception_labo": "Date_reception_echantillon_labo",
+    "Date_resultat": "Date_analyse",
+}
+
+_COUSP_ANOMALY_EXPORT_ORDER = [
+    "N_alerte",
+    "N_epid",
+    "N_labo",
+    "Province_notification",
+    "Zone_de_sante_notification",
+    "Aire_de_sante_notification",
+    "Nom_complet",
+    "Date_notification",
+    "Date_debut_symptomes",
+    "Date_investigation",
+    "Date_prelevement",
+    "Date_reception_echantillon_labo",
+    "Date_analyse",
+    "Date_confirmation",
+    "Date_admission_au_CT",
+    "Date_issue",
+    "Semaine_epid",
+    "Variable_anomalie",
+    "Valeur",
+    "Type_anomalie",
+    "Classification_investigation",
+    "Resultat_final_labo",
+    "Issue",
+]
+
+
+def _cousp_prepare_anomaly_export_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Ajoute/reordonne les colonnes dates utiles au tableau et au CSV des anomalies."""
+    if df is None or not isinstance(df, pd.DataFrame):
+        return pd.DataFrame()
+
+    out = df.copy()
+    for col in list(out.columns):
+        if col.endswith("_x") or col.endswith("_y"):
+            base_col = col[:-2]
+            if base_col in _COUSP_ANOMALY_EXPORT_ORDER or base_col in _COUSP_ANOMALY_DATE_ALIAS_MAP or base_col in _COUSP_ANOMALY_DATE_COLUMNS:
+                sibling_candidates = [name for name in [base_col, f"{base_col}_x", f"{base_col}_y"] if name in out.columns]
+                if sibling_candidates:
+                    sibling_frame = out[sibling_candidates].copy()
+                    out[base_col] = sibling_frame.bfill(axis=1).iloc[:, 0]
+
+    for source_col, alias_col in _COUSP_ANOMALY_DATE_ALIAS_MAP.items():
+        if alias_col not in out.columns or out[alias_col].isna().all():
+            out[alias_col] = out[source_col] if source_col in out.columns else pd.NA
+
+    for col in _COUSP_ANOMALY_EXPORT_ORDER:
+        if col not in out.columns:
+            out[col] = pd.NA
+
+    redundant_source_cols = [
+        source_col
+        for source_col, alias_col in _COUSP_ANOMALY_DATE_ALIAS_MAP.items()
+        if source_col in out.columns and alias_col in _COUSP_ANOMALY_EXPORT_ORDER
+    ]
+    drop_cols = [
+        col
+        for col in out.columns
+        if col.endswith("_x")
+        or col.endswith("_y")
+        or col in redundant_source_cols
+    ]
+    out = out.drop(columns=drop_cols, errors="ignore")
+    return out[_COUSP_ANOMALY_EXPORT_ORDER]
+
+
 @st.cache_data(show_spinner=False)
 def _cousp_enrich_anomalies_with_reference_data(
     anomalies_df: pd.DataFrame,
@@ -515,17 +599,25 @@ def _cousp_enrich_anomalies_with_reference_data(
         or not isinstance(reference_df, pd.DataFrame)
         or reference_df.empty
     ):
-        return anomalies_df.copy() if isinstance(anomalies_df, pd.DataFrame) else pd.DataFrame()
+        base = anomalies_df.copy() if isinstance(anomalies_df, pd.DataFrame) else pd.DataFrame()
+        return _cousp_prepare_anomaly_export_columns(base)
 
     join_key = _cousp_pick_reference_join_key(anomalies_df, reference_df)
     if not join_key:
-        return anomalies_df.copy()
+        return _cousp_prepare_anomaly_export_columns(anomalies_df.copy())
 
     extra_cols = [
         col
         for col in [
             join_key,
-            "Date_notification",
+            "N_alerte",
+            "N_epid",
+            "N_labo",
+            "Province_notification",
+            "Zone_de_sante_notification",
+            "Aire_de_sante_notification",
+            "Nom_complet",
+            *_COUSP_ANOMALY_DATE_COLUMNS,
             "Semaine_epid",
             "Classification_investigation",
             "Resultat_final_labo",
@@ -533,8 +625,9 @@ def _cousp_enrich_anomalies_with_reference_data(
         ]
         if col in reference_df.columns
     ]
+    extra_cols = list(dict.fromkeys(extra_cols))
     if join_key not in extra_cols:
-        return anomalies_df.copy()
+        return _cousp_prepare_anomaly_export_columns(anomalies_df.copy())
 
     out = anomalies_df.copy()
     out["__join_key_cousp"] = out[join_key].astype("string").str.strip().replace("", pd.NA)
@@ -548,7 +641,8 @@ def _cousp_enrich_anomalies_with_reference_data(
         on="__join_key_cousp",
         how="left",
     )
-    return merged.drop(columns=["__join_key_cousp"], errors="ignore")
+    merged = merged.drop(columns=["__join_key_cousp"], errors="ignore")
+    return _cousp_prepare_anomaly_export_columns(merged)
 
 
 def _cousp_parse_epi_week_label(value) -> tuple[int, int] | None:
