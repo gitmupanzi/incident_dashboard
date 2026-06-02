@@ -290,8 +290,9 @@ def calculer_delais_standard_cousp(df: pd.DataFrame) -> pd.DataFrame:
     for nom_delai, col_fin, col_debut in DELAIS_STANDARD_COUSP:
         fin = pd.to_datetime(data[col_fin], errors="coerce")
         debut = pd.to_datetime(data[col_debut], errors="coerce")
-        delai = (fin - debut).dt.total_seconds() / 86400
-        data[nom_delai] = delai.round(2).astype("Float64")
+        # Les anomalies COUSP sont suivies au niveau date, sans tenir compte des heures.
+        delai = (fin.dt.normalize() - debut.dt.normalize()).dt.days
+        data[nom_delai] = delai.astype("Float64")
     return data
 
 

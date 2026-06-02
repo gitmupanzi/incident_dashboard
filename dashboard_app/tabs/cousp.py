@@ -1220,6 +1220,11 @@ def render_cousp_tab(ctx: dict) -> None:
                     key_prefix="cousp_anomalies_filter",
                 )
                 anomalies_view_enriched = anomalies_view.copy()
+                if "Valeur" in anomalies_view_enriched.columns:
+                    anomalies_view_enriched["Valeur"] = pd.to_numeric(
+                        anomalies_view_enriched["Valeur"],
+                        errors="coerce",
+                    ).round().astype("Int64")
                 st.caption(f"{len(anomalies_view_enriched)} ligne(s) d'anomalies affichee(s).")
                 st_dataframe_safe(anomalies_view_enriched, height=540)
                 st.download_button(
