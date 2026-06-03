@@ -411,6 +411,162 @@ def _render_surveillance_completeness_section(
             st.dataframe(count_view, width="stretch", height=360, hide_index=True)
 
 
+def _render_compact_surveillance_window(
+    title: str,
+    df_scope: pd.DataFrame,
+    description: str,
+    empty_message: str,
+    narrative_context: dict[str, Any] | None = None,
+    top_province_n: int = 5,
+    top_zs_n: int = 5,
+    extra_renderer=None,
+) -> None:
+    """Compact surveillance window focused on time-based follow-up."""
+    st.markdown(f"### {title}")
+    st.caption(description)
+
+    if df_scope.empty:
+        st.info(empty_message)
+        render_reader_narrative(
+            "Comment lire cette absence",
+            "Aucune ligne ne repond aux criteres actuels. Cela peut venir d'une absence reelle de notification, "
+            "d'un filtre trop restrictif ou d'un retard de saisie. La conclusion doit rester prudente tant que la completude n'est pas verifiee.",
+            tone="missing",
+        )
+        return
+
+    total_cases = int(len(df_scope))
+    total_deaths = int(
+        pd.to_numeric(df_scope["is_death"], errors="coerce").fillna(0).sum()
+    ) if "is_death" in df_scope.columns else 0
+    cfr = (total_deaths / total_cases * 100.0) if total_cases > 0 else np.nan
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Cas", format_metric_value(total_cases))
+    k2.metric("Deces", format_metric_value(total_deaths))
+    k3.metric("Letalite (%)", format_metric_value(cfr, decimals=2))
+
+    narrative_context = narrative_context or {}
+    summary_lines = _build_surveillance_summary_lines(
+        df_scope=df_scope,
+        scope_kind=narrative_context.get("scope_kind", "cumulative"),
+        current_label=narrative_context.get("current_label"),
+        comparison_df=narrative_context.get("comparison_df"),
+        comparison_label=narrative_context.get("comparison_label"),
+        latest_week_df=narrative_context.get("latest_week_df"),
+        latest_label=narrative_context.get("latest_label"),
+        recent_window_weeks=narrative_context.get("recent_window_weeks"),
+    )
+
+    if summary_lines:
+        st.markdown("**Resume automatique**")
+        st.markdown("\n".join([f"- {line}" for line in summary_lines]))
+
+    action_lines = _build_surveillance_action_lines(
+        df_scope,
+        current_label=narrative_context.get("current_label"),
+    )
+    if action_lines:
+        st.markdown("**Points d'action prioritaires**")
+        st.markdown("\n".join([f"- {line}" for line in action_lines]))
+
+    if callable(extra_renderer):
+        extra_renderer()
+
+    with st.expander("Detail territorial", expanded=False):
+        st.caption(
+            "Les cartes, profils et indicateurs globaux restent portes par la vue d'ensemble. "
+            "Ce bloc garde seulement le detail territorial utile pour cette fenetre temporelle."
+        )
+
+        g1, g2 = st.columns(2)
+        with g1:
+            st.markdown(f"**Analyse des {int(top_province_n)} provinces les plus touchees**")
+            top_prov = _build_surveillance_top_table(df_scope, [COL_PROV], top_n=int(top_province_n))
+            if top_prov.empty:
+                st.info("L'analyse provinciale est indisponible : variable Province absente ou non renseignee.")
+            else:
+                st.caption(
+                    _describe_surveillance_top_table(
+                        top_prov,
+                        [COL_PROV],
+                        total_cases,
+                        "Aucune province exploitable dans cette fenetre.",
+                    )
+                )
+                st.dataframe(top_prov, width="stretch", hide_index=True)
+
+        with g2:
+            st.markdown(f"**Analyse des {int(top_zs_n)} zones de sante les plus touchees**")
+            zs_group_cols = [c for c in [COL_PROV, COL_ZS] if c in df_scope.columns]
+            top_zs = _build_surveillance_top_table(df_scope, zs_group_cols, top_n=int(top_zs_n))
+            if top_zs.empty:
+                st.info("L'analyse des zones de sante est indisponible : variable ZS absente ou non renseignee.")
+            else:
+                st.caption(
+                    _describe_surveillance_top_table(
+                        top_zs,
+                        zs_group_cols,
+                        total_cases,
+                        "Aucune zone de sante exploitable dans cette fenetre.",
+                    )
+                )
+                st.dataframe(top_zs, width="stretch", hide_index=True)
+
+        province_interpretations = _build_province_interpretations(
+            df_scope,
+            comparison_df=narrative_context.get("comparison_df"),
+            comparison_label=narrative_context.get("comparison_label"),
+            top_n=int(top_province_n),
+        )
+        if province_interpretations:
+            st.markdown(f"**Interpretation automatique par province (top {int(top_province_n)})**")
+            for province_text in province_interpretations:
+                st.markdown(f"- {province_text}")
+
+
+def _render_weekly_priority_points_block(standard_signal_table: pd.DataFrame) -> None:
+    """Render operational priority points inside the weekly section."""
+    if standard_signal_table is None or standard_signal_table.empty:
+        return
+
+    st.markdown("**Points a suivre**")
+    st.caption(
+        "Cette synthese resume ce qu'il faut regarder en premier : transmission des donnees, retards de notification, "
+        "investigations incompletes, resultats de laboratoire, gravite et hausse inhabituelle des cas."
+    )
+    active_signals = standard_signal_table[standard_signal_table["À surveiller"] == "Oui"].copy()
+    critical_signals = standard_signal_table[standard_signal_table["Statut"] == "Alerte"].copy()
+    k_sop1, k_sop2, k_sop3 = st.columns(3)
+    k_sop1.metric("Points a suivre", format_metric_value(len(active_signals)))
+    k_sop2.metric("Alertes", format_metric_value(len(critical_signals)))
+    k_sop3.metric("Indicateurs lus", format_metric_value(len(standard_signal_table)))
+    if active_signals.empty:
+        st.success("Aucun point prioritaire n'est detecte sur le perimetre filtre avec les seuils actuels.")
+    else:
+        st.markdown("**Actions proposees**")
+        for action_text in active_signals["Action proposée"].dropna().astype(str).drop_duplicates().head(5).tolist():
+            st.markdown(f"- {action_text}")
+    st_dataframe_safe(standard_signal_table, height=320)
+
+
+def _render_cumulative_chain_block(standard_chain_tbl: pd.DataFrame) -> None:
+    """Render the standard COUSP chain inside the cumulative section."""
+    if standard_chain_tbl is None or standard_chain_tbl.empty:
+        return
+
+    st.markdown("**Chaine COUSP**")
+    st.caption(
+        "Cette lecture standard multi-maladies suit la chaine alerte -> investigation -> prelevement -> laboratoire -> prise en charge "
+        "avec les denominateurs effectivement disponibles dans le fichier filtre."
+    )
+    st.caption(
+        "Les indicateurs cumules de cette chaine ne sont pas repetes ici afin d'eviter les redondances avec la synthese principale."
+    )
+    with st.expander("Voir le detail de la chaine standard", expanded=False):
+        st_dataframe_safe(standard_chain_tbl, height=360)
+
+
 def render_surveillance_tab(ctx: dict) -> None:
     """Render the surveillance analytics tab."""
     globals().update(ctx)
@@ -437,6 +593,10 @@ def render_surveillance_tab(ctx: dict) -> None:
         render_tab_narrative("surveillance")
         st.caption(
             "Cette organisation aide à lire la situation pas à pas, à partir de la période active choisie dans la barre latérale."
+        )
+        st.caption(
+            "Les KPI globaux, cartes et profils restent dans la vue d'ensemble. "
+            "Ici, l'accent est mis sur le suivi dans le temps et les signaux a verifier."
         )
         cfg1, cfg2, cfg3 = st.columns([0.9, 0.9, 1.2])
         with cfg1:
@@ -487,69 +647,7 @@ def render_surveillance_tab(ctx: dict) -> None:
                 min_alert_cases=10,
                 alert_ratio=1.5,
             )
-            if not standard_signal_table.empty:
-                st.markdown("### Points à suivre en priorité")
-                st.caption(
-                    "Cette synthèse résume ce qu'il faut regarder en premier : transmission des données, retards de notification, "
-                    "investigations incomplètes, résultats de laboratoire, gravité et hausse inhabituelle des cas."
-                )
-                active_signals = standard_signal_table[standard_signal_table["À surveiller"] == "Oui"].copy()
-                critical_signals = standard_signal_table[standard_signal_table["Statut"] == "Alerte"].copy()
-                k_sop1, k_sop2, k_sop3 = st.columns(3)
-                k_sop1.metric("Points à suivre", format_metric_value(len(active_signals)))
-                k_sop2.metric("Alertes", format_metric_value(len(critical_signals)))
-                k_sop3.metric("Indicateurs lus", format_metric_value(len(standard_signal_table)))
-                if active_signals.empty:
-                    st.success("Aucun point prioritaire n'est détecté sur le périmètre filtré avec les seuils actuels.")
-                else:
-                    st.markdown("**Actions proposées**")
-                    for action_text in active_signals["Action proposée"].dropna().astype(str).drop_duplicates().head(5).tolist():
-                        st.markdown(f"- {action_text}")
-                st_dataframe_safe(standard_signal_table, height=320)
-                st.divider()
-
             standard_chain_tbl = build_standard_surveillance_chain_table(df_surv_scope)
-            if not standard_chain_tbl.empty:
-                st.markdown("### Chaîne analytique standard COUSP")
-                st.caption(
-                    "Cette lecture standard multi-maladies suit la chaîne alerte -> investigation -> prélèvement -> laboratoire -> prise en charge "
-                    "avec les dénominateurs effectivement disponibles dans le fichier filtré."
-                )
-                chain_lookup = {
-                    str(row["Indicateur"]): row
-                    for _, row in standard_chain_tbl.iterrows()
-                }
-                chain_metric_specs = [
-                    ("Cas notifiés", "Cas notifiés"),
-                    ("Cas investigués", "Cas investigués"),
-                    ("Cas prélevés", "Cas prélevés"),
-                    ("Résultats labo disponibles", "Résultats"),
-                    ("Cas positifs", "Positifs"),
-                    ("Décès documentés", "Décès"),
-                ]
-                chain_cols = st.columns(len(chain_metric_specs))
-                for col_ui, (lookup_key, metric_label) in zip(chain_cols, chain_metric_specs):
-                    row = chain_lookup.get(lookup_key)
-                    with col_ui:
-                        if row is None:
-                            st.metric(metric_label, "-")
-                        else:
-                            taux = row.get("Taux (%)")
-                            denom = row.get("Dénominateur")
-                            help_text = None
-                            if denom is not None and not pd.isna(denom):
-                                help_text = f"n = {int(row['Valeur'])}/{int(denom)}"
-                            value_label = format_metric_value(row.get("Valeur", 0))
-                            if taux is not None and not pd.isna(taux):
-                                value_label = f"{value_label} ({float(taux):.1f}%)"
-                            st.metric(
-                                metric_label,
-                                value_label,
-                                help=help_text,
-                            )
-                with st.expander("Voir le détail de la chaîne standard", expanded=False):
-                    st_dataframe_safe(standard_chain_tbl, height=360)
-                st.divider()
 
             latest_order = surv_reference["order"].iloc[-1]
             latest_label = str(surv_reference["label"].iloc[-1])
@@ -585,7 +683,7 @@ def render_surveillance_tab(ctx: dict) -> None:
             df_latest_week = df_surv_scope[df_surv_scope["_surv_order"] == latest_order].copy()
             df_recent_weeks = df_surv_scope[df_surv_scope["_surv_order"].isin(recent_orders)].copy()
 
-            _render_surveillance_window(
+            _render_compact_surveillance_window(
                 "1. Situation hebdomadaire",
                 df_latest_week,
                 f"Semaine la plus récente dans la fenêtre filtrée : {latest_label}.",
@@ -600,11 +698,12 @@ def render_surveillance_tab(ctx: dict) -> None:
                 },
                 top_province_n=int(top_province_n),
                 top_zs_n=int(top_zs_n),
+                extra_renderer=lambda: _render_weekly_priority_points_block(standard_signal_table),
             )
 
             st.divider()
 
-            _render_surveillance_window(
+            _render_compact_surveillance_window(
                 f"2. Situation des {int(recent_window_weeks)} dernières semaines",
                 df_recent_weeks,
                 f"Lecture glissante sur les {len(recent_labels)} semaines les plus récentes de la sélection : {', '.join(recent_labels)}.",
@@ -624,7 +723,7 @@ def render_surveillance_tab(ctx: dict) -> None:
 
             st.divider()
 
-            _render_surveillance_window(
+            _render_compact_surveillance_window(
                 "3. Situation cumulée",
                 df_surv_scope,
                 f"Cumul de toute la fenêtre active : {first_label} à {latest_label}.",
@@ -639,6 +738,7 @@ def render_surveillance_tab(ctx: dict) -> None:
                 },
                 top_province_n=int(top_province_n),
                 top_zs_n=int(top_zs_n),
+                extra_renderer=lambda: _render_cumulative_chain_block(standard_chain_tbl),
             )
 
 
@@ -649,286 +749,276 @@ def render_surveillance_tab(ctx: dict) -> None:
                 and df_surv_scope["_surv_label"].notna().any()
             ):
                 st.divider()
-                st.markdown("### Courbe épidémiologique des cas par province")
-                prov_totals = df_surv_scope[[COL_PROV]].dropna().copy()
-                prov_totals["_prov"] = prov_totals[COL_PROV].astype(str).str.strip()
-                prov_totals = prov_totals[prov_totals["_prov"] != ""]
-                prov_options = prov_totals["_prov"].value_counts().index.tolist()
-                default_provs = prov_options if len(prov_options) <= 10 else prov_options[:10]
-                selected_curve_provs = st.multiselect(
-                    "Provinces à afficher",
-                    options=prov_options,
-                    default=default_provs,
-                    key="surveillance_multi_curve_provinces",
-                    help="Tu peux aussi cliquer sur la légende du graphique pour masquer ou afficher une province.",
-                )
-                if selected_curve_provs:
-                    fig_multi_prov = build_weekly_multiline_by_group(
-                        df=df_surv_scope,
-                        week_col="_surv_label",
-                        group_col=COL_PROV,
-                        selected_groups=selected_curve_provs,
-                        titre=" ",
-                        x_titre="Semaine épidémiologique",
-                        y_titre="Nombre de cas",
-                        rotation=45,
-                        pas_x=int(pas_x),
-                        annot=annot_vals,
-                        taille_fig=(1500, 700),
+                with st.expander("Courbe provinciale hebdomadaire", expanded=False):
+                    st.caption(
+                        "Bloc complémentaire de comparaison territoriale. Il est gardé à part pour ne pas surcharger la lecture des 3 situations temporelles."
                     )
-                    if fig_multi_prov is not None:
-                        fig_multi_prov.update_layout(
-                            legend=dict(
-                                title=dict(text=COL_PROV),
-                                orientation="v",
-                                yanchor="top",
-                                y=1,
-                                xanchor="left",
-                                x=1.02,
-                                itemclick="toggle",
-                                itemdoubleclick="toggleothers",
-                            ),
-                            margin=dict(r=220),
+                    prov_totals = df_surv_scope[[COL_PROV]].dropna().copy()
+                    prov_totals["_prov"] = prov_totals[COL_PROV].astype(str).str.strip()
+                    prov_totals = prov_totals[prov_totals["_prov"] != ""]
+                    prov_options = prov_totals["_prov"].value_counts().index.tolist()
+                    default_provs = prov_options if len(prov_options) <= 10 else prov_options[:10]
+                    selected_curve_provs = st.multiselect(
+                        "Provinces à afficher",
+                        options=prov_options,
+                        default=default_provs,
+                        key="surveillance_multi_curve_provinces",
+                        help="Tu peux aussi cliquer sur la légende du graphique pour masquer ou afficher une province.",
+                    )
+                    if selected_curve_provs:
+                        fig_multi_prov = build_weekly_multiline_by_group(
+                            df=df_surv_scope,
+                            week_col="_surv_label",
+                            group_col=COL_PROV,
+                            selected_groups=selected_curve_provs,
+                            titre=" ",
+                            x_titre="Semaine épidémiologique",
+                            y_titre="Nombre de cas",
+                            rotation=45,
+                            pas_x=int(pas_x),
+                            annot=annot_vals,
+                            taille_fig=(1500, 700),
                         )
-                        fig_multi_prov = sanitize_plotly_figure_for_streamlit(fig_multi_prov)
-                        st.plotly_chart(
-                            fig_multi_prov,
-                            width="stretch",
-                            key="surveillance_multi_curve_province",
-                        )
-                        st.caption(
-                            "Astuce : clique sur une province dans la légende pour masquer ou afficher sa courbe. "
-                            "Double-clique pour isoler une province."
-                        )
+                        if fig_multi_prov is not None:
+                            fig_multi_prov.update_layout(
+                                legend=dict(
+                                    title=dict(text=COL_PROV),
+                                    orientation="v",
+                                    yanchor="top",
+                                    y=1,
+                                    xanchor="left",
+                                    x=1.02,
+                                    itemclick="toggle",
+                                    itemdoubleclick="toggleothers",
+                                ),
+                                margin=dict(r=220),
+                            )
+                            fig_multi_prov = sanitize_plotly_figure_for_streamlit(fig_multi_prov)
+                            st.plotly_chart(
+                                fig_multi_prov,
+                                width="stretch",
+                                key="surveillance_multi_curve_province",
+                            )
+                            st.caption(
+                                "Astuce : clique sur une province dans la légende pour masquer ou afficher sa courbe. "
+                                "Double-clique pour isoler une province."
+                            )
+                        else:
+                            st.info("Aucune courbe exploitable n'a pu être construite pour les provinces sélectionnées.")
                     else:
-                        st.info("Aucune courbe exploitable n'a pu être construite pour les provinces sélectionnées.")
-                else:
-                    st.info("Sélectionne au moins une province pour afficher la courbe épidémiologique multi-provinces.")
+                        st.info("Sélectionne au moins une province pour afficher la courbe épidémiologique multi-provinces.")
 
             if "_surv_label" in df_surv_scope.columns and df_surv_scope["_surv_label"].notna().any():
                 st.divider()
-                st.markdown("### Alertes automatiques et clusters récents")
-                alert_group_options = [
-                    c for c in [COL_PROV, COL_ZS, COL_AS]
-                    if c in df_surv_scope.columns and df_surv_scope[c].notna().any()
-                ]
-                if alert_group_options:
-                    a1, a2, a3, a4 = st.columns([1.1, 0.9, 0.9, 0.9])
-                    with a1:
-                        alert_group_col = st.selectbox(
-                            "Niveau d'alerte",
-                            options=alert_group_options,
-                            key="surv_alert_group_col",
-                        )
-                    with a2:
-                        alert_min_cases = st.number_input(
-                            "Cas min",
-                            min_value=1,
-                            max_value=500,
-                            value=10,
-                            step=1,
-                            key="surv_alert_min_cases",
-                        )
-                    with a3:
-                        alert_ratio = st.number_input(
-                            "Ratio alerte",
-                            min_value=1.0,
-                            max_value=10.0,
-                            value=1.5,
-                            step=0.1,
-                            key="surv_alert_ratio",
-                        )
-                    with a4:
-                        alert_baseline = st.number_input(
-                            "Semaines ref.",
-                            min_value=2,
-                            max_value=8,
-                            value=3,
-                            step=1,
-                            key="surv_alert_baseline_weeks",
-                        )
-
-                    alert_group_cols = [alert_group_col]
-                    if alert_group_col == COL_ZS and COL_PROV in df_surv_scope.columns:
-                        alert_group_cols = [COL_PROV, COL_ZS]
-                    elif alert_group_col == COL_AS:
-                        alert_group_cols = [
-                            c for c in [COL_PROV, COL_ZS, COL_AS]
-                            if c in df_surv_scope.columns
-                        ]
-                    alert_group_key = "__alert_geo_key"
-                    alert_label_sep = " / "
-                    alert_scope = df_surv_scope.copy()
-                    alert_scope[alert_group_cols] = (
-                        alert_scope[alert_group_cols]
-                        .astype("string")
-                        .fillna("Non renseigné")
+                with st.expander("Alertes, clusters et labo", expanded=False):
+                    st.caption(
+                        "Bloc complémentaire de détection de signaux. Il regroupe les alertes de la dernière semaine, les clusters récents et le suivi laboratoire."
                     )
-                    alert_scope[alert_group_key] = (
-                        alert_scope[alert_group_cols]
-                        .astype(str)
-                        .agg(alert_label_sep.join, axis=1)
-                    )
-
-                    alert_tbl = build_weekly_alerts(
-                        alert_scope,
-                        alert_group_key,
-                        week_col="_surv_label",
-                        baseline_weeks=int(alert_baseline),
-                        min_baseline_periods=2,
-                        min_cases=int(alert_min_cases),
-                        alert_ratio=float(alert_ratio),
-                    )
-                    if alert_tbl.empty:
-                        render_absence_narrative("alerts")
-                    else:
-                        latest_alert_week = alert_tbl["_surv_label"].dropna().max()
-                        latest_alerts = alert_tbl[alert_tbl["_surv_label"] == latest_alert_week].copy()
-                        if alert_group_key in latest_alerts.columns:
-                            split_cols = latest_alerts[alert_group_key].astype(str).str.split(
-                                alert_label_sep,
-                                expand=True,
+                    alert_group_options = [
+                        c for c in [COL_PROV, COL_ZS, COL_AS]
+                        if c in df_surv_scope.columns and df_surv_scope[c].notna().any()
+                    ]
+                    if alert_group_options:
+                        a1, a2, a3, a4 = st.columns([1.1, 0.9, 0.9, 0.9])
+                        with a1:
+                            alert_group_col = st.selectbox(
+                                "Niveau d'alerte",
+                                options=alert_group_options,
+                                key="surv_alert_group_col",
                             )
-                            for idx, geo_col in enumerate(alert_group_cols):
-                                if idx < split_cols.shape[1]:
-                                    latest_alerts[geo_col] = split_cols[idx]
-                            latest_alerts = latest_alerts.drop(columns=[alert_group_key])
-                        alert_display_cols = [
-                            c for c in alert_group_cols
-                            if c in latest_alerts.columns
-                        ] + [
-                            c for c in ["_surv_label", "Cas", "Cas_prev", "var_%", "baseline", "ratio_baseline", "signal_level", "signal"]
-                            if c in latest_alerts.columns
-                        ]
-                        latest_alerts = latest_alerts.sort_values(
-                            ["signal", "Cas", "ratio_baseline"],
-                            ascending=[False, False, False],
-                            na_position="last",
-                        )
-                        sig_count = int(latest_alerts["signal"].fillna(False).sum())
-                        st.caption(
-                            f"Dernière semaine analysée : {latest_alert_week} | Alertes détectées : {sig_count}. "
-                            "Un signal invite à vérifier la situation locale, il ne confirme pas à lui seul une flambée."
-                        )
-                        st.dataframe(latest_alerts[alert_display_cols].head(100), width="stretch", height=360, hide_index=True)
-
-                        sig_plot = latest_alerts[latest_alerts["signal"] == True].head(30)
-                        if not sig_plot.empty:
-                            sig_plot["_geo_label"] = (
-                                sig_plot[alert_group_cols]
-                                .astype("string")
-                                .fillna("Non renseigné")
-                                .astype(str)
-                                .agg(alert_label_sep.join, axis=1)
+                        with a2:
+                            alert_min_cases = st.number_input(
+                                "Cas min",
+                                min_value=1,
+                                max_value=500,
+                                value=10,
+                                step=1,
+                                key="surv_alert_min_cases",
                             )
-                            fig_alert = px.bar(
-                                sig_plot.sort_values("Cas", ascending=True),
-                                x="Cas",
-                                y="_geo_label",
-                                orientation="h",
-                                color="ratio_baseline",
-                                title="Groupes en alerte sur la dernière semaine",
-                                color_continuous_scale=["#fde68a", "#b91c1c"],
+                        with a3:
+                            alert_ratio = st.number_input(
+                                "Ratio alerte",
+                                min_value=1.0,
+                                max_value=10.0,
+                                value=1.5,
+                                step=0.1,
+                                key="surv_alert_ratio",
                             )
-                            fig_alert.update_layout(coloraxis_colorbar_title="Ratio")
-                            fig_alert = apply_plotly_value_annotations(fig_alert, annot_vals)
-                            st_plot(fig_alert, key="surv_alert_latest_chart")
+                        with a4:
+                            alert_baseline = st.number_input(
+                                "Semaines ref.",
+                                min_value=2,
+                                max_value=8,
+                                value=3,
+                                step=1,
+                                key="surv_alert_baseline_weeks",
+                            )
 
-                    cluster_cols = alert_group_cols
-                    cluster_tbl = build_spatiotemporal_cluster_table(
-                        df_surv_scope,
-                        group_cols=cluster_cols if cluster_cols else [alert_group_col],
-                        week_col="_surv_label",
-                        recent_weeks=2,
-                        previous_weeks=4,
-                        min_recent_cases=max(5, int(alert_min_cases // 2)),
-                        growth_ratio=float(alert_ratio),
-                    )
-                    if not cluster_tbl.empty:
-                        with st.expander("Clusters spatio-temporels récents", expanded=False):
+                        alert_group_cols = [alert_group_col]
+                        if alert_group_col == COL_ZS and COL_PROV in df_surv_scope.columns:
+                            alert_group_cols = [COL_PROV, COL_ZS]
+                        elif alert_group_col == COL_AS:
+                            alert_group_cols = [
+                                c for c in [COL_PROV, COL_ZS, COL_AS]
+                                if c in df_surv_scope.columns
+                            ]
+                        alert_group_key = "__alert_geo_key"
+                        alert_label_sep = " / "
+                        alert_scope = df_surv_scope.copy()
+                        alert_scope[alert_group_cols] = (
+                            alert_scope[alert_group_cols]
+                            .astype("string")
+                            .fillna("Non renseigné")
+                        )
+                        alert_scope[alert_group_key] = (
+                            alert_scope[alert_group_cols]
+                            .astype(str)
+                            .agg(alert_label_sep.join, axis=1)
+                        )
+
+                        alert_tbl = build_weekly_alerts(
+                            alert_scope,
+                            alert_group_key,
+                            week_col="_surv_label",
+                            baseline_weeks=int(alert_baseline),
+                            min_baseline_periods=2,
+                            min_cases=int(alert_min_cases),
+                            alert_ratio=float(alert_ratio),
+                        )
+                        if alert_tbl.empty:
+                            render_absence_narrative("alerts")
+                        else:
+                            latest_alert_week = alert_tbl["_surv_label"].dropna().max()
+                            latest_alerts = alert_tbl[alert_tbl["_surv_label"] == latest_alert_week].copy()
+                            if alert_group_key in latest_alerts.columns:
+                                split_cols = latest_alerts[alert_group_key].astype(str).str.split(
+                                    alert_label_sep,
+                                    expand=True,
+                                )
+                                for idx, geo_col in enumerate(alert_group_cols):
+                                    if idx < split_cols.shape[1]:
+                                        latest_alerts[geo_col] = split_cols[idx]
+                                latest_alerts = latest_alerts.drop(columns=[alert_group_key])
+                            alert_display_cols = [
+                                c for c in alert_group_cols
+                                if c in latest_alerts.columns
+                            ] + [
+                                c for c in ["_surv_label", "Cas", "Cas_prev", "var_%", "baseline", "ratio_baseline", "signal_level", "signal"]
+                                if c in latest_alerts.columns
+                            ]
+                            latest_alerts = latest_alerts.sort_values(
+                                ["signal", "Cas", "ratio_baseline"],
+                                ascending=[False, False, False],
+                                na_position="last",
+                            )
+                            sig_count = int(latest_alerts["signal"].fillna(False).sum())
                             st.caption(
-                                "Ce tableau compare les deux dernières semaines à la fenêtre précédente. "
-                                "Il aide à repérer des foyers récents à vérifier avec les équipes locales."
+                                f"Dernière semaine analysée : {latest_alert_week} | Alertes détectées : {sig_count}. "
+                                "Un signal invite à vérifier la situation locale, il ne confirme pas à lui seul une flambée."
                             )
-                            st.dataframe(cluster_tbl.head(100), width="stretch", height=420, hide_index=True)
+                            st.dataframe(latest_alerts[alert_display_cols].head(100), width="stretch", height=360, hide_index=True)
+
+                            sig_plot = latest_alerts[latest_alerts["signal"] == True].head(30)
+                            if not sig_plot.empty:
+                                with st.expander("Graphique des groupes en alerte", expanded=False):
+                                    sig_plot["_geo_label"] = (
+                                        sig_plot[alert_group_cols]
+                                        .astype("string")
+                                        .fillna("Non renseigné")
+                                        .astype(str)
+                                        .agg(alert_label_sep.join, axis=1)
+                                    )
+                                    fig_alert = px.bar(
+                                        sig_plot.sort_values("Cas", ascending=True),
+                                        x="Cas",
+                                        y="_geo_label",
+                                        orientation="h",
+                                        color="ratio_baseline",
+                                        title="Groupes en alerte sur la dernière semaine",
+                                        color_continuous_scale=["#fde68a", "#b91c1c"],
+                                    )
+                                    fig_alert.update_layout(coloraxis_colorbar_title="Ratio")
+                                    fig_alert = apply_plotly_value_annotations(fig_alert, annot_vals)
+                                    st_plot(fig_alert, key="surv_alert_latest_chart")
+
+                        cluster_cols = alert_group_cols
+                        cluster_tbl = build_spatiotemporal_cluster_table(
+                            df_surv_scope,
+                            group_cols=cluster_cols if cluster_cols else [alert_group_col],
+                            week_col="_surv_label",
+                            recent_weeks=2,
+                            previous_weeks=4,
+                            min_recent_cases=max(5, int(alert_min_cases // 2)),
+                            growth_ratio=float(alert_ratio),
+                        )
+                        if not cluster_tbl.empty:
+                            with st.expander("Clusters spatio-temporels récents", expanded=False):
+                                st.caption(
+                                    "Ce tableau compare les deux dernières semaines à la fenêtre précédente. "
+                                    "Il aide à repérer des foyers récents à vérifier avec les équipes locales."
+                                )
+                                st.dataframe(cluster_tbl.head(100), width="stretch", height=420, hide_index=True)
+                        else:
+                            render_absence_narrative("alerts")
+
+                        weekly_lab_tbl = build_weekly_lab_summary(df_surv_scope)
+                        if not weekly_lab_tbl.empty:
+                            with st.expander("Suivi labo hebdomadaire", expanded=False):
+                                st.caption(
+                                    "Ce suivi temporel standard résume, par semaine, le volume de tests interprétables, "
+                                    "les tests positifs et la positivité observée dans la fenêtre active."
+                                )
+
+                                fig_lab_trend = go.Figure()
+                                fig_lab_trend.add_trace(
+                                    go.Bar(
+                                        x=weekly_lab_tbl["Semaine"],
+                                        y=weekly_lab_tbl["Tests valides"],
+                                        name="Tests valides",
+                                        marker_color="#4f81bd",
+                                    )
+                                )
+                                fig_lab_trend.add_trace(
+                                    go.Bar(
+                                        x=weekly_lab_tbl["Semaine"],
+                                        y=weekly_lab_tbl["Tests positifs"],
+                                        name="Tests positifs",
+                                        marker_color="#d97b16",
+                                    )
+                                )
+                                fig_lab_trend.add_trace(
+                                    go.Scatter(
+                                        x=weekly_lab_tbl["Semaine"],
+                                        y=weekly_lab_tbl["Positivité (%)"],
+                                        name="Positivité (%)",
+                                        mode="lines+markers",
+                                        line=dict(color="#b9353f", width=3),
+                                        marker=dict(size=8),
+                                        yaxis="y2",
+                                    )
+                                )
+                                fig_lab_trend.update_layout(
+                                    title=" ",
+                                    barmode="group",
+                                    xaxis_title="Semaine épidémiologique",
+                                    yaxis_title="Nombre de tests",
+                                    yaxis2=dict(
+                                        title="Positivité (%)",
+                                        overlaying="y",
+                                        side="right",
+                                        rangemode="tozero",
+                                    ),
+                                )
+                                st_plot(fig_lab_trend, key="surv_weekly_lab_combo", annotate_values=False)
+                                st_dataframe_safe(weekly_lab_tbl, height=320)
                     else:
-                        render_absence_narrative("alerts")
-
-                    weekly_lab_tbl = build_weekly_lab_summary(df_surv_scope)
-                    if not weekly_lab_tbl.empty:
-                        with st.expander("Suivi hebdomadaire des indicateurs laboratoire", expanded=False):
-                            st.caption(
-                                "Ce suivi temporel standard résume, par semaine, le volume de tests interprétables, "
-                                "les tests positifs et la positivité observée dans la fenêtre active."
-                            )
-                            l1, l2, l3 = st.columns(3)
-                            l1.metric(
-                                "Semaines avec suivi labo",
-                                format_metric_value(len(weekly_lab_tbl)),
-                            )
-                            l2.metric(
-                                "Tests valides cumulés",
-                                format_metric_value(pd.to_numeric(weekly_lab_tbl["Tests valides"], errors="coerce").sum()),
-                            )
-                            latest_pos = pd.to_numeric(
-                                weekly_lab_tbl["Positivité (%)"],
-                                errors="coerce",
-                            ).dropna()
-                            l3.metric(
-                                "Positivité récente (%)",
-                                "-" if latest_pos.empty else f"{float(latest_pos.iloc[-1]):.1f}",
-                            )
-
-                            fig_lab_trend = go.Figure()
-                            fig_lab_trend.add_trace(
-                                go.Bar(
-                                    x=weekly_lab_tbl["Semaine"],
-                                    y=weekly_lab_tbl["Tests valides"],
-                                    name="Tests valides",
-                                    marker_color="#4f81bd",
-                                )
-                            )
-                            fig_lab_trend.add_trace(
-                                go.Bar(
-                                    x=weekly_lab_tbl["Semaine"],
-                                    y=weekly_lab_tbl["Tests positifs"],
-                                    name="Tests positifs",
-                                    marker_color="#d97b16",
-                                )
-                            )
-                            fig_lab_trend.add_trace(
-                                go.Scatter(
-                                    x=weekly_lab_tbl["Semaine"],
-                                    y=weekly_lab_tbl["Positivité (%)"],
-                                    name="Positivité (%)",
-                                    mode="lines+markers",
-                                    line=dict(color="#b9353f", width=3),
-                                    marker=dict(size=8),
-                                    yaxis="y2",
-                                )
-                            )
-                            fig_lab_trend.update_layout(
-                                title=" ",
-                                barmode="group",
-                                xaxis_title="Semaine épidémiologique",
-                                yaxis_title="Nombre de tests",
-                                yaxis2=dict(
-                                    title="Positivité (%)",
-                                    overlaying="y",
-                                    side="right",
-                                    rangemode="tozero",
-                                ),
-                            )
-                            st_plot(fig_lab_trend, key="surv_weekly_lab_combo", annotate_values=False)
-                            st_dataframe_safe(weekly_lab_tbl, height=320)
-                else:
-                    render_absence_narrative("geo")
+                        render_absence_narrative("geo")
         else:
             render_absence_narrative("week")
     # Section suivante : promptitude. Les indicateurs de performance et de létalité déjà présentés plus haut ne sont pas répétés ici afin d’éviter les redondances.
 
     st.divider()
-    st.markdown("### Promptitude de notification, investigation et prise en charge")
+    st.markdown("### 4. Promptitude des etapes cles")
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")
     else:
@@ -950,8 +1040,9 @@ def render_surveillance_tab(ctx: dict) -> None:
             """,
             expanded=False
         )
-        
-        st.subheader("Analyse de la promptitude des principales étapes du parcours du cas et de la notification")
+        st.caption(
+            "Les cartes d'indicateurs redondantes sont limitees ici. L'accent est mis sur les tableaux d'action, les classements territoriaux et le detail des delais quand c'est utile."
+        )
         
         delais_cols = [
             c
@@ -985,191 +1076,156 @@ def render_surveillance_tab(ctx: dict) -> None:
                 "Les indicateurs et classements ci-dessous aident à agir rapidement, avant même de lire les graphiques en détail."
             )
 
-            priority_metric_specs = [
-                ("delai_notif_to_invest", "Notif -> invest"),
-                ("delai_notif_to_prel", "Notif -> prél"),
-                ("delai_prel_to_receipt", "Prél -> réception"),
-                ("delai_receipt_to_result", "Réception -> résultat"),
-                ("delai_notif_to_adm", "Notif -> admission"),
-                ("delai_adm_to_issue", "Admission -> issue"),
-                ("delai_onset_to_notif", "Début -> notif"),
-                ("delai_onset_to_prel", "Début -> prél"),
-                ("delai_onset_to_adm", "Début -> admission"),
-                ("delai_prel_to_result", "Prél -> résultat"),
-            ]
-            metric_specs = [(col, label) for col, label in priority_metric_specs if col in delais_cols][:6]
-            if metric_specs:
-                metric_cols = st.columns(len(metric_specs))
-                for col_ui, (delay_col, metric_label) in zip(metric_cols, metric_specs):
-                    pct_val, n_val = _surv_threshold_metric(df_del[delay_col], seuil_jours)
-                    with col_ui:
-                        st.metric(
-                            f"{metric_label} ≤ seuil (%)",
-                            _surv_metric_pct(pct_val),
-                            help=f"n = {n_val}",
-                        )
-
             if not delay_summary_std.empty:
                 st.markdown("**Résumé standard des délais disponibles**")
                 st_dataframe_safe(delay_summary_std, height=320)
 
-            if COL_PROV in df_del.columns:
-                st.markdown("**Provinces à surveiller en priorité**")
-                ranking_priority = [
-                    ("delai_notif_to_invest", "Notification → investigation"),
-                    ("delai_notif_to_prel", "Notification → prélèvement"),
-                    ("delai_prel_to_receipt", "Prélèvement → réception labo"),
-                    ("delai_receipt_to_result", "Réception labo → résultat"),
-                    ("delai_notif_to_adm", "Notification → admission"),
-                    ("delai_adm_to_issue", "Admission → issue"),
-                    ("delai_onset_to_adm", "Début maladie → admission"),
-                    ("delai_onset_to_prel", "Début maladie → prélèvement"),
-                    ("delai_prel_to_result", "Prélèvement → résultat"),
-                ]
-                ranking_specs = [(col, label) for col, label in ranking_priority if col in delais_cols][:4]
-
-                if ranking_specs:
-                    rank_cols = st.columns(len(ranking_specs))
-                    for col_ui, (delay_col, delay_label) in zip(rank_cols, ranking_specs):
-                        delay_group_tbl = build_delay_group_summary(
-                            df_del,
-                            delay_col=delay_col,
-                            group_col=COL_PROV,
-                            threshold=seuil_jours,
-                        )
-                        pct_col = f"% <= {seuil_lab} j"
-                        if not delay_group_tbl.empty and pct_col in delay_group_tbl.columns:
-                            delay_group_tbl = delay_group_tbl[
-                                pd.to_numeric(delay_group_tbl["n"], errors="coerce").fillna(0) > 0
-                            ].copy()
-                            delay_group_tbl = (
-                                delay_group_tbl
-                                .sort_values([pct_col, "Mediane_j", "n"], ascending=[True, False, False], na_position="last")
-                                .head(10)
-                                .copy()
-                            )
-                        with col_ui:
-                            st.markdown(f"**{delay_label}**")
-                            if delay_group_tbl.empty:
-                                render_absence_narrative("delays")
-                            else:
-                                st.dataframe(delay_group_tbl, width="stretch", height=360, hide_index=True)
-
-            with st.expander("Distribution détaillée des délais observés (graphique)", expanded=False):
-                if use_custom_viz and HAS_CUSTOM_VIZ:
-                    plot_delay_cols = list(delais_cols)
-                    if COL_PROV in df_del.columns:
-                        plot_delay_cols.append(COL_PROV)
-                    df_delay_plot = _surv_plotly_frame(df_del[plot_delay_cols], numeric_cols=delais_cols)
-                    fig = plot_boxplot_delais_plotly(
-                        df=df_delay_plot,
-                        colonnes_delais=delais_cols,
-                        col_groupe=COL_PROV if COL_PROV in df_delay_plot.columns else None,
-                        titre=" ",
-                        taille_fig=(1500, 600),
-                        rotation=45
-                    )
-                    st_plot(fig, key="boxplot_delais_custom")
-                else:
-                    long = (
-                        df_del.melt(value_vars=delais_cols, var_name="Type_delai", value_name="Jours")
-                        .copy()
-                    )
-                    long["Jours"] = pd.to_numeric(long["Jours"], errors="coerce")
-                    long.loc[~np.isfinite(long["Jours"]), "Jours"] = np.nan
-                    long = long.dropna(subset=["Type_delai", "Jours"])
-                    if long.empty:
-                        render_absence_narrative("delays")
-                    else:
-                        long = _surv_plotly_frame(long, numeric_cols=["Jours"])
-                        fig = px.box(long, x="Type_delai", y="Jours", points="outliers", title="Boxplot des délais (global)")
-                        fig = apply_plotly_value_annotations(fig, annot_vals)
-                        st_plot(fig, key="boxplot_delais_standard")
-
             if available_delay_pairs:
                 st.divider()
-                st.markdown("**Analyse détaillée d'un délai standard**")
-                delay_label_to_col = {label: col for col, label in available_delay_pairs}
-                delay_focus_label = st.selectbox(
-                    "Délai standard à profiler",
-                    options=list(delay_label_to_col.keys()),
-                    key="timeliness_delay_focus",
-                )
-
-                group_candidates = []
-                for c in [COL_PROV, COL_ZS, pick_age_col(df_del), COL_SEX, COL_CLASS, "Type_de_prelevement", "Nom_laboratoire"]:
-                    if c and c in df_del.columns and df_del[c].notna().any() and c not in group_candidates:
-                        group_candidates.append(c)
-
-                if group_candidates:
-                    g1, g2, g3 = st.columns([1.15, 1.15, 0.9])
-                    with g1:
-                        delay_group_focus = st.selectbox(
-                            "Variable de regroupement",
-                            options=group_candidates,
-                            key="timeliness_group_focus",
-                        )
-                    with g2:
-                        delay_metric_focus = st.selectbox(
-                            "Indicateur a classer",
-                            options=["Mediane (jours)", f"% <= {seuil_jours} jours"],
-                            key="timeliness_metric_focus",
-                        )
-                    with g3:
-                        delay_topn = st.slider(
-                            "Top groupes",
-                            min_value=5,
-                            max_value=30,
-                            value=15,
-                            step=1,
-                            key="timeliness_group_topn",
-                        )
-
-                    delay_focus_col = delay_label_to_col[delay_focus_label]
-                    delay_group_tbl = build_delay_group_summary(
-                        df_del,
-                        delay_col=delay_focus_col,
-                        group_col=delay_group_focus,
-                        threshold=seuil_jours,
+                with st.expander("Profil d'un delai standard", expanded=False):
+                    st.caption(
+                        "Choisis d'abord le delai a explorer, puis la variable de regroupement. "
+                        "Le graphique est mis en avant pour faciliter la comparaison entre groupes."
+                    )
+                    delay_label_to_col = {label: col for col, label in available_delay_pairs}
+                    delay_focus_label = st.selectbox(
+                        "D?lai standard ? profiler",
+                        options=list(delay_label_to_col.keys()),
+                        key="timeliness_delay_focus",
                     )
 
-                    if not delay_group_tbl.empty:
-                        pct_col = f"% <= {seuil_lab} j"
-                        sort_col = "Mediane_j" if delay_metric_focus.startswith("Mediane") else pct_col
-                        ascending = bool(delay_metric_focus.startswith("Mediane"))
-                        delay_group_view = (
-                            delay_group_tbl.sort_values(sort_col, ascending=ascending, na_position="last")
-                            .head(int(delay_topn))
-                            .copy()
+                    group_candidates = []
+                    for c in [COL_PROV, COL_ZS, pick_age_col(df_del), COL_SEX, COL_CLASS, "Type_de_prelevement", "Nom_laboratoire"]:
+                        if c and c in df_del.columns and df_del[c].notna().any() and c not in group_candidates:
+                            group_candidates.append(c)
+
+                    if group_candidates:
+                        g1, g2 = st.columns([1.1, 1.1])
+                        with g1:
+                            delay_group_focus = st.selectbox(
+                                "Variable de regroupement",
+                                options=group_candidates,
+                                key="timeliness_group_focus",
+                            )
+                        with g2:
+                            delay_metric_focus = st.selectbox(
+                                "Indicateur a classer",
+                                options=["Mediane (jours)", f"% <= {seuil_jours} jours"],
+                                key="timeliness_metric_focus",
+                            )
+
+                        g3, _spacer = st.columns([1.0, 1.7])
+                        with g3:
+                            delay_topn = st.slider(
+                                "Top groupes",
+                                min_value=5,
+                                max_value=30,
+                                value=15,
+                                step=1,
+                                key="timeliness_group_topn",
+                            )
+
+                        delay_focus_col = delay_label_to_col[delay_focus_label]
+                        delay_group_tbl = build_delay_group_summary(
+                            df_del,
+                            delay_col=delay_focus_col,
+                            group_col=delay_group_focus,
+                            threshold=seuil_jours,
                         )
 
-                        t1, t2 = st.columns([1.05, 1.35])
-                        with t1:
-                            st.dataframe(delay_group_view, width="stretch", height=420, hide_index=True)
-                        with t2:
-                            plot_df = delay_group_view.sort_values(sort_col, ascending=True, na_position="last").copy()
-                            plot_df = _surv_plotly_frame(plot_df, numeric_cols=[sort_col])
-                            fig_delay_focus = px.bar(
-                                plot_df,
-                                x=sort_col,
-                                y=delay_group_focus,
-                                orientation="h",
-                                text=sort_col,
-                                title=f"{delay_focus_label} par {delay_group_focus}",
-                                color=sort_col,
-                                color_continuous_scale=["#dbe8f9", "#2b74ca"],
+                        if not delay_group_tbl.empty:
+                            pct_col = f"% <= {seuil_lab} j"
+                            sort_col = "Mediane_j" if delay_metric_focus.startswith("Mediane") else pct_col
+                            ascending = bool(delay_metric_focus.startswith("Mediane"))
+                            delay_group_view = (
+                                delay_group_tbl.sort_values(sort_col, ascending=ascending, na_position="last")
+                                .head(int(delay_topn))
+                                .copy()
                             )
-                            fig_delay_focus.update_layout(
-                                coloraxis_showscale=False,
-                                xaxis_title=sort_col,
-                                yaxis_title=delay_group_focus,
+
+                            st.markdown("**Visualisation principale**")
+                            st.caption(
+                                "Lecture : le graphique sert a comparer rapidement les groupes, tandis que le tableau detaille reste disponible a cote."
                             )
-                            fig_delay_focus = apply_plotly_value_annotations(fig_delay_focus, annot_vals)
-                            st_plot(fig_delay_focus, key="timeliness_delay_focus_chart")
+                            t_chart, t_table = st.columns([1.7, 0.95])
+                            with t_chart:
+                                plot_df = delay_group_view.sort_values(sort_col, ascending=True, na_position="last").copy()
+                                plot_df = _surv_plotly_frame(plot_df, numeric_cols=[sort_col])
+                                fig_delay_focus = px.bar(
+                                    plot_df,
+                                    x=sort_col,
+                                    y=delay_group_focus,
+                                    orientation="h",
+                                    text=sort_col,
+                                    title=f"{delay_focus_label} par {delay_group_focus}",
+                                    color=sort_col,
+                                    color_continuous_scale=["#dbe8f9", "#2b74ca"],
+                                )
+                                fig_delay_focus.update_layout(
+                                    coloraxis_showscale=False,
+                                    showlegend=False,
+                                    height=520,
+                                    title=dict(x=0.0, xanchor="left", y=0.97),
+                                    xaxis_title=sort_col,
+                                    yaxis_title=delay_group_focus,
+                                    margin=dict(l=24, r=12, t=74, b=24),
+                                    bargap=0.35,
+                                )
+                                fig_delay_focus.update_yaxes(automargin=True)
+                                fig_delay_focus.update_xaxes(automargin=True)
+                                fig_delay_focus.update_traces(textposition="outside", cliponaxis=False)
+                                fig_delay_focus = apply_plotly_value_annotations(fig_delay_focus, annot_vals)
+                                st_plot(fig_delay_focus, key="timeliness_delay_focus_chart")
+                            with t_table:
+                                st.markdown("**Tableau detaille**")
+                                st.dataframe(delay_group_view, width="stretch", height=520, hide_index=True)
+                        else:
+                            render_absence_narrative("delays")
                     else:
-                        render_absence_narrative("delays")
-                else:
-                    render_absence_narrative("profile")
+                        render_absence_narrative("profile")
+
+            if COL_PROV in df_del.columns:
+                with st.expander("Provinces a surveiller", expanded=False):
+                    ranking_priority = [
+                        ("delai_notif_to_invest", "Notification → investigation"),
+                        ("delai_notif_to_prel", "Notification → prélèvement"),
+                        ("delai_prel_to_receipt", "Prélèvement → réception labo"),
+                        ("delai_receipt_to_result", "Réception labo → résultat"),
+                        ("delai_notif_to_adm", "Notification → admission"),
+                        ("delai_adm_to_issue", "Admission → issue"),
+                        ("delai_onset_to_adm", "Début maladie → admission"),
+                        ("delai_onset_to_prel", "Début maladie → prélèvement"),
+                        ("delai_prel_to_result", "Prélèvement → résultat"),
+                    ]
+                    ranking_specs = [(col, label) for col, label in ranking_priority if col in delais_cols][:4]
+
+                    if ranking_specs:
+                        rank_cols = st.columns(len(ranking_specs))
+                        for col_ui, (delay_col, delay_label) in zip(rank_cols, ranking_specs):
+                            delay_group_tbl = build_delay_group_summary(
+                                df_del,
+                                delay_col=delay_col,
+                                group_col=COL_PROV,
+                                threshold=seuil_jours,
+                            )
+                            pct_col = f"% <= {seuil_lab} j"
+                            if not delay_group_tbl.empty and pct_col in delay_group_tbl.columns:
+                                delay_group_tbl = delay_group_tbl[
+                                    pd.to_numeric(delay_group_tbl["n"], errors="coerce").fillna(0) > 0
+                                ].copy()
+                                delay_group_tbl = (
+                                    delay_group_tbl
+                                    .sort_values([pct_col, "Mediane_j", "n"], ascending=[True, False, False], na_position="last")
+                                    .head(10)
+                                    .copy()
+                                )
+                            with col_ui:
+                                st.markdown(f"**{delay_label}**")
+                                if delay_group_tbl.empty:
+                                    render_absence_narrative("delays")
+                                else:
+                                    st.dataframe(delay_group_tbl, width="stretch", height=360, hide_index=True)
+
 
     # =========================
     # TAB 4: Démographie
