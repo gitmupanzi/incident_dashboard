@@ -9,10 +9,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from dashboard_app.domain import (
+    build_recommended_fields_matrix,
+    build_standard_capability_note,
     build_standard_analysis_capability_matrix,
     build_standard_classification_audit,
     build_standard_care_issue_audit,
+    build_standard_disease_profile,
     build_standard_file_structure_audit,
+    build_standard_semantic_status_summary,
     build_standard_symptom_audit,
     compute_indicators,
     build_standard_followup_tables,
@@ -175,11 +179,15 @@ class RealLineListRegressionTest(unittest.TestCase):
                     sheet_name=sheet_name,
                 )
                 matrix = build_standard_analysis_capability_matrix(standardized)
+                field_matrix = build_recommended_fields_matrix(standardized)
+                disease_profile = build_standard_disease_profile(disease_key, standardized)
+                semantic_summary = build_standard_semantic_status_summary(standardized)
+                capability_note = build_standard_capability_note(standardized)
                 classification_audit = build_standard_classification_audit(standardized)
                 care_issue_audit = build_standard_care_issue_audit(standardized)
                 symptom_audit = build_standard_symptom_audit(standardized)
 
-                checks_total += 7
+                checks_total += 11
 
                 if len(audit) == 1:
                     checks_passed += 1
@@ -195,6 +203,26 @@ class RealLineListRegressionTest(unittest.TestCase):
                     checks_passed += 1
                 else:
                     failures.append(f"{path.name}: matrice de capacites indisponible")
+
+                if not field_matrix.empty and {"Bloc", "Variable", "Disponible", "Support", "Complétude_%"}.issubset(field_matrix.columns):
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: matrice des champs standards indisponible")
+
+                if not disease_profile.empty and "Modele standard" in disease_profile.columns:
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: profil multi-maladies indisponible")
+
+                if not semantic_summary.empty and {"Domaine", "Variable source", "Cas documentes"}.issubset(semantic_summary.columns):
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: lecture semantique indisponible")
+
+                if isinstance(capability_note, str) and capability_note.strip():
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: note de capacite indisponible")
 
                 available_or_partial = matrix["Statut"].isin(["Disponible", "Partiel"]).sum() if not matrix.empty else 0
                 if available_or_partial >= 4:

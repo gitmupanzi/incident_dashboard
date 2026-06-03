@@ -453,10 +453,107 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
 }
 
 
+STANDARD_MULTI_DISEASE_PROFILES: Dict[str, Dict[str, str]] = {
+    "cholera": {
+        "modele_standard": "Line list clinique + laboratoire",
+        "investigation_standard": "Investigation documentaire, date d'investigation et classification si disponible",
+        "confirmation_standard": "Résultat labo ou TDR documenté",
+        "issue_standard": "Issue clinique, décès, sortie et durée de séjour si documentés",
+        "symptomes_standard": "Symptômes digestifs et chronologie clinique si disponibles",
+        "commentaire": "Profil adapté aux maladies à forte lecture clinique, géographique et de promptitude.",
+    },
+    "ebola": {
+        "modele_standard": "Line list événementielle avec chaîne laboratoire et PEC",
+        "investigation_standard": "Investigation, date d'investigation et classification d'investigation",
+        "confirmation_standard": "Confirmation biologique prioritaire",
+        "issue_standard": "Admission, isolement, issue et décès documentés",
+        "symptomes_standard": "Bloc clinique optionnel, exploitable si la source le documente",
+        "commentaire": "Profil adapté à une lecture COUSP complète : alerte, investigation, laboratoire et prise en charge.",
+    },
+    "meningite": {
+        "modele_standard": "Line list clinique avec confirmation laboratoire",
+        "investigation_standard": "Investigation et classification d'investigation quand présentes",
+        "confirmation_standard": "Prélèvement, réception et résultat laboratoire",
+        "issue_standard": "Issue, décès et admission si documentés",
+        "symptomes_standard": "Syndrome clinique optionnel selon les variables disponibles",
+        "commentaire": "Profil hybride, centré sur la surveillance clinique et la confirmation biologique.",
+    },
+    "rougeole": {
+        "modele_standard": "Line list surveillance + vaccination + laboratoire",
+        "investigation_standard": "Investigation documentaire et statut de cas standardisé",
+        "confirmation_standard": "Résultat laboratoire ou finalité standardisée selon la source",
+        "issue_standard": "Issue clinique simplifiée si documentée",
+        "symptomes_standard": "Bloc clinique et contexte vaccinal utiles si renseignés",
+        "commentaire": "Profil orienté surveillance de cas, statut vaccinal et documentation laboratoire.",
+    },
+    "mpox": {
+        "modele_standard": "Line list clinique détaillée avec multiples prélèvements",
+        "investigation_standard": "Investigation et prélèvement au moment de l'investigation",
+        "confirmation_standard": "Résultat final laboratoire prioritaire",
+        "issue_standard": "Issue clinique et dates de sortie ou décès",
+        "symptomes_standard": "Bloc clinique fortement utile si les signes sont documentés",
+        "commentaire": "Profil adapté aux enquêtes détaillées avec historique de prélèvements et résultats multiples.",
+    },
+    "intox": {
+        "modele_standard": "Line list événementielle clinique",
+        "investigation_standard": "Notification et investigation terrain selon les dates disponibles",
+        "confirmation_standard": "Confirmation biologique optionnelle selon la source",
+        "issue_standard": "Issue clinique et évolution des cas",
+        "symptomes_standard": "Bloc clinique important si les signes sont disponibles",
+        "commentaire": "Profil adapté aux analyses descriptives rapides et à l'investigation d'événements groupés.",
+    },
+    "autre": {
+        "modele_standard": "Line list générique multi-usages",
+        "investigation_standard": "Investigation, dates et classification si présentes",
+        "confirmation_standard": "Toute preuve laboratoire normalisable",
+        "issue_standard": "Issue clinique ou sortie documentée",
+        "symptomes_standard": "Bloc clinique activé uniquement si la source l'autorise",
+        "commentaire": "Profil générique pour absorber des sources hétérogènes sans forcer une logique mono-maladie.",
+    },
+    "idsr": {
+        "modele_standard": "Tableau hebdomadaire agrégé",
+        "investigation_standard": "Non applicable à la line list individuelle",
+        "confirmation_standard": "Non applicable ou hors périmètre agrégé",
+        "issue_standard": "Non applicable à l'agrégé standard",
+        "symptomes_standard": "Non applicable à l'agrégé standard",
+        "commentaire": "Profil réservé à la lecture hebdomadaire agrégée IDSR.",
+    },
+}
+
+
 def is_disease_enabled(disease_key: str) -> bool:
     """Indique si la maladie sélectionnée est activée dans le dashboard."""
     spec = DISEASE_SPECS.get(disease_key, {})
     return bool(spec.get("enabled", True))
+
+
+@st.cache_data(show_spinner=False)
+def build_standard_disease_profile(
+    disease_key: str,
+    df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Décrit le profil standard multi-maladies attendu pour la source active."""
+    spec = DISEASE_SPECS.get(disease_key, DISEASE_SPECS["autre"])
+    profile = STANDARD_MULTI_DISEASE_PROFILES.get(disease_key, STANDARD_MULTI_DISEASE_PROFILES["autre"])
+    capability_summary = summarize_standard_analysis_capabilities(df) if isinstance(df, pd.DataFrame) else {}
+    available_blocks = capability_summary.get("available_blocks", []) or []
+    partial_blocks = capability_summary.get("partial_blocks", []) or []
+
+    return pd.DataFrame(
+        [
+            {
+                "Maladie": spec.get("label", disease_key),
+                "Modele standard": profile.get("modele_standard", "Line list standard"),
+                "Investigation standard": profile.get("investigation_standard", "Investigation documentaire"),
+                "Confirmation standard": profile.get("confirmation_standard", "Lecture standard non précisée"),
+                "Issue standard": profile.get("issue_standard", "Issue clinique si disponible"),
+                "Symptomes standard": profile.get("symptomes_standard", "Bloc clinique optionnel"),
+                "Blocs disponibles": ", ".join(available_blocks) if available_blocks else "Aucun",
+                "Blocs partiels": ", ".join(partial_blocks) if partial_blocks else "Aucun",
+                "Commentaire": profile.get("commentaire", ""),
+            }
+        ]
+    )
 
 def _coalesce_first(df: pd.DataFrame, candidates: List[str]) -> pd.Series:
     """Retourne la première colonne non-NA dans candidates (coalesce)."""
@@ -3551,6 +3648,168 @@ def build_standard_symptom_audit(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _format_top_modalities(series: pd.Series, top_n: int = 5) -> str:
+    """Formate les principales modalités documentées d'une série standardisée."""
+    documented = series.astype("string").str.strip()
+    documented = documented[documented.notna() & documented.ne("")]
+    if documented.empty:
+        return "Aucune"
+    counts = documented.value_counts().head(int(top_n))
+    return ", ".join(f"{idx} ({int(val)})" for idx, val in counts.items())
+
+
+@st.cache_data(show_spinner=False)
+def summarize_standard_analysis_capabilities(df: pd.DataFrame | None) -> Dict[str, Any]:
+    """Résume les capacités analytiques standard pour piloter l'interface multi-maladies."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return {
+            "available_count": 0,
+            "partial_count": 0,
+            "unavailable_count": 0,
+            "available_blocks": [],
+            "partial_blocks": [],
+            "unavailable_blocks": [],
+            "matrix": pd.DataFrame(),
+        }
+
+    matrix = build_standard_analysis_capability_matrix(df)
+    if matrix.empty:
+        return {
+            "available_count": 0,
+            "partial_count": 0,
+            "unavailable_count": 0,
+            "available_blocks": [],
+            "partial_blocks": [],
+            "unavailable_blocks": [],
+            "matrix": matrix,
+        }
+
+    available_blocks = matrix.loc[matrix["Statut"] == "Disponible", "Bloc analytique"].astype("string").tolist()
+    partial_blocks = matrix.loc[matrix["Statut"] == "Partiel", "Bloc analytique"].astype("string").tolist()
+    unavailable_blocks = matrix.loc[matrix["Statut"] == "Indisponible", "Bloc analytique"].astype("string").tolist()
+    return {
+        "available_count": len(available_blocks),
+        "partial_count": len(partial_blocks),
+        "unavailable_count": len(unavailable_blocks),
+        "available_blocks": available_blocks,
+        "partial_blocks": partial_blocks,
+        "unavailable_blocks": unavailable_blocks,
+        "matrix": matrix,
+    }
+
+
+@st.cache_data(show_spinner=False)
+def build_standard_capability_note(df: pd.DataFrame | None, max_blocks: int = 3) -> str:
+    """Construit une phrase courte sur l'état des briques standards activables."""
+    summary = summarize_standard_analysis_capabilities(df)
+    available_blocks = summary.get("available_blocks", []) or []
+    partial_blocks = summary.get("partial_blocks", []) or []
+    unavailable_blocks = summary.get("unavailable_blocks", []) or []
+
+    if not available_blocks and not partial_blocks:
+        return "Le socle analytique standard n'est pas suffisamment documenté pour une lecture multi-maladies fiable."
+
+    parts = [
+        f"{int(summary.get('available_count', 0))} briques standards pleinement disponibles",
+        f"{int(summary.get('partial_count', 0))} partielle(s)",
+    ]
+    if available_blocks:
+        parts.append("disponibles : " + ", ".join(available_blocks[:max_blocks]))
+    if partial_blocks:
+        parts.append("à consolider : " + ", ".join(partial_blocks[:max_blocks]))
+    elif unavailable_blocks:
+        parts.append("non couvertes : " + ", ".join(unavailable_blocks[:max_blocks]))
+    return ". ".join(parts) + "."
+
+
+@st.cache_data(show_spinner=False)
+def build_standard_semantic_status_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Sépare les lectures d'investigation, de classification finale, de laboratoire et d'issue."""
+    columns = [
+        "Domaine",
+        "Variable source",
+        "Cas documentes",
+        "% documente",
+        "Modalites dominantes",
+        "Commentaire",
+    ]
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, Any]] = []
+    n_cases = max(int(len(df)), 1)
+
+    investigation_mask = _standard_investigation_documented_mask(df)
+    investigation_sources = [
+        col for col in [COL_INVEST, DATE_INV, "Classification_investigation_std", COL_CLASS_INVEST]
+        if col in df.columns and _series_effectively_documented_mask(df[col]).any()
+    ]
+    investigation_class_series = _standard_investigation_classification_series(df)
+    rows.append(
+        {
+            "Domaine": "Investigation",
+            "Variable source": " / ".join(investigation_sources) if investigation_sources else "Aucune",
+            "Cas documentes": int(investigation_mask.sum()),
+            "% documente": round(float(investigation_mask.mean() * 100.0), 1),
+            "Modalites dominantes": _format_top_modalities(investigation_class_series),
+            "Commentaire": "Lecture standard de l'investigation et de la classification d'investigation.",
+        }
+    )
+
+    final_source_name = "Aucune"
+    final_series = pd.Series(pd.NA, index=df.index, dtype="string")
+    if "Classification_finale_std" in df.columns and _series_effectively_documented_mask(df["Classification_finale_std"]).any():
+        final_source_name = "Classification_finale_std"
+        final_series = df["Classification_finale_std"].astype("string")
+    elif COL_CLASS in df.columns and _series_effectively_documented_mask(df[COL_CLASS]).any():
+        final_source_name = COL_CLASS
+        final_series = df[COL_CLASS].astype("string")
+    final_mask = _series_effectively_documented_mask(final_series)
+    rows.append(
+        {
+            "Domaine": "Classification finale",
+            "Variable source": final_source_name,
+            "Cas documentes": int(final_mask.sum()),
+            "% documente": round(float(final_mask.sum() / n_cases * 100.0), 1),
+            "Modalites dominantes": _format_top_modalities(final_series),
+            "Commentaire": "Synthèse finale du cas, distincte de la classification d'investigation.",
+        }
+    )
+
+    lab_available, lab_source_name, lab_source_series = _resolve_documented_standard_column(df, "Resultat_labo")
+    if lab_available and lab_source_series is not None:
+        lab_series = _tdr_result_norm(lab_source_series).astype("string")
+    else:
+        lab_series = pd.Series(pd.NA, index=df.index, dtype="string")
+    lab_mask = _series_effectively_documented_mask(lab_series)
+    rows.append(
+        {
+            "Domaine": "Resultat laboratoire",
+            "Variable source": lab_source_name or "Aucune",
+            "Cas documentes": int(lab_mask.sum()),
+            "% documente": round(float(lab_mask.sum() / n_cases * 100.0), 1),
+            "Modalites dominantes": _format_top_modalities(lab_series),
+            "Commentaire": "Lecture biologique normalisée, séparée du statut de cas et de l'issue clinique.",
+        }
+    )
+
+    issue_available, issue_source_name, issue_source_series = _resolve_documented_standard_column(df, COL_ISSUE)
+    issue_series = issue_source_series.astype("string") if issue_available and issue_source_series is not None else pd.Series(pd.NA, index=df.index, dtype="string")
+    issue_mask = _series_effectively_documented_mask(issue_series)
+    rows.append(
+        {
+            "Domaine": "Issue clinique",
+            "Variable source": issue_source_name or "Aucune",
+            "Cas documentes": int(issue_mask.sum()),
+            "% documente": round(float(issue_mask.sum() / n_cases * 100.0), 1),
+            "Modalites dominantes": _format_top_modalities(issue_series),
+            "Commentaire": "Lecture de l'évolution clinique, des décès et des sorties documentées.",
+        }
+    )
+
+    return pd.DataFrame(rows, columns=columns)
+
+
 def _standard_lab_result_series(df: pd.DataFrame) -> pd.Series:
     """Retourne le résultat laboratoire/TDR normalisé disponible."""
     if COL_TDRR in df.columns and df[COL_TDRR].notna().any():
@@ -4114,7 +4373,7 @@ def build_delay_group_summary(df: pd.DataFrame, delay_col: str, group_col: str, 
         grouped[c] = pd.to_numeric(grouped[c], errors="coerce").round(1)
 
     return grouped.sort_values(["n", group_col], ascending=[False, True])
-
+@st.cache_data(show_spinner=False)
 def build_recommended_fields_matrix(df: pd.DataFrame) -> pd.DataFrame:
     """Matrice simple de disponibilité des champs standards recommandés."""
     field_groups = {
@@ -4130,11 +4389,17 @@ def build_recommended_fields_matrix(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for grp, cols in field_groups.items():
         for c in cols:
+            available, support_label, support_series = _resolve_documented_standard_column(df, c)
+            support_text = "Aucun"
+            if available and support_label:
+                support_text = c if support_label == c else f"{c} (via {support_label})"
             rows.append({
                 "Bloc": grp,
                 "Variable": c,
-                "Disponible": "Oui" if c in df.columns else "Non",
-                "Complétude_%": round(float(df[c].notna().mean() * 100), 1) if c in df.columns else np.nan,
+                "Disponible": "Oui" if available else "Non",
+                "Support": support_text,
+                "Complétude_%": round(float(_series_effectively_documented_mask(support_series).mean() * 100), 1)
+                if available and support_series is not None else np.nan,
             })
     return pd.DataFrame(rows)
 
@@ -4206,6 +4471,73 @@ STANDARD_ANALYSIS_BLOCK_SPECS = [
 ]
 
 
+STANDARD_ANALYSIS_EQUIVALENT_COLUMNS = {
+    "Classification_finale": [
+        {"source": "Classification_finale_std"},
+        {"source": "Resultat_labo"},
+        {"source": "Resultat_final_labo"},
+        {"source": COL_TDRR},
+    ],
+    "Resultat_labo": [
+        {"source": "Resultat_final_labo"},
+        {"source": COL_TDRR},
+        {"source": "Classification_finale", "validator": "lab_result_like"},
+    ],
+    "Issue": [
+        {"source": "Issue_std"},
+    ],
+}
+
+
+def _is_lab_result_like_series(series: pd.Series | None) -> bool:
+    """Valide prudemment qu'une colonne texte ressemble bien à un résultat laboratoire."""
+    if series is None:
+        return False
+    normalized = _tdr_result_norm(series).astype("string").str.strip()
+    documented = normalized.notna() & normalized.ne("")
+    if not bool(documented.any()):
+        return False
+    recognized_values = TDR_POS_SET.union(TDR_NEG_SET).union(
+        {"indetermine", "invalide", "invalid", "bande absente", "en attente", "non teste"}
+    )
+    recognized_ratio = float(normalized[documented].isin(recognized_values).mean())
+    return recognized_ratio >= 0.6
+
+
+def _resolve_equivalent_column_spec(
+    df: pd.DataFrame,
+    column_name: str,
+) -> tuple[bool, str | None, pd.Series | None]:
+    """Cherche une source équivalente documentée pour une variable standard."""
+    for spec in STANDARD_ANALYSIS_EQUIVALENT_COLUMNS.get(column_name, []):
+        source_name = str(spec.get("source", "")).strip()
+        if not source_name or source_name not in df.columns:
+            continue
+        source_series = df[source_name]
+        validator_name = str(spec.get("validator", "")).strip().lower()
+        if validator_name == "lab_result_like" and not _is_lab_result_like_series(source_series):
+            continue
+        if _series_effectively_documented_mask(source_series).any():
+            return True, source_name, source_series
+    return False, None, None
+
+
+def _resolve_documented_standard_column(
+    df: pd.DataFrame,
+    column_name: str,
+) -> tuple[bool, str | None, pd.Series | None]:
+    """Retourne la meilleure source documentée pour une variable standard canonique."""
+    if column_name in df.columns and _series_effectively_documented_mask(df[column_name]).any():
+        return True, column_name, df[column_name]
+    return _resolve_equivalent_column_spec(df, column_name)
+
+
+def _find_documented_equivalent_column(df: pd.DataFrame, column_name: str) -> tuple[bool, str | None]:
+    """Cherche une colonne équivalente documentée pour éviter les faux vides métier."""
+    alias_found, alias_name, _ = _resolve_equivalent_column_spec(df, column_name)
+    return alias_found, alias_name
+
+@st.cache_data(show_spinner=False)
 def build_standard_analysis_capability_matrix(df: pd.DataFrame) -> pd.DataFrame:
     """Matrice des analyses standard activables a partir des colonnes disponibles."""
     columns = [
@@ -4224,13 +4556,28 @@ def build_standard_analysis_capability_matrix(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for spec in STANDARD_ANALYSIS_BLOCK_SPECS:
         expected = [col for col in spec["expected"] if col]
-        present = [col for col in expected if col in df.columns]
-        missing = [col for col in expected if col not in df.columns]
-        empty_present = [
-            col for col in present
-            if not _series_effectively_documented_mask(df[col]).any()
-        ]
-        documented_present = [col for col in present if col not in empty_present]
+        documented_present: list[str] = []
+        empty_present: list[str] = []
+        missing: list[str] = []
+
+        for col in expected:
+            if col in df.columns:
+                if _series_effectively_documented_mask(df[col]).any():
+                    documented_present.append(col)
+                else:
+                    alias_found, alias_name = _find_documented_equivalent_column(df, col)
+                    if alias_found and alias_name is not None:
+                        documented_present.append(f"{col} (via {alias_name})")
+                    else:
+                        empty_present.append(col)
+                continue
+
+            alias_found, alias_name = _find_documented_equivalent_column(df, col)
+            if alias_found and alias_name is not None:
+                documented_present.append(f"{col} (via {alias_name})")
+            else:
+                missing.append(col)
+
         expected_count = max(len(expected), 1)
         score = round(len(documented_present) / expected_count * 100.0, 1)
         minimum_required = int(spec.get("minimum_required", 1))
@@ -4257,7 +4604,7 @@ def build_standard_analysis_capability_matrix(df: pd.DataFrame) -> pd.DataFrame:
 
     return pd.DataFrame(rows, columns=columns)
 
-
+@st.cache_data(show_spinner=False)
 def build_standard_file_structure_audit(
     df: pd.DataFrame,
     *,
@@ -4285,17 +4632,28 @@ def build_standard_file_structure_audit(
         return pd.DataFrame(columns=columns)
 
     field_matrix = build_recommended_fields_matrix(df)
-    expected_fields = (
-        field_matrix["Variable"].astype("string").dropna().unique().tolist()
+    present_fields = (
+        field_matrix.loc[field_matrix["Disponible"].astype("string").eq("Oui"), "Variable"]
+        .astype("string")
+        .dropna()
+        .unique()
+        .tolist()
         if not field_matrix.empty else []
     )
-    present_fields = [col for col in expected_fields if col in df.columns]
-    missing_fields = [col for col in expected_fields if col not in df.columns]
+    missing_fields = (
+        field_matrix.loc[field_matrix["Disponible"].astype("string").ne("Oui"), "Variable"]
+        .astype("string")
+        .dropna()
+        .unique()
+        .tolist()
+        if not field_matrix.empty else []
+    )
     empty_columns = [
         col for col in df.columns
         if not _series_effectively_documented_mask(df[col]).any()
     ]
-    coverage = round(len(present_fields) / max(len(expected_fields), 1) * 100.0, 1) if expected_fields else 0.0
+    expected_count = int(field_matrix["Variable"].astype("string").dropna().nunique()) if not field_matrix.empty else 0
+    coverage = round(len(present_fields) / max(expected_count, 1) * 100.0, 1) if expected_count else 0.0
 
     capability_matrix = build_standard_analysis_capability_matrix(df)
     available_blocks = capability_matrix.loc[

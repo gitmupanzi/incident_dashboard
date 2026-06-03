@@ -442,7 +442,11 @@ def render_quality_tab(ctx: dict) -> None:
             - Un signal de qualité ne confirme pas à lui seul une défaillance opérationnelle ; il doit guider la vérification.
             """,
             expanded=False
-        )     
+        )
+        if isinstance(df_f, pd.DataFrame):
+            st.caption(build_standard_capability_note(df_f))
+            with st.expander("Repere standard multi-maladies", expanded=False):
+                st.dataframe(build_standard_disease_profile(disease_key, df_f), width="stretch", hide_index=True)
         
         with st.expander("Paramétrage des provinces attendues", expanded=False):
 

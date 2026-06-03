@@ -598,6 +598,10 @@ def render_surveillance_tab(ctx: dict) -> None:
             "Les KPI globaux, cartes et profils restent dans la vue d'ensemble. "
             "Ici, l'accent est mis sur le suivi dans le temps et les signaux a verifier."
         )
+        if isinstance(df_f, pd.DataFrame):
+            st.caption(build_standard_capability_note(df_f))
+            with st.expander("Repere standard multi-maladies", expanded=False):
+                st.dataframe(build_standard_disease_profile(disease_key, df_f), width="stretch", hide_index=True)
         cfg1, cfg2, cfg3 = st.columns([0.9, 0.9, 1.2])
         with cfg1:
             top_province_n = st.number_input(

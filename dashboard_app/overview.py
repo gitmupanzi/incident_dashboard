@@ -74,7 +74,11 @@ from dashboard_app.domain import (
     build_delay_group_summary,
     build_interactive_geo_map,
     build_operational_risk_score,
+    build_standard_capability_note,
+    build_standard_disease_profile,
     build_recommended_fields_matrix,
+    summarize_standard_analysis_capabilities,
+    build_standard_semantic_status_summary,
     build_standard_action_tracker_template,
     build_standard_signal_table,
     build_spatiotemporal_cluster_table,
@@ -543,12 +547,15 @@ def build_who_narrative_summary(df_: pd.DataFrame) -> str:
     else:
         morbi_txt += "."
 
+    capability_txt = build_standard_capability_note(df_)
+
     return (
         f"{morbi_txt} "
         f"La létalité observée (CFR) est estimée à {cfr_txt} %. "
         f"Le profil dominant des cas met en évidence le sexe « {sex_top} » et le groupe d’âge « {age_top} ». "
         f"{geo_txt}. "
         f"{lab_txt} "
+        f"{capability_txt} "
         f"Cette synthèse descriptive doit être interprétée à la lumière de la complétude, de la promptitude et de la qualité globale des données disponibles."
     )
 
@@ -849,6 +856,7 @@ def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
 def render_context_row(files_used: list[str], disease_key: str, df_: pd.DataFrame, payload: Dict[str, Any]) -> None:
     """Affiche quelques repères analytiques juste sous le bandeau principal."""
     disease_label = DISEASE_SPECS.get(disease_key, {}).get("label", str(disease_key))
+    capability_summary = summarize_standard_analysis_capabilities(df_)
     source_value = "Aucun fichier" if not files_used else str(files_used[0]).replace("upload:", "")
     if len(source_value) > 42:
         source_value = source_value[:39] + "..."
@@ -865,6 +873,7 @@ def render_context_row(files_used: list[str], disease_key: str, df_: pd.DataFram
         ("Périmètre", disease_label),
         ("Période", period_value),
         ("Couverture", f"{payload.get('reported_provinces', 0)} provinces | {payload.get('reported_zs', 0)} ZS"),
+        ("Briques standard", f"{int(capability_summary.get('available_count', 0))} dispo | {int(capability_summary.get('partial_count', 0))} partielles"),
     ]
     html_blocks = []
     for label, value in chips:
@@ -877,6 +886,12 @@ def render_context_row(files_used: list[str], disease_key: str, df_: pd.DataFram
 """
         )
     st.markdown(f"<div class='cousp-context-row'>{''.join(html_blocks)}</div>", unsafe_allow_html=True)
+    with st.expander("Lecture standard multi-maladies", expanded=False):
+        st.caption(build_standard_capability_note(df_))
+        st.dataframe(build_standard_disease_profile(disease_key, df_), width="stretch", hide_index=True)
+        semantic_summary = build_standard_semantic_status_summary(df_)
+        if not semantic_summary.empty:
+            st.dataframe(semantic_summary, width="stretch", hide_index=True)
 
 
 def build_dashboard_kpi_card_html(title: str, value: str, subtitle: str, theme: str, span: int = 1) -> str:
@@ -991,8 +1006,12 @@ def _build_classification_counts(df_: pd.DataFrame) -> dict[str, int]:
     """Compte les grandes classes épidémiologiques standardisées."""
     if "Classification_finale_std" in df_.columns and df_["Classification_finale_std"].notna().any():
         series = _clean_count_series(df_["Classification_finale_std"])
+    elif "Classification_investigation_std" in df_.columns and df_["Classification_investigation_std"].notna().any():
+        series = _clean_count_series(df_["Classification_investigation_std"])
     elif COL_CLASS in df_.columns:
         series = _clean_count_series(df_[COL_CLASS])
+    elif "Classification_investigation" in df_.columns:
+        series = _clean_count_series(df_["Classification_investigation"])
     else:
         return {}
     counts = series.value_counts(dropna=False)
@@ -1050,8 +1069,8 @@ def _build_investigation_counts(df_: pd.DataFrame) -> dict[str, Any]:
         ("investigated_oui_non" in df_.columns)
         or (COL_INVEST in df_.columns)
         or (DATE_INV in df_.columns)
-        or ("Classification_finale_std" in df_.columns)
-        or (COL_CLASS in df_.columns)
+        or ("Classification_investigation_std" in df_.columns)
+        or ("Classification_investigation" in df_.columns)
     )
 
     return {
@@ -1064,7 +1083,11 @@ def _build_alert_proxy_counts(df_: pd.DataFrame, classification_counts: dict[str
     """Construit des proxies simples de chaîne d'alerte pour les line lists."""
     notified_alerts = int(len(df_))
     investigation_counts = _build_investigation_counts(df_)
-    if "Classification_finale_std" in df_.columns and df_["Classification_finale_std"].notna().any():
+    if "Classification_investigation_std" in df_.columns and df_["Classification_investigation_std"].notna().any():
+        classification_series = _clean_count_series(df_["Classification_investigation_std"])
+    elif "Classification_investigation" in df_.columns and df_["Classification_investigation"].notna().any():
+        classification_series = _clean_count_series(df_["Classification_investigation"])
+    elif "Classification_finale_std" in df_.columns and df_["Classification_finale_std"].notna().any():
         classification_series = _clean_count_series(df_["Classification_finale_std"])
     elif COL_CLASS in df_.columns and df_[COL_CLASS].notna().any():
         classification_series = _clean_count_series(df_[COL_CLASS])

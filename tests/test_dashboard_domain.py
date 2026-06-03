@@ -43,11 +43,15 @@ from dashboard_app.domain import (
     DATE_PREL,
     DATE_RECEP,
     DATE_RES,
+    build_recommended_fields_matrix,
+    build_standard_capability_note,
     build_cousp_standard_export_package,
     build_standard_analysis_capability_matrix,
     build_standard_classification_audit,
     build_standard_care_issue_audit,
+    build_standard_disease_profile,
     build_standard_file_structure_audit,
+    build_standard_semantic_status_summary,
     build_standard_symptom_audit,
     build_operational_risk_score,
     cascade_metrics,
@@ -1769,6 +1773,117 @@ class StandardAnalysisCapabilityTest(unittest.TestCase):
 
         self.assertIn("Classification_investigation", str(block_row["Colonnes presentes"]))
         self.assertNotIn("Classification_investigation", str(block_row["Colonnes vides"]))
+
+    def test_capability_matrix_treats_classification_finale_as_supported_by_lab_result(self):
+        df = pd.DataFrame(
+            {
+                "Localite": ["Loc1", "Loc2"],
+                COL_PROV: ["Kinshasa", "Kinshasa"],
+                COL_ZS: ["Gombe", "Bandalungwa"],
+                COL_CLASS: [pd.NA, pd.NA],
+                COL_PREL: ["Oui", "Oui"],
+                DATE_RECEP: ["2026-01-04", "2026-01-05"],
+                DATE_RES: ["2026-01-06", "2026-01-07"],
+                COL_ISSUE: ["Vivant", "Deces"],
+                "Resultat_labo": ["positif", "negatif"],
+            }
+        )
+        df = standardize_df(df)
+
+        matrix = build_standard_analysis_capability_matrix(df)
+        block_row = matrix.loc[matrix["Bloc analytique"] == "Action operationnelle"].iloc[0]
+
+        self.assertIn("Classification_finale (via Resultat_labo)", str(block_row["Colonnes presentes"]))
+        self.assertNotIn("Classification_finale", str(block_row["Colonnes vides"]))
+
+    def test_recommended_fields_matrix_uses_lab_like_classification_finale_as_result_support(self):
+        df = pd.DataFrame(
+            {
+                "Classification_finale": ["Positif", "Negatif"],
+                COL_PREL: ["Oui", "Oui"],
+            }
+        )
+        df = standardize_df(df)
+
+        field_matrix = build_recommended_fields_matrix(df)
+        result_row = field_matrix.loc[field_matrix["Variable"] == "Resultat_labo"].iloc[0]
+
+        self.assertEqual(str(result_row["Disponible"]), "Oui")
+        self.assertIn("Classification_finale", str(result_row["Support"]))
+        self.assertEqual(float(result_row["Complétude_%"]), 100.0)
+
+    def test_recommended_fields_matrix_does_not_treat_case_status_as_lab_result_support(self):
+        df = pd.DataFrame(
+            {
+                "Classification_finale": ["Probable", "Confirme"],
+                COL_PREL: ["Oui", "Oui"],
+            }
+        )
+        df = standardize_df(df)
+
+        field_matrix = build_recommended_fields_matrix(df)
+        result_row = field_matrix.loc[field_matrix["Variable"] == "Resultat_labo"].iloc[0]
+
+        self.assertEqual(str(result_row["Disponible"]), "Non")
+        self.assertEqual(str(result_row["Support"]), "Aucun")
+
+    def test_standard_disease_profile_reports_available_blocks(self):
+        df = pd.DataFrame(
+            {
+                DATE_NOTIF: ["2026-01-03"],
+                COL_PROV: ["Kinshasa"],
+                COL_ZS: ["Gombe"],
+                COL_PREL: ["Oui"],
+                "Resultat_labo": ["positif"],
+                DATE_PREL: ["2026-01-03"],
+                DATE_RES: ["2026-01-04"],
+                COL_ISSUE: ["Vivant"],
+            }
+        )
+        df = standardize_df(df)
+
+        profile = build_standard_disease_profile("ebola", df)
+
+        self.assertFalse(profile.empty)
+        row = profile.iloc[0]
+        self.assertIn("Ebola", str(row["Maladie"]))
+        self.assertTrue(str(row["Blocs disponibles"]).strip())
+
+    def test_standard_semantic_status_summary_separates_domains(self):
+        df = pd.DataFrame(
+            {
+                COL_INVEST: ["Oui", None],
+                DATE_INV: ["2026-01-03", None],
+                "Classification_investigation": ["Suspect", "Confirme"],
+                COL_CLASS: ["Probable", "Non cas"],
+                "Resultat_labo": ["positif", "negatif"],
+                COL_ISSUE: ["Vivant", "Deces"],
+            }
+        )
+        df = standardize_df(df)
+
+        summary = build_standard_semantic_status_summary(df)
+
+        self.assertEqual(
+            list(summary["Domaine"]),
+            ["Investigation", "Classification finale", "Resultat laboratoire", "Issue clinique"],
+        )
+        lab_row = summary.loc[summary["Domaine"] == "Resultat laboratoire"].iloc[0]
+        self.assertIn("positif", str(lab_row["Modalites dominantes"]))
+        self.assertEqual(str(lab_row["Variable source"]), "Resultat_labo")
+
+    def test_standard_capability_note_mentions_partial_blocks(self):
+        df = pd.DataFrame(
+            {
+                DATE_NOTIF: ["2026-01-03"],
+                COL_PROV: ["Kinshasa"],
+            }
+        )
+        df = standardize_df(df)
+
+        note = build_standard_capability_note(df)
+
+        self.assertTrue(note.strip())
 
 
 class StandardClassificationAuditTest(unittest.TestCase):

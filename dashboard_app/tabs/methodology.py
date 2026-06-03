@@ -47,17 +47,6 @@ def _build_conservative_audit_scope(
 
     return audit_scope
 
-
-def _clear_builder_cache(builder) -> None:
-    """Efface prudemment le cache Streamlit d'un builder quand il en expose un."""
-    clear_fn = getattr(builder, "clear", None)
-    if callable(clear_fn):
-        try:
-            clear_fn()
-        except Exception:
-            pass
-
-
 def render_methodology_tab(ctx: dict) -> None:
     """Render the methodology and interpretation tab."""
     globals().update(ctx)
@@ -90,8 +79,6 @@ def render_methodology_tab(ctx: dict) -> None:
     structure_audit_builder = globals().get("build_standard_file_structure_audit")
     capability_matrix_builder = globals().get("build_standard_analysis_capability_matrix")
     if callable(structure_audit_builder) and callable(capability_matrix_builder) and isinstance(methodology_scope, pd.DataFrame):
-        _clear_builder_cache(structure_audit_builder)
-        _clear_builder_cache(capability_matrix_builder)
         structure_audit = structure_audit_builder(
             methodology_scope,
             source_name=current_disease_label,
@@ -118,12 +105,32 @@ def render_methodology_tab(ctx: dict) -> None:
             )
             st.dataframe(capability_matrix, width="stretch", hide_index=True, height=380)
 
+    disease_profile_builder = globals().get("build_standard_disease_profile")
+    semantic_status_builder = globals().get("build_standard_semantic_status_summary")
+    capability_note_builder = globals().get("build_standard_capability_note")
+    if callable(disease_profile_builder) and isinstance(methodology_scope, pd.DataFrame):
+        profile_df = disease_profile_builder(disease_key, methodology_scope)
+        if not profile_df.empty:
+            st.markdown("### 0.b Profil standard multi-maladies")
+            if callable(capability_note_builder):
+                st.caption(capability_note_builder(methodology_scope))
+            st.dataframe(profile_df, width="stretch", hide_index=True)
+
+    if callable(semantic_status_builder) and isinstance(methodology_scope, pd.DataFrame):
+        semantic_status = semantic_status_builder(methodology_scope)
+        if not semantic_status.empty:
+            st.markdown("### 0.c Lectures semantiques standard")
+            st.caption(
+                "Ce tableau separe les lectures d'investigation, de classification finale, de resultat laboratoire et d'issue clinique "
+                "pour eviter les confusions entre statuts de cas, confirmation biologique et evolution clinique."
+            )
+            st.dataframe(semantic_status, width="stretch", hide_index=True)
+
     classification_audit_builder = globals().get("build_standard_classification_audit")
     if callable(classification_audit_builder) and isinstance(methodology_scope, pd.DataFrame):
-        _clear_builder_cache(classification_audit_builder)
         classification_audit = classification_audit_builder(methodology_scope)
         if not classification_audit.empty:
-            st.markdown("### 0.b Classification standard active")
+            st.markdown("### 0.d Classification standard active")
             st.caption(
                 "Ce tableau separe, quand la source le permet, la lecture de qualification des alertes "
                 "de la classification d'investigation et de la synthese finale / resultat."
@@ -132,10 +139,9 @@ def render_methodology_tab(ctx: dict) -> None:
 
     care_issue_audit_builder = globals().get("build_standard_care_issue_audit")
     if callable(care_issue_audit_builder) and isinstance(methodology_scope, pd.DataFrame):
-        _clear_builder_cache(care_issue_audit_builder)
         care_issue_audit = care_issue_audit_builder(methodology_scope)
         if not care_issue_audit.empty:
-            st.markdown("### 0.c Prise en charge / issue standard")
+            st.markdown("### 0.e Prise en charge / issue standard")
             st.caption(
                 "Ce resume transverse consolide admission, isolement, issue, deces et duree de sejour "
                 "quand les variables correspondantes sont documentees."
@@ -144,10 +150,9 @@ def render_methodology_tab(ctx: dict) -> None:
 
     symptom_audit_builder = globals().get("build_standard_symptom_audit")
     if callable(symptom_audit_builder) and isinstance(methodology_scope, pd.DataFrame):
-        _clear_builder_cache(symptom_audit_builder)
         symptom_audit = symptom_audit_builder(methodology_scope)
         if not symptom_audit.empty:
-            st.markdown("### 0.d Bloc clinique / symptomes")
+            st.markdown("### 0.f Bloc clinique / symptomes")
             st.caption(
                 "Ce bloc reste optionnel : il ne s'affiche que lorsque la source documente des symptomes exploitables."
             )
@@ -333,7 +338,8 @@ IREP = w_tendance × Score_tendance
     if not field_matrix.empty:
         with st.expander("Disponibilité des variables standards dans la source filtrée", expanded=False):
             st.caption(
-                "Cette matrice montre quelles variables standards sont présentes et à quel niveau de complétude dans les données actuelles."
+                "Cette matrice montre quelles variables standards sont présentes et à quel niveau de complétude dans les données actuelles. "
+                "Elle tient aussi compte des équivalences métier reconnues quand une information canonique est portée par un autre champ standard."
             )
             st.dataframe(field_matrix, width="stretch", hide_index=True, height=420)
 

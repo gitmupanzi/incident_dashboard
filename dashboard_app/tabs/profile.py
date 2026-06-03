@@ -27,6 +27,10 @@ def render_profile_tab(ctx: dict) -> None:
             """,
             expanded=False
         )
+        if isinstance(df_f, pd.DataFrame):
+            st.caption(build_standard_capability_note(df_f))
+            with st.expander("Repere standard multi-maladies", expanded=False):
+                st.dataframe(build_standard_disease_profile(disease_key, df_f), width="stretch", hide_index=True)
         
       
         st.divider()

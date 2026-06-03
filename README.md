@@ -24,6 +24,8 @@ L'application combine plusieurs briques dans une meme interface :
   `delai_adm_to_issue`
 - analyses descriptives Temps-Lieu-Personne
 - suivi standardise de la chaine alerte -> investigation -> prelevement -> laboratoire -> prise en charge
+- audit standard du fichier, matrice des capacites analytiques et profil standard multi-maladies
+- separation semantique standard entre investigation, classification finale, resultat laboratoire et issue clinique
 - controle qualite, detection de doublons et revue de coherence
 - tableaux standard de cas a relancer dans la chaine de surveillance
 - generation d'une synthese COUSP orientee decision
@@ -37,14 +39,25 @@ Le projet vise un cadre de lecture standard multi-maladies pour les listes linea
 
 - `Alerte` : `N_alerte`, `Source_alerte`, `Localite` quand ils existent
 - `Notification` : cas effectivement presents dans le perimetre filtre
-- `Investigation` : `Investigation`, `Date_investigation`, `Classification_investigation` ou, a defaut, une `Classification_finale` exploitable
+- `Investigation` : `Investigation`, `Date_investigation`, `Classification_investigation`
 - `Exposition` : lien epidemiologique, cas source, facteur d'exposition
 - `Prelevement` : `Prelevement`, `Date_prelevement`, `Type_de_prelevement`
 - `Laboratoire` : `Date_reception_labo`, `Resultat_labo`, `Resultat_final_labo` ou `TDR_Resultat`, `Date_confirmation`
 - `Prise en charge / Issue` : `Hospitalisation`, `Date_admission_au_CT`, `Issue`, `Date_issue`
 
 Cette organisation permet de rester standard meme quand certaines maladies ont moins de variables que d'autres. Les blocs absents dans la source ne cassent pas le dashboard : ils sont simplement reduits ou ignores.
-Pour l'investigation, le dashboard applique une convention standard importante : une classification exploitable est consideree comme une forte preuve qu'une investigation a eu lieu, meme si la colonne `Investigation` est absente ou vide.
+Pour l'investigation, le dashboard applique une convention standard importante : une classification d'investigation exploitable est consideree comme une forte preuve qu'une investigation a eu lieu, meme si la colonne `Investigation` est absente ou vide.
+`Classification_finale` n'est plus utilisee comme substitut automatique de l'investigation ; elle est lue separement comme synthese finale ou comme support de resultat laboratoire seulement quand les valeurs le justifient.
+
+### Difference entre `Classification_investigation` et `Classification_finale`
+
+- `Classification_investigation` decrit la lecture epidemiologique du cas apres investigation.
+- `Classification_investigation` sert a documenter l'etape `Investigation` de la chaine standard.
+- `Classification_investigation` peut porter des statuts comme `Suspect`, `Probable`, `Confirme`, `Non cas`.
+- `Classification_finale` ne doit pas etre confondue avec l'investigation.
+- `Classification_finale` represente une synthese finale de cas, ou dans certaines sources un support de resultat biologique final.
+- quand `Classification_finale` contient des modalites comme `Positif`, `Negatif`, `Invalide`, `Indetermine`, elle est traitee comme proche d'un `Resultat_labo`, pas comme une classification d'investigation.
+- dans le dashboard, la logique standard priorise donc `Classification_investigation` pour l'investigation, et lit `Classification_finale` dans une lecture separee de synthese finale / laboratoire.
 
 ## Espaces analytiques de l'interface
 
@@ -60,6 +73,12 @@ L'interface principale expose aujourd'hui les onglets suivants :
 - `Cartographie` : cartes detaillees par province et zone de sante
 - `Methodologie` : definitions, chaines standards, denominateurs, delais, conventions analytiques et limites d'interpretation
 - `IDSR` : analyse des donnees agregees hebdomadaires, distincte du flux line list
+
+Les onglets `Vue d'ensemble`, `Surveillance`, `Profil`, `Qualite` et `Methodologie` exposent aussi des briques transversales standard :
+
+- profil standard multi-maladies de la source active
+- note de capacite standard resumant les briques disponibles, partielles et indisponibles
+- audit semantique separant investigation, classification finale, resultat laboratoire et issue clinique
 
 ## Perimetre analytique
 
@@ -126,6 +145,26 @@ Si le fichier ne suit pas un schema deja connu, l'application propose :
 
 Les profils de mapping sont geres par `dashboard_app/column_mapping.py` et sont destines a etre persistes dans `data/mappings/` lors de leur sauvegarde.
 
+## Performance Streamlit et cache
+
+Le projet utilise `st.cache_data(show_spinner=False)` sur les transformations et resumes standard les plus reutilises afin d'accelerer le chargement et les reruns Streamlit.
+
+En pratique, cela couvre notamment :
+
+- les payloads KPI d'accueil
+- les audits standards du fichier
+- la matrice des capacites analytiques
+- la matrice des champs standards recommandes
+- le profil standard multi-maladies
+- la note de capacite standard
+- le resume semantique standard
+
+Point important :
+
+- l'onglet `Methodologie` ne vide plus ces caches a chaque rendu
+- le cache se renouvelle naturellement quand le fichier, le perimetre filtre ou les DataFrames changes
+- cette strategie reduit les recalculs inutiles au lancement et lors de la navigation entre onglets
+
 ### Pour IDSR
 
 Le mode IDSR est volontairement plus strict :
@@ -155,8 +194,9 @@ Selon les modules, d'autres variables sont tres utiles :
 - `Age`, `Unite_age`
 - `Sexe`
 - `Issue`
-- `Classification_finale`
-- `Investigation` ou, a defaut, une `Classification_finale` ou une `Classification_investigation` exploitable
+- `Classification_investigation` pour documenter l'etape d'investigation et la lecture suspect / probable / confirme / non cas
+- `Classification_finale` pour la synthese finale de cas, distincte de l'investigation
+- `Investigation`, `Date_investigation` ou une `Classification_investigation` exploitable
 - `Date_prelevement`, `Date_reception_labo`, `Date_resultat`, `Date_confirmation`
 - variables de laboratoire
 
@@ -175,13 +215,18 @@ Un fichier IDSR exploitable doit fournir, selon le format disponible, des inform
 
 - harmonisation automatique des noms de colonnes et des valeurs usuelles
 - standardisation des schemas multi-maladies
+- audit standard de structure du fichier et des briques activables
+- profil standard multi-maladies adapte a la source active
+- separation standard des lectures investigation / classification finale / laboratoire / issue
+- priorisation explicite de `Classification_investigation` pour la lecture d'investigation
+- lecture de `Classification_finale` comme synthese finale ou support de resultat laboratoire selon les valeurs observees
 - calcul des semaines epidemiologiques ISO
 - harmonisation geographique avec referentiels et jointures fuzzy
 - calcul d'indicateurs standards :
   alertes documentees, cas, cas investigues, suspects, probables, confirmes,
   prelevements, receptions labo, positivite labo, deces, vivants documentes, promptitude, completude
 - calcul de la chaine standard COUSP avec denominateurs adaptes selon les colonnes disponibles
-- prise en compte standard de l'investigation documentee a partir du statut, de la date ou d'une classification exploitable
+- prise en compte standard de l'investigation documentee a partir du statut, de la date ou d'une classification d'investigation exploitable
 - alertes hebdomadaires et clusters spatio-temporels
 - tableaux standard de relance :
   cas sans investigation, suspects/probables sans prelevement, prelevements sans reception,
@@ -209,6 +254,12 @@ Pour rester multi-maladies, le dashboard n'impose pas un seul denominateur parto
   uniquement les cas avec dates valides et delai non negatif
 
 Cette convention est aussi documentee dans l'onglet `Methodologie`.
+
+En particulier :
+
+- `Classification_investigation` alimente la lecture standard de l'investigation
+- `Classification_finale` n'est pas utilisee comme substitut automatique de l'investigation
+- `Classification_finale` peut toutefois soutenir la lecture `Resultat_labo` quand ses valeurs sont manifestement biologiques
 
 ## Delais standards suivis
 
