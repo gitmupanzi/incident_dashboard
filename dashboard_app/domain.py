@@ -596,7 +596,7 @@ def standardize_ll_by_disease(df: pd.DataFrame, disease_key: str) -> pd.DataFram
     spec = DISEASE_SPECS.get(disease_key, DISEASE_SPECS["cholera"])
     df = _clean_colnames(df)
 
-    # 1) Rename spécifique (robuste aux accents, espaces, ponctuation)
+    # 1) Renommage spécifique (robuste aux accents, espaces et ponctuation)
     df = _rename_columns_by_alias_map(df, spec.get("rename_map", {}) or {})
 
     # 2) Core
@@ -737,7 +737,7 @@ PROVINCES_END  = [p for p, ok in EPIDEMIE.items() if not ok]
 
 
 # =========================
-# HELPERS (UI)
+# UTILITAIRES (UI)
 # =========================
 def get_toggle_flag(flag_name: str, default: bool = False) -> bool:
     """Lecture sûre d'un booléen UI depuis st.session_state."""
@@ -807,7 +807,7 @@ def _apply_compact_bar_spacing(fig: Optional[go.Figure], bargap: float = 0.0, ba
 
 
 def _json_safe_plotly_value(value):
-    """Convertit les valeurs pandas/numpy non sérialisables en valeurs JSON compatibles Plotly/Streamlit."""
+    """Convertit les valeurs pandas/numpy non sérialisables en valeurs JSON compatibles Plotly et Streamlit."""
     try:
         if value is pd.NA or value is pd.NaT:
             return None
@@ -862,7 +862,7 @@ def sanitize_plotly_figure_for_streamlit(fig: Optional[go.Figure]) -> Optional[g
 # SECTION: VISUALISATIONS STREAMLIT/PLOTLY
 # =========================
 def st_plot(fig, key=None, height=None, stretch=True, annotate_values: Optional[bool] = None):
-    """Affiche une figure Plotly de manière robuste et compatible Streamlit ≥ 1.31.
+    """Affiche une figure Plotly de manière robuste et compatible avec Streamlit >= 1.31.
 
     - Remplace use_container_width (déprécié) par width
     - width='stretch'  -> pleine largeur
@@ -898,7 +898,7 @@ def st_plot(fig, key=None, height=None, stretch=True, annotate_values: Optional[
 
     kwargs = {}
 
-    # ✅ Nouveau standard Streamlit
+    # Nouveau standard Streamlit
     kwargs["width"] = "stretch" if stretch else "content"
 
     if key is not None:
@@ -2163,7 +2163,7 @@ def ensure_lower(df, cols):
     return df
 
 # =========================
-# HELPERS (DATA CLEAN)
+# UTILITAIRES (NETTOYAGE DES DONNÉES)
 # =========================
 def clean_str(s: pd.Series) -> pd.Series:
     return (
@@ -2972,7 +2972,7 @@ def standardize_df(df):
     return df
 
 # =========================
-# HELPERS (Qualité & Alertes)
+# UTILITAIRES (QUALITÉ ET ALERTES)
 # =========================
 # =========================
 # SECTION: QUALITE DES DONNEES
@@ -5666,7 +5666,7 @@ def merge_standard_action_tracker_template(
     return merged
 
 # =========================
-# HELPERS (Sitrep)
+# UTILITAIRES (SITREP)
 # =========================
 def export_sitrep_pdf(payload):
     """
@@ -5696,7 +5696,7 @@ def export_sitrep_pdf(payload):
     w, h = A4
 
     # -------------------------
-    # Helpers mise en page
+    # Utilitaires de mise en page
     # -------------------------
     left = 50
     top = h - 50
@@ -5852,7 +5852,7 @@ def export_sitrep_pdf(payload):
     return buffer.getvalue()
 
 # =========================
-# HELPERS (GEO + FUZZY JOIN)
+# UTILITAIRES (GÉO + JOINTURE FUZZY)
 # =========================
 def _norm_key(x: str) -> str:
     if x is None:
@@ -6242,7 +6242,7 @@ def _to_dt(s: pd.Series) -> pd.Series:
         errors="coerce"
     )
 
-    # fallback final texte
+    # repli final sur le texte
     rest = out.isna()
     if rest.any():
         rest_raw = raw_text.loc[rest]
@@ -6275,7 +6275,7 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = _clean_colnames(df)
 
-    # --- Rename léger (variantes fréquentes -> standard)
+    # --- Renommage léger (variantes fréquentes -> standard)
     rename_map = {
         # Dates
         "date_notif": "Date_notification",
@@ -6400,7 +6400,7 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
     df["Date_notification"] = _to_dt(df["Date_notification"])
     df["Date_debut_maladie"] = _to_dt(df["Date_debut_maladie"])
 
-    # --- Age brut: fallback utile pour certaines line lists labo
+    # --- Âge brut : repli utile pour certaines line lists labo
     df["Unite_age"] = df["Unite_age"].astype("string")
     age_numeric = pd.to_numeric(df["Age"], errors="coerce")
     unit_text = df["Unite_age"].astype("string").str.strip()

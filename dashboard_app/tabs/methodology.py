@@ -1,6 +1,16 @@
-"""Render the methodology and interpretation tab."""
+"""Affiche l'onglet de méthodologie et d'interprétation."""
 
 from dashboard_app.runtime_support import inject_runtime_support
+from dashboard_app.standard_transverse import (
+    build_standard_analysis_capability_matrix,
+    build_standard_capability_note,
+    build_standard_care_issue_audit,
+    build_standard_classification_audit,
+    build_standard_disease_profile,
+    build_standard_file_structure_audit,
+    build_standard_semantic_status_summary,
+    build_standard_symptom_audit,
+)
 
 inject_runtime_support(globals())
 
@@ -48,7 +58,7 @@ def _build_conservative_audit_scope(
     return audit_scope
 
 def render_methodology_tab(ctx: dict) -> None:
-    """Render the methodology and interpretation tab."""
+    """Affiche l'onglet de méthodologie et d'interprétation."""
     globals().update(ctx)
     render_section_title(2, "Méthodologie, définitions et limites d'interprétation")
     render_reader_narrative(
@@ -76,15 +86,13 @@ def render_methodology_tab(ctx: dict) -> None:
     )
 
     st.markdown("### 0. Audit standard du fichier et analyses activables")
-    structure_audit_builder = globals().get("build_standard_file_structure_audit")
-    capability_matrix_builder = globals().get("build_standard_analysis_capability_matrix")
-    if callable(structure_audit_builder) and callable(capability_matrix_builder) and isinstance(methodology_scope, pd.DataFrame):
-        structure_audit = structure_audit_builder(
+    if isinstance(methodology_scope, pd.DataFrame):
+        structure_audit = build_standard_file_structure_audit(
             methodology_scope,
             source_name=current_disease_label,
             sheet_name="Perimetre filtre",
         )
-        capability_matrix = capability_matrix_builder(methodology_scope)
+        capability_matrix = build_standard_analysis_capability_matrix(methodology_scope)
 
         if not structure_audit.empty:
             audit_row = structure_audit.iloc[0]
@@ -105,19 +113,15 @@ def render_methodology_tab(ctx: dict) -> None:
             )
             st.dataframe(capability_matrix, width="stretch", hide_index=True, height=380)
 
-    disease_profile_builder = globals().get("build_standard_disease_profile")
-    semantic_status_builder = globals().get("build_standard_semantic_status_summary")
-    capability_note_builder = globals().get("build_standard_capability_note")
-    if callable(disease_profile_builder) and isinstance(methodology_scope, pd.DataFrame):
-        profile_df = disease_profile_builder(disease_key, methodology_scope)
+    if isinstance(methodology_scope, pd.DataFrame):
+        profile_df = build_standard_disease_profile(disease_key, methodology_scope)
         if not profile_df.empty:
             st.markdown("### 0.b Profil standard multi-maladies")
-            if callable(capability_note_builder):
-                st.caption(capability_note_builder(methodology_scope))
+            st.caption(build_standard_capability_note(methodology_scope))
             st.dataframe(profile_df, width="stretch", hide_index=True)
 
-    if callable(semantic_status_builder) and isinstance(methodology_scope, pd.DataFrame):
-        semantic_status = semantic_status_builder(methodology_scope)
+    if isinstance(methodology_scope, pd.DataFrame):
+        semantic_status = build_standard_semantic_status_summary(methodology_scope)
         if not semantic_status.empty:
             st.markdown("### 0.c Lectures semantiques standard")
             st.caption(
@@ -126,9 +130,8 @@ def render_methodology_tab(ctx: dict) -> None:
             )
             st.dataframe(semantic_status, width="stretch", hide_index=True)
 
-    classification_audit_builder = globals().get("build_standard_classification_audit")
-    if callable(classification_audit_builder) and isinstance(methodology_scope, pd.DataFrame):
-        classification_audit = classification_audit_builder(methodology_scope)
+    if isinstance(methodology_scope, pd.DataFrame):
+        classification_audit = build_standard_classification_audit(methodology_scope)
         if not classification_audit.empty:
             st.markdown("### 0.d Classification standard active")
             st.caption(
@@ -137,9 +140,8 @@ def render_methodology_tab(ctx: dict) -> None:
             )
             st.dataframe(classification_audit, width="stretch", hide_index=True, height=260)
 
-    care_issue_audit_builder = globals().get("build_standard_care_issue_audit")
-    if callable(care_issue_audit_builder) and isinstance(methodology_scope, pd.DataFrame):
-        care_issue_audit = care_issue_audit_builder(methodology_scope)
+    if isinstance(methodology_scope, pd.DataFrame):
+        care_issue_audit = build_standard_care_issue_audit(methodology_scope)
         if not care_issue_audit.empty:
             st.markdown("### 0.e Prise en charge / issue standard")
             st.caption(
@@ -148,9 +150,8 @@ def render_methodology_tab(ctx: dict) -> None:
             )
             st.dataframe(care_issue_audit, width="stretch", hide_index=True)
 
-    symptom_audit_builder = globals().get("build_standard_symptom_audit")
-    if callable(symptom_audit_builder) and isinstance(methodology_scope, pd.DataFrame):
-        symptom_audit = symptom_audit_builder(methodology_scope)
+    if isinstance(methodology_scope, pd.DataFrame):
+        symptom_audit = build_standard_symptom_audit(methodology_scope)
         if not symptom_audit.empty:
             st.markdown("### 0.f Bloc clinique / symptomes")
             st.caption(

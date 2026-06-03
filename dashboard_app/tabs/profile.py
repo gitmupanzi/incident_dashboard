@@ -1,12 +1,13 @@
-"""Render the epidemiological profile tab."""
+"""Affiche l'onglet du profil épidémiologique."""
 
 from dashboard_app.runtime_support import inject_runtime_support
+from dashboard_app.standard_transverse import build_standard_capability_note, build_standard_disease_profile
 
 inject_runtime_support(globals())
 
 
 def render_profile_tab(ctx: dict) -> None:
-    """Render the epidemiological profile tab."""
+    """Affiche l'onglet du profil épidémiologique."""
     globals().update(ctx)
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")

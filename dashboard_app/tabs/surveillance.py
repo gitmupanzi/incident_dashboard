@@ -1,6 +1,7 @@
-"""Render the surveillance analytics tab."""
+"""Affiche l'onglet d'analyses de surveillance."""
 
 from dashboard_app.runtime_support import inject_runtime_support
+from dashboard_app.standard_transverse import build_standard_capability_note, build_standard_disease_profile
 
 inject_runtime_support(globals())
 
@@ -421,7 +422,7 @@ def _render_compact_surveillance_window(
     top_zs_n: int = 5,
     extra_renderer=None,
 ) -> None:
-    """Compact surveillance window focused on time-based follow-up."""
+    """Affiche une fenêtre compacte de surveillance centrée sur le suivi temporel."""
     st.markdown(f"### {title}")
     st.caption(description)
 
@@ -526,7 +527,7 @@ def _render_compact_surveillance_window(
 
 
 def _render_weekly_priority_points_block(standard_signal_table: pd.DataFrame) -> None:
-    """Render operational priority points inside the weekly section."""
+    """Affiche les points opérationnels prioritaires dans la lecture hebdomadaire."""
     if standard_signal_table is None or standard_signal_table.empty:
         return
 
@@ -551,7 +552,7 @@ def _render_weekly_priority_points_block(standard_signal_table: pd.DataFrame) ->
 
 
 def _render_cumulative_chain_block(standard_chain_tbl: pd.DataFrame) -> None:
-    """Render the standard COUSP chain inside the cumulative section."""
+    """Affiche la chaîne COUSP standard dans la partie cumulative."""
     if standard_chain_tbl is None or standard_chain_tbl.empty:
         return
 
@@ -568,7 +569,7 @@ def _render_cumulative_chain_block(standard_chain_tbl: pd.DataFrame) -> None:
 
 
 def render_surveillance_tab(ctx: dict) -> None:
-    """Render the surveillance analytics tab."""
+    """Affiche l'onglet d'analyses de surveillance."""
     globals().update(ctx)
     if IDSR_MODE:
         render_absence_narrative("idsr_line_list")

@@ -74,11 +74,7 @@ from dashboard_app.domain import (
     build_delay_group_summary,
     build_interactive_geo_map,
     build_operational_risk_score,
-    build_standard_capability_note,
-    build_standard_disease_profile,
     build_recommended_fields_matrix,
-    summarize_standard_analysis_capabilities,
-    build_standard_semantic_status_summary,
     build_standard_action_tracker_template,
     build_standard_signal_table,
     build_spatiotemporal_cluster_table,
@@ -192,6 +188,12 @@ from dashboard_app.domain import (
     _standard_surveillance_evidence_masks,
     _standard_test_documented_mask,
     _tdr_result_norm,
+)
+from dashboard_app.standard_transverse import (
+    build_standard_capability_note,
+    build_standard_disease_profile,
+    build_standard_semantic_status_summary,
+    summarize_standard_analysis_capabilities,
 )
 from dashboard_app.core import _normalize_metric_alias_columns
 
@@ -711,146 +713,6 @@ def build_weekly_overview_table(df_: pd.DataFrame) -> pd.DataFrame:
     )
     grouped["Létalité (%)"] = np.where(grouped["Cas"] > 0, grouped["Décès"] / grouped["Cas"] * 100.0, np.nan)
     return grouped
-
-
-@st.cache_data(show_spinner=False)
-def build_dashboard_kpi_payload(df_: pd.DataFrame) -> Dict[str, Any]:
-    """Calcule les KPI principaux de la page d'accueil."""
-    kpi = compute_indicators(df_)
-    weekly = build_weekly_overview_table(df_)
-    weekly = _normalize_metric_alias_columns(weekly)
-    classification_counts = _build_classification_counts(df_)
-    issue_counts = _build_issue_counts(df_)
-    lab_counts = _build_lab_counts(df_, kpi)
-    investigation_counts = _build_investigation_counts(df_)
-    quality_focus = _build_quality_focus_metrics(df_)
-    delay_focus = _build_delay_focus_metrics(df_)
-    hotspots = _build_hotspots_table(df_)
-    priority_actions = _build_priority_actions(df_)
-
-    surveillance_chain = [
-        {
-            "label": "Notifications",
-            "value": int(kpi["n_cases"]),
-            "subtitle": "Cas filtrés",
-            "theme": "blue",
-            "color": "#2b74ca",
-        },
-        {
-            "label": "Suspects",
-            "value": int(classification_counts.get("Suspect", 0)),
-            "subtitle": "Classification standardisée",
-            "theme": "orange",
-            "color": "#f29b38",
-        },
-        {
-            "label": "Probables",
-            "value": int(classification_counts.get("Probable", 0)),
-            "subtitle": "Classification standardisée",
-            "theme": "amber",
-            "color": "#f2a53a",
-        },
-        {
-            "label": "Confirmés",
-            "value": int(classification_counts.get("Confirmé", 0)),
-            "subtitle": "Cas confirmés",
-            "theme": "green",
-            "color": "#27a063",
-        },
-        {
-            "label": "Cas investigués",
-            "value": int(investigation_counts.get("investigues", 0)),
-            "subtitle": "Investigation documentée ou inférée",
-            "theme": "navy",
-            "color": "#425a7d",
-        },
-        {
-            "label": "Prélevés",
-            "value": int(lab_counts.get("preleves", 0)),
-            "subtitle": "Prélèvement documenté",
-            "theme": "purple",
-            "color": "#7b4dff",
-        },
-        {
-            "label": "Positifs labo",
-            "value": int(lab_counts.get("positifs", 0)),
-            "subtitle": "Résultats positifs",
-            "theme": "red",
-            "color": "#e84b4b",
-        },
-        {
-            "label": "Décès",
-            "value": int(issue_counts.get("Décédé", 0)),
-            "subtitle": "Issue documentée",
-            "theme": "slate",
-            "color": "#5d6d86",
-        },
-        {
-            "label": "Vivants",
-            "value": int(issue_counts.get("Vivant", 0)),
-            "subtitle": "Issue documentée",
-            "theme": "green",
-            "color": "#1f8d57",
-        },
-    ]
-
-    provinces_epid = get_provinces_epid()
-    total_provinces = len(EPIDEMIE)
-    total_provinces_epid = len(provinces_epid)
-    reported_provinces = int(df_[COL_PROV].dropna().nunique()) if COL_PROV in df_.columns else 0
-    reported_epid_provinces = (
-        int(df_.loc[df_[COL_PROV].isin(provinces_epid), COL_PROV].dropna().nunique())
-        if COL_PROV in df_.columns
-        else 0
-    )
-    reported_zs = int(df_[COL_ZS].dropna().nunique()) if COL_ZS in df_.columns else 0
-
-    week_min = "-"
-    week_max = "-"
-    if not weekly.empty:
-        week_min = str(weekly["label"].iloc[0])
-        week_max = str(weekly["label"].iloc[-1])
-    elif COL_WNUM in df_.columns and pd.to_numeric(df_[COL_WNUM], errors="coerce").notna().any():
-        week_values = pd.to_numeric(df_[COL_WNUM], errors="coerce").dropna().astype(int)
-        week_min = f"SE{int(week_values.min()):02d}"
-        week_max = f"SE{int(week_values.max()):02d}"
-
-    latest = weekly.iloc[-1].to_dict() if not weekly.empty else {}
-    previous = weekly.iloc[-2].to_dict() if len(weekly) > 1 else {}
-    promptitude_pct, promptitude_n = pct_under_threshold(df_.get("delai_onset_to_adm"), get_session_int("seuil_jours", 2))
-    analysis_period = compute_analysis_period_value(df_)
-
-    return {
-        "cases": int(kpi["n_cases"]),
-        "deaths": int(kpi["n_deaths"]),
-        "cfr": float(kpi["cfr_pct"]) if not pd.isna(kpi["cfr_pct"]) else np.nan,
-        "week_span": f"{week_min} -> {week_max}" if week_min != "-" and week_max != "-" else "-",
-        "week_min": week_min,
-        "week_max": week_max,
-        "reported_epid_provinces": reported_epid_provinces,
-        "total_provinces_epid": total_provinces_epid,
-        "reported_provinces": reported_provinces,
-        "total_provinces": total_provinces,
-        "reported_zs": reported_zs,
-        "coverage_epid_pct": safe_pct(reported_epid_provinces, total_provinces_epid),
-        "coverage_nat_pct": safe_pct(reported_provinces, total_provinces),
-        "weekly": weekly,
-        "latest": latest,
-        "previous": previous,
-        "promptitude_pct": promptitude_pct,
-        "promptitude_n": promptitude_n,
-        "analysis_period": analysis_period,
-        "top_province": _safe_top_label(df_, COL_PROV),
-        "top_zs": _safe_top_label(df_, COL_ZS),
-        "classification_counts": classification_counts,
-        "issue_counts": issue_counts,
-        "lab_counts": lab_counts,
-        "quality_focus": quality_focus,
-        "delay_focus": delay_focus,
-        "hotspots": hotspots,
-        "priority_actions": priority_actions,
-        "surveillance_chain": surveillance_chain,
-    }
 
 
 def render_context_row(files_used: list[str], disease_key: str, df_: pd.DataFrame, payload: Dict[str, Any]) -> None:
@@ -1817,7 +1679,7 @@ def build_static_map_overview(
 
 
 def render_static_map_overview(title: str, fig: Optional[plt.Figure], note: str) -> None:
-    """Affiche une carte dans la synthèse ou un message de fallback propre."""
+    """Affiche une carte dans la synthèse ou un message de repli propre."""
     st.markdown(f"<div class='cousp-panel-title'>{title}</div>", unsafe_allow_html=True)
     if fig is None:
         st.info(note)
@@ -1894,7 +1756,7 @@ def render_interactive_map_overview(
 
 
 def _upload_geojson_to_temp(upl_obj, suffix: str = ".geojson"):
-    """Persist a Streamlit upload to a temporary file so geopandas can read it."""
+    """Persiste un upload Streamlit dans un fichier temporaire pour que geopandas puisse le lire."""
     if upl_obj is None:
         return None
     data = upl_obj.getvalue()
@@ -1924,7 +1786,7 @@ def _render_detailed_geo_level_map(
     height: int,
     static_title: str,
 ) -> None:
-    """Render one detailed map level with shared controls and filter synchronization."""
+    """Affiche un niveau de carte détaillée avec contrôles partagés et synchronisation des filtres."""
     st.subheader(f"Carte des cas par {level_label}")
     if not (geo_path and Path(geo_path).exists() and group_col in df_f.columns):
         st.info(f"Carte {level_label}: charge un GeoJSON {level_label} et assure-toi que la colonne requise est présente.")
@@ -2026,7 +1888,7 @@ def render_detailed_maps_tab(
     show_maps: bool,
     idsr_mode: bool,
 ) -> None:
-    """Render the detailed cartography tab for line-list analysis."""
+    """Affiche l'onglet de cartographie détaillée pour l'analyse des line lists."""
     tab_help(
         "Comment lire cet onglet",
         """
@@ -2190,7 +2052,7 @@ def _render_idsr_geo_level_map(
     height: int,
     static_title: str,
 ) -> None:
-    """Render a detailed IDSR map aggregated on Total_cas and sync the IDSR filters."""
+    """Affiche une carte IDSR détaillée agrégée sur Total_cas et synchronise les filtres IDSR."""
     st.subheader(f"Carte des cas agrégés par {level_label}")
     if not (geo_path and Path(geo_path).exists() and group_col in df_f.columns and cases_col in df_f.columns):
         st.info(f"Carte {level_label}: charge un GeoJSON {level_label} et assure-toi que les colonnes requises sont présentes.")
@@ -2307,7 +2169,7 @@ def render_idsr_maps_section(
     zs_col: Optional[str],
     cases_col: str = "Total_cas",
 ) -> None:
-    """Render detailed IDSR maps with static/interactive modes."""
+    """Affiche des cartes IDSR détaillées en modes statique et interactif."""
     st.markdown("### 06 · Cartographie IDSR détaillée")
     st.caption("Cartes provinces / zones de santé sur les cas agrégés filtrés, avec modes statique et interactif.")
     if "idsr_show_detailed_maps" not in st.session_state:

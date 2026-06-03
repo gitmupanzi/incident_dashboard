@@ -1,4 +1,4 @@
-"""Helpers for mapping heterogeneous line-list columns to dashboard standards."""
+"""Utilitaires de mapping des colonnes hétérogènes vers les standards du dashboard."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from dashboard_app.domain import _to_dt
 
 try:
     from rapidfuzz import fuzz
-except Exception:  # pragma: no cover - fallback kept for environments without rapidfuzz
+except Exception:  # pragma: no cover - repli conservé pour les environnements sans rapidfuzz
     fuzz = None
 
 
@@ -347,7 +347,7 @@ COLUMN_VARIANTS: dict[str, list[str]] = {
 
 
 def normalize_column_name(name: Any) -> str:
-    """Return a normalized column name for robust matching."""
+    """Retourne un nom de colonne normalisé pour un appariement robuste."""
     if name is None:
         return ""
     return _normalize_name(str(name))
@@ -401,7 +401,7 @@ def describe_mapping_candidate(
     source_column: Any,
     threshold: int = DEFAULT_CONFIDENCE_THRESHOLD,
 ) -> dict[str, Any]:
-    """Describe a single source column candidate for a standard variable."""
+    """Décrit une colonne source candidate pour une variable standard."""
     if source_column is None:
         return _build_empty_metadata()
 
@@ -465,7 +465,7 @@ def resolve_mapping_selection_metadata(
     auto_metadata: dict[str, dict[str, Any]],
     threshold: int = DEFAULT_CONFIDENCE_THRESHOLD,
 ) -> dict[str, Any]:
-    """Describe the currently selected source for a standard variable."""
+    """Décrit la source actuellement sélectionnée pour une variable standard."""
     if selected_source is None:
         return _build_empty_metadata()
 
@@ -483,7 +483,7 @@ def auto_map_columns(
     raw_columns: Iterable[Any],
     threshold: int = AUTO_APPLY_CONFIDENCE_THRESHOLD,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    """Suggest source->standard matches using exact, normalized, variant and fuzzy matching."""
+    """Propose des appariements source -> standard via matching exact, normalisé, par variantes et fuzzy."""
     raw_list = list(raw_columns)
     mapping: dict[str, Any] = {}
     metadata: dict[str, dict[str, Any]] = {}
@@ -526,7 +526,7 @@ def build_auto_applied_mapping(
     threshold: int = AUTO_APPLY_CONFIDENCE_THRESHOLD,
     include_derived: bool = False,
 ) -> dict[str, Any]:
-    """Return only the mappings that should prefill the UI automatically."""
+    """Retourne uniquement les mappings qui doivent préremplir automatiquement l'interface."""
     mapping: dict[str, Any] = {}
     for standard_name, meta in auto_metadata.items():
         if standard_name in DERIVED_COLUMNS and not include_derived:
@@ -543,7 +543,7 @@ def apply_auto_prefill_to_selection_state(
     auto_prefill_mapping: dict[str, Any],
     placeholder: str,
 ) -> dict[str, Any]:
-    """Fill only missing or placeholder selections from high-confidence suggestions."""
+    """Remplit seulement les sélections manquantes ou temporaires à partir de suggestions très fiables."""
     updated_state = dict(current_state)
     for standard_name, source_column in auto_prefill_mapping.items():
         current_value = updated_state.get(standard_name, placeholder)
@@ -566,7 +566,7 @@ def validate_mapping(
     mapping: dict[str, Optional[str]],
     required_columns: list[str] | None = None,
 ) -> tuple[bool, list[str]]:
-    """Validate required sources and alternative groups for time and age."""
+    """Valide les sources requises et les groupes alternatifs pour le temps et l'âge."""
     errors: list[str] = []
 
     assigned_sources = [source for source in mapping.values() if source]
@@ -638,7 +638,7 @@ def rename_dataframe_to_standard(
     mapping: dict[str, Optional[str]],
     keep_unmapped_columns: bool = True,
 ) -> pd.DataFrame:
-    """Rename source columns to standard names while preserving existing standard columns."""
+    """Renomme les colonnes source vers les noms standards sans écraser les colonnes standards existantes."""
     out = df.copy()
     rename_map: dict[str, str] = {}
     drop_columns: list[str] = []
@@ -775,7 +775,7 @@ def add_derived_columns_after_mapping(
     replace_existing: bool = False,
     return_info: bool = False,
 ) -> Any:
-    """Populate derived epidemiological and age columns after source renaming."""
+    """Alimente les colonnes dérivées épidémiologiques et d'âge après renommage des sources."""
     out = df.copy()
     derived_info: dict[str, Any] = {
         "weeks_calculated": 0,
@@ -951,7 +951,7 @@ def build_mapping_preview_table(
 
 
 def extract_profile_mapping(mapping: dict[str, Optional[str]]) -> dict[str, Optional[str]]:
-    """Keep source mappings and only persist derived columns used as real fallbacks."""
+    """Conserve les mappings source et ne persiste que les colonnes dérivées réellement utilisées comme repli."""
     profile_mapping = {
         column_name: source_name
         for column_name, source_name in mapping.items()
@@ -983,7 +983,7 @@ def save_mapping_profile(
     metadata: dict | None = None,
     mapping_dir: Path | None = None,
 ) -> Path:
-    """Persist a validated mapping profile as JSON."""
+    """Enregistre un profil de mapping validé au format JSON."""
     profile_txt = str(profile_name).strip()
     if not profile_txt:
         raise ValueError("Le nom du profil de mapping est obligatoire.")
@@ -1007,7 +1007,7 @@ def load_mapping_profile(
     profile_name: str,
     mapping_dir: Path | None = None,
 ) -> dict:
-    """Load a saved mapping profile JSON payload."""
+    """Charge le contenu JSON d'un profil de mapping enregistré."""
     target_dir = Path(mapping_dir or DEFAULT_MAPPING_DIR)
     candidate_names = [
         target_dir / f"{profile_name}.json",
@@ -1020,7 +1020,7 @@ def load_mapping_profile(
 
 
 def list_mapping_profiles(mapping_dir: Path | None = None) -> list[str]:
-    """List available mapping profile names."""
+    """Liste les noms des profils de mapping disponibles."""
     target_dir = Path(mapping_dir or DEFAULT_MAPPING_DIR)
     if not target_dir.exists():
         return []
@@ -1039,7 +1039,7 @@ def build_mapping_quality_report(
     mapping: dict,
     derived_info: dict | None = None,
 ) -> dict:
-    """Build a compact quality summary after mapping and derivation."""
+    """Construit un résumé compact de qualité après mapping et dérivation."""
     derived_info = derived_info or {}
     n_rows = int(len(df))
     original_columns = list(derived_info.get("original_columns", list(df.columns)))
@@ -1107,7 +1107,7 @@ def dataframe_to_standardized_excel_bytes(
     df: pd.DataFrame,
     sheet_name: str = "LineList_standardisee",
 ) -> bytes:
-    """Serialize a standardized line list to an Excel workbook in memory."""
+    """Sérialise une line list standardisée vers un classeur Excel en mémoire."""
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name=sheet_name[:31], index=False)

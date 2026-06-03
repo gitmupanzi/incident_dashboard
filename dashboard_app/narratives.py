@@ -1,4 +1,4 @@
-"""Narrative helpers and surveillance/SITREP text builders."""
+"""Utilitaires narratifs et constructeurs de textes de surveillance / SITREP."""
 
 from dashboard_app.overview import compute_analysis_period_value
 from dashboard_app.runtime_support import inject_runtime_support

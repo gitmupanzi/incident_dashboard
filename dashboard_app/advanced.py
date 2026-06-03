@@ -241,7 +241,7 @@ def _read_excel_from_bytes_cached(
                 low = {s.lower(): s for s in xls.sheet_names}
                 chosen = low.get(str(sheet_name).lower())
 
-        # 2) fallback: première feuille
+        # 2) repli : première feuille
         if chosen is None:
             chosen = xls.sheet_names[0] if xls.sheet_names else None
 
@@ -278,7 +278,7 @@ def load_excel_cached(file, sheet_name=None, engine="openpyxl", **kwargs) -> pd.
     # kwargs doivent être hashables pour cache_data
     kwargs_items = tuple(sorted(kwargs.items(), key=lambda x: x[0]))
 
-    # Cas 1: Streamlit UploadedFile
+    # Cas 1 : Streamlit UploadedFile
     if hasattr(file, "getvalue") and callable(file.getvalue):
         b = file.getvalue()
         if not b:
@@ -459,7 +459,7 @@ def compute_irep_province(
     # NB: si moins de 3, ça marche quand même.
 
     # --- agrégation hebdo provinciale ---
-    # Supporte:
+    # Prend en charge :
     # - IDSR agrégé : col_cases / col_deaths numériques existent
     # - Line list : 1 ligne = 1 cas ; décès dérivé de Issue ou is_death
     d_work = d.copy()
@@ -467,7 +467,7 @@ def compute_irep_province(
     # Cas
     if (col_cases in d_work.columns):
         d_work["_irep_cas"] = pd.to_numeric(d_work[col_cases], errors="coerce")
-        # si la colonne existe mais est majoritairement NA/non-numérique -> fallback à 1 (line list)
+        # si la colonne existe mais est majoritairement NA/non-numérique -> repli à 1 (line list)
         if d_work["_irep_cas"].notna().mean() < 0.2:
             d_work["_irep_cas"] = 1.0
         d_work["_irep_cas"] = d_work["_irep_cas"].fillna(0.0)

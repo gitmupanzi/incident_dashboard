@@ -1,4 +1,4 @@
-"""Helpers for line-list source selection and PostgreSQL loading."""
+"""Utilitaires de sélection des sources line list et de chargement PostgreSQL."""
 
 from pathlib import Path
 import re

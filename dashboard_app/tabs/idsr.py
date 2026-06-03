@@ -1,4 +1,4 @@
-"""Render the weekly IDSR analytics tab."""
+"""Affiche l'onglet d'analyses hebdomadaires IDSR."""
 
 import re
 import unicodedata
@@ -433,7 +433,7 @@ def _idsr_format_year_week_label(year: object, week: object) -> str:
 
 
 def _idsr_build_year_week_label_series(year_values: Any, week_values: Any) -> pd.Series:
-    """Construit des libellés année-semaine pour les sorties IDSR, avec fallback W##."""
+    """Construit des libellés année-semaine pour les sorties IDSR, avec repli W##."""
     week = pd.to_numeric(pd.Series(week_values), errors="coerce")
     idx = week.index
     if year_values is None:
@@ -2072,7 +2072,7 @@ def _idsr_build_hotspot_tables(
 
 
 def render_idsr_tab(ctx: dict) -> None:
-    """Render the weekly IDSR analytics tab."""
+    """Affiche l'onglet d'analyses hebdomadaires IDSR."""
     globals().update(ctx)
     render_section_title(9, "IDSR — Surveillance agrégée hebdomadaire")
     render_tab_narrative("idsr")
@@ -3004,7 +3004,7 @@ def render_idsr_tab(ctx: dict) -> None:
                     .unique()
                     .tolist()
                 )
-                # fallback : tenter depuis Semaine_epid si Num_semaine_epid vide
+                # repli : tenter depuis Semaine_epid si Num_semaine_epid est vide
                 if (not weeks) and ("Semaine_epid" in _df.columns):
                     wk = _df["Semaine_epid"].astype("string").str.extract(r"(\d{1,2})\s*$", expand=False)
                     weeks = (
@@ -3086,7 +3086,7 @@ def render_idsr_tab(ctx: dict) -> None:
                         max_key = float(yw_table.loc[yw_table["YW"] == yw_max, "YW_KEY"].iloc[0])
                         week_filter_mode = "YW"
 
-                # Fallback / option : Numéro de semaine (toujours utile)
+                # Repli / option : numéro de semaine (toujours utile)
                 weeks = _get_weeks_list(df_idsr)
                 if weeks:
                     col_min, col_max = st.columns(2)
@@ -3134,7 +3134,7 @@ def render_idsr_tab(ctx: dict) -> None:
             _yrs = idsr_year_from_debutsem(_debutsem, mode="iso")
             df9 = df9[_yrs.isin([int(y) for y in years_selected])]
         elif years_selected and ("Annee_epid" in df9.columns):
-            # fallback si DEBUTSEM absent
+            # repli si DEBUTSEM est absent
             df9 = df9[pd.to_numeric(df9["Annee_epid"], errors="coerce").isin([int(y) for y in years_selected])]
 
 
@@ -3398,7 +3398,7 @@ def render_idsr_tab(ctx: dict) -> None:
                             last = {"TIME_LAB": lab_last, "Cas": cas_last, "Deces": dec_last, "CFR_calc_%": cfr_last}
                             prev = {"Cas": cas_prev, "Deces": dec_prev, "CFR_calc_%": cfr_prev} if not df_prev_kpi.empty else None
 
-                # Fallback: si on n'a rien trouvé, on garde l'ancien comportement
+                # Repli : si rien n'est trouvé, on garde l'ancien comportement
                 if last is None and len(weekly_sorted) >= 1:
                     last = weekly_sorted.iloc[-1]
                     prev = weekly_sorted.iloc[-2] if len(weekly_sorted) >= 2 else None
@@ -3486,7 +3486,7 @@ def render_idsr_tab(ctx: dict) -> None:
                                     else _idsr_format_year_week_label(last_year, w_max)
                                 )
 
-                    # Fallback si on n'a pas réussi à isoler la semaine max
+                    # Repli si on n'a pas réussi à isoler la semaine max
                     if df_last_week.empty:
                         df_last_week = df9.copy()
                         df_prev_week = pd.DataFrame()

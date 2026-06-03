@@ -1,4 +1,4 @@
-﻿"""Render the data quality and export tab."""
+﻿"""Affiche l'onglet qualité des données et export."""
 
 from dashboard_app.domain import (
     TDR_NEG_SET,
@@ -418,9 +418,11 @@ def masquer_identifiants_techniques(
         return df
     return df.drop(columns=colonnes_presentes)
 
+from dashboard_app.standard_transverse import build_standard_capability_note, build_standard_disease_profile
+
 
 def render_quality_tab(ctx: dict) -> None:
-    """Render the data quality and export tab."""
+    """Affiche l'onglet qualité des données et export."""
     globals().update(ctx)
     render_section_title(5, "Qualité des données, promptitude et cohérence opérationnelle")
     if IDSR_MODE:
@@ -450,16 +452,16 @@ def render_quality_tab(ctx: dict) -> None:
         
         with st.expander("Paramétrage des provinces attendues", expanded=False):
 
-            # ---- Init states ----
+            # ---- Initialisation des états ----
             if "epidemie_state_tab5" not in st.session_state:
                 st.session_state.epidemie_state_tab5 = EPIDEMIE.copy()
 
             if "epid_version_tab5" not in st.session_state:
                 st.session_state.epid_version_tab5 = 0
 
-            # ---- Callbacks (ne modifient PAS les keys existantes) ----
+            # ---- Callbacks (ne modifient PAS les clés existantes) ----
             def _apply_bulk_tab5(value: bool):
-                # Met à jour le dict + change de version -> recrée les checkboxes
+                # Met à jour le dict + change de version -> recrée les cases à cocher
                 for p in EPIDEMIE.keys():
                     st.session_state.epidemie_state_tab5[p] = value
                 st.session_state.epid_version_tab5 += 1
@@ -477,7 +479,7 @@ def render_quality_tab(ctx: dict) -> None:
             provs = sorted(list(EPIDEMIE.keys()))
             cols = st.columns(3)
 
-            # ---- Checkboxes (keys versionnées) ----
+            # ---- Cases à cocher (clés versionnées) ----
             v = st.session_state.epid_version_tab5
             for i, prov in enumerate(provs):
                 with cols[i % 3]:
@@ -490,7 +492,7 @@ def render_quality_tab(ctx: dict) -> None:
                         args=(prov, wkey),
                     )
 
-            # ---- Boutons (on_click = safe) ----
+            # ---- Boutons (on_click reste sans effet de bord) ----
             c1, c2, c3 = st.columns([1, 1, 2])
             with c1:
                 st.button("Sélectionner toutes les provinces", key="tab5_all", on_click=_apply_bulk_tab5, args=(True,))
@@ -545,7 +547,7 @@ def render_quality_tab(ctx: dict) -> None:
         
             # TCD
             with st.expander("Répartition détaillée des occurrences", expanded=False):
-                # --- Scope: même logique que ton calcul "semaine max filtrée"
+                # --- Périmètre : même logique que le calcul sur la "semaine max filtrée"
                 scope_last_week = st.checkbox(
                     "Calculer uniquement sur la semaine max filtrée (même scope que la complétude)",
                     value=True,
@@ -559,7 +561,7 @@ def render_quality_tab(ctx: dict) -> None:
                 else:
                     st.caption("Scope: ensemble filtré")
         
-                # --- Outils UX (global)
+                # --- Outils d'usage (globaux)
                 cUX1, cUX2, cUX3, cUX4 = st.columns([1.1, 1.1, 1.1, 0.9])
                 with cUX1:
                     show_pct = st.checkbox("Afficher les pourcentages", value=False, key="ct_show_pct")
@@ -570,7 +572,7 @@ def render_quality_tab(ctx: dict) -> None:
                 with cUX4:
                     do_download = st.checkbox("Activer l’export", value=True, key="ct_export_on")
         
-                # --- Choix du niveau d’agrégation (on maintient les 3 options)
+                # --- Choix du niveau d’agrégation (on conserve les 3 options)
                 level = st.radio(
                     "Niveau d’agrégation",
                     ["Province (occurrences)", "Province + Zone de santé", "Tableau croisé Province × Zone"],
@@ -579,7 +581,7 @@ def render_quality_tab(ctx: dict) -> None:
                     key="ct_level"
                 )
         
-                # Helper: affiche tableau + option export
+                # Utilitaire local : affiche le tableau et l'option d'export
                 def _show_table(df_to_show: pd.DataFrame, name: str):
                     st.dataframe(
                         df_to_show, width='stretch', height=int(tbl_height),
@@ -1300,7 +1302,7 @@ def render_quality_tab(ctx: dict) -> None:
         
         st.subheader("Revue opérationnelle de la qualité des données")
         
-        # -------- Helpers (robustes) --------
+        # -------- Utilitaires robustes --------
         def _get_pct_from_cascade(casc: pd.DataFrame, key: str) -> float:
             """Récupère le % de la première ligne dont Étape contient key (robuste aux libellés)."""
             if casc is None or casc.empty or "Étape" not in casc.columns or "%" not in casc.columns:

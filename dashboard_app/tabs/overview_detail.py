@@ -1,4 +1,4 @@
-"""Render the overview detail placeholder tab."""
+"""Affiche l'onglet de détail de la vue d'ensemble."""
 
 from dashboard_app.runtime_support import inject_runtime_support
 
@@ -6,7 +6,7 @@ inject_runtime_support(globals())
 
 
 def render_overview_detail_tab(ctx: dict) -> None:
-    """Render the overview detail placeholder tab."""
+    """Affiche l'onglet de détail de la vue d'ensemble."""
     globals().update(ctx)
     st.markdown(
         """

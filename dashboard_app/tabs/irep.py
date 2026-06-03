@@ -1,4 +1,4 @@
-"""Render the decision-oriented IREP tab."""
+"""Affiche l'onglet IREP orienté vers la décision."""
 
 from functools import lru_cache
 
@@ -1399,7 +1399,7 @@ def _irep_render_window(
 
 
 def render_irep_tab(ctx: dict) -> None:
-    """Render the decision-oriented IREP tab."""
+    """Affiche l'onglet IREP orienté vers la décision."""
     globals().update(ctx)
     render_section_title(6, "Indice composite de risque épidémique (IREP)")
     render_tab_narrative("irep")

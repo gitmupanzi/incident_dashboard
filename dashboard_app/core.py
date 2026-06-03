@@ -23,7 +23,7 @@ Ancres de recherche utiles dans l'éditeur:
 # SECTION INDEX
 # 1) Imports et constantes
 # 2) Cartes et visualisations
-# 3) Helpers de nettoyage / standardisation
+# 3) Utilitaires de nettoyage / standardisation
 # 4) KPI et qualité des données
 # 5) Interface Streamlit
 # =========================
@@ -218,7 +218,7 @@ def carte_statique_matplotlib(
     if colonne_valeurs not in gdf.columns:
         return None
 
-    # ---- helpers ----
+# ---- utilitaires ----
     def _ajouter_barre_echelle(ax, longueur_km=50, loc=(0.90, 0.04), largeur_ligne=0.8, taille_police=7):
         x_min, x_max = ax.get_xlim()
         y_min, y_max = ax.get_ylim()

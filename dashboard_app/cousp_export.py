@@ -1,4 +1,4 @@
-"""Helpers internes pour construire le pack COUSP standard.
+"""Utilitaires internes pour construire le pack COUSP standard.
 
 Ce module garde `incident_dashboard` autonome: aucun import runtime n'est fait
 vers un projet frere.

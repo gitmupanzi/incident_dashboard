@@ -1,4 +1,4 @@
-"""Shared runtime support for extracted dashboard modules."""
+"""Support d'exécution partagé pour les modules extraits du dashboard."""
 
 import glob
 import hashlib
@@ -22,16 +22,18 @@ from dashboard_app.domain import (
     _norm_key,
     _resolve_map_filter_value,
     _tdr_result_norm,
-    build_standard_capability_note,
-    build_standard_classification_audit,
+)
+from dashboard_app.overview import format_range_label_for_display
+from dashboard_app.standard_transverse import (
     build_standard_analysis_capability_matrix,
+    build_standard_capability_note,
     build_standard_care_issue_audit,
+    build_standard_classification_audit,
     build_standard_disease_profile,
     build_standard_file_structure_audit,
     build_standard_semantic_status_summary,
     build_standard_symptom_audit,
 )
-from dashboard_app.overview import format_range_label_for_display
 
 _STATIC_RUNTIME_CONTEXT = {
     name: getattr(advanced_api, name)
@@ -82,7 +84,7 @@ _NARRATIVE_CONTEXT_CACHE = None
 
 
 def _get_narrative_runtime_context() -> dict:
-    """Lazy-load narrative helpers to avoid circular imports at module import time."""
+    """Charge paresseusement les utilitaires narratifs pour éviter les imports circulaires au chargement du module."""
     global _NARRATIVE_CONTEXT_CACHE
     if _NARRATIVE_CONTEXT_CACHE is None:
         from dashboard_app import narratives as narratives_api
@@ -96,13 +98,13 @@ def _get_narrative_runtime_context() -> dict:
 
 
 def inject_runtime_support(target_globals: dict) -> None:
-    """Populate module globals with the legacy dashboard runtime namespace."""
+    """Injecte dans les globals du module l'espace de noms runtime historique du dashboard."""
     target_globals.update(_STATIC_RUNTIME_CONTEXT)
 
 
 
 def build_runtime_context(**runtime_values):
-    """Build the execution context passed to extracted tab modules."""
+    """Construit le contexte d'exécution transmis aux modules d'onglets extraits."""
     ctx = dict(_STATIC_RUNTIME_CONTEXT)
     ctx.update(_get_narrative_runtime_context())
     ctx.update(runtime_values)

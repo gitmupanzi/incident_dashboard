@@ -1,4 +1,4 @@
-"""Render the statistical concepts tab."""
+"""Affiche l'onglet des notions statistiques."""
 
 import html
 
@@ -660,7 +660,7 @@ def _render_caveat_cards() -> None:
 
 
 def render_statistics_tab(ctx: dict) -> None:
-    """Render the statistical concepts tab."""
+    """Affiche l'onglet des notions statistiques."""
     globals().update(ctx)
 
     _render_statistics_styles()

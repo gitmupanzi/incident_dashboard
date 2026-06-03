@@ -80,6 +80,23 @@ Les onglets `Vue d'ensemble`, `Surveillance`, `Profil`, `Qualite` et `Methodolog
 - note de capacite standard resumant les briques disponibles, partielles et indisponibles
 - audit semantique separant investigation, classification finale, resultat laboratoire et issue clinique
 
+### Implementation des onglets `dashboard_app/tabs`
+
+Les onglets de l'interface sont maintenant isoles dans `dashboard_app/tabs/` pour clarifier la maintenance et separer la logique d'affichage de la logique metier transverse.
+
+- `overview_detail.py` : detail et messages de contexte de la vue d'ensemble
+- `statistics.py` : notions statistiques, definitions et limites d'interpretation
+- `surveillance.py` : dynamique hebdomadaire, signaux, completude de surveillance et delais
+- `profile.py` : profil epidemiologique Temps-Lieu-Personne et detail laboratoire
+- `quality.py` : qualite des donnees, coherence, completude, promptitude et exports
+- `cousp.py` : synthese standard COUSP, foyers prioritaires et export standard
+- `irep.py` : indice composite IREP et sorties orientees decision
+- `maps.py` : cartographie detaillee statique et interactive
+- `methodology.py` : audit standard du fichier, capacites analytiques, conventions et limites
+- `idsr.py` : lecture IDSR hebdomadaire agregee
+
+Ces onglets s'appuient sur `dashboard_app/standard_transverse.py`, `dashboard_app/runtime_support.py`, `dashboard_app/domain.py` et `dashboard_app/overview.py` pour partager les briques standard transversales et multi-maladies.
+
 ## Perimetre analytique
 
 ### 1. Line lists de surveillance

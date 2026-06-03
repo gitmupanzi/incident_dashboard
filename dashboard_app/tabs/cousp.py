@@ -1,4 +1,4 @@
-"""Render the COUSP standard analytics tab."""
+"""Affiche l'onglet d'analyses standards COUSP."""
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ from dashboard_app.runtime_support import inject_runtime_support
 
 # Les deux fonctions de haut niveau existent dans dashboard_app.domain.
 # dashboard_app.cousp_export contient surtout le générateur local
-# generer_feuilles_sortie_cousp_local, utilisé comme fallback ci-dessous.
+# generer_feuilles_sortie_cousp_local, utilisé comme solution de repli ci-dessous.
 try:
     from dashboard_app.domain import (
         build_cousp_standard_export_package as _domain_build_cousp_standard_export_package,
         workbook_bytes_from_sheet_dict as _domain_workbook_bytes_from_sheet_dict,
     )
-except Exception as _exc:  # fallback géré dans render_cousp_tab()
+except Exception as _exc:  # solution de repli gérée dans render_cousp_tab()
     _domain_build_cousp_standard_export_package = None
     _domain_workbook_bytes_from_sheet_dict = None
     _COUSP_DOMAIN_IMPORT_ERROR = _exc
@@ -38,7 +38,7 @@ def _fallback_build_cousp_standard_export_package(
     seuil_acceptable: float = 5.0,
     seuil_surveillance: float = 20.0,
 ) -> tuple[dict[str, pd.DataFrame], str | None]:
-    """Fallback local si les wrappers de dashboard_app.domain ne sont pas importables."""
+    """Solution locale de repli si les wrappers de dashboard_app.domain ne sont pas importables."""
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return {}, "Aucune donnée filtrée n'est disponible pour construire le pack COUSP standard."
 
@@ -66,7 +66,7 @@ def _fallback_build_cousp_standard_export_package(
 
 @st.cache_data(show_spinner=False)
 def _fallback_workbook_bytes_from_sheet_dict(sheets: dict[str, pd.DataFrame]) -> bytes:
-    """Fallback local pour sérialiser un dictionnaire de DataFrame en Excel."""
+    """Solution locale de repli pour sérialiser un dictionnaire de DataFrame en Excel."""
     if not isinstance(sheets, dict) or not sheets:
         raise ValueError("Le dictionnaire de feuilles à exporter ne peut pas être vide.")
 
@@ -85,7 +85,7 @@ def _fallback_workbook_bytes_from_sheet_dict(sheets: dict[str, pd.DataFrame]) ->
 
 
 def _resolve_cousp_helpers():
-    """Résout les helpers COUSP sans dépendre uniquement de build_runtime_context()."""
+    """Résout les utilitaires COUSP sans dépendre uniquement de build_runtime_context()."""
     build_package = globals().get("build_cousp_standard_export_package")
     workbook_builder = globals().get("workbook_bytes_from_sheet_dict")
 
@@ -121,7 +121,7 @@ def _cousp_sheet_overview_table(sheets: dict[str, pd.DataFrame]) -> pd.DataFrame
 
 
 def _cousp_added_variables_dictionary() -> pd.DataFrame:
-    """Dictionnaire des variables ajoutées/derivées dans le dataset COUSP."""
+    """Dictionnaire des variables ajoutées/derivées dans le jeu de données COUSP."""
     rows = [
         {
             "N°": 1,
@@ -471,7 +471,7 @@ def _cousp_pick_reference_join_key(
     left_df: pd.DataFrame,
     right_df: pd.DataFrame,
 ) -> str | None:
-    """Choisit une cle stable pour enrichir une vue COUSP a partir du dataset recherche."""
+    """Choisit une cle stable pour enrichir une vue COUSP a partir du jeu de données de recherche."""
     if (
         left_df is None
         or right_df is None
@@ -834,7 +834,7 @@ def _cousp_render_temporal_evolution_chart(
 
 
 def render_cousp_tab(ctx: dict) -> None:
-    """Render the COUSP standard analytics tab."""
+    """Affiche l'onglet d'analyses standards COUSP."""
     globals().update(ctx)
 
     build_package, workbook_builder = _resolve_cousp_helpers()

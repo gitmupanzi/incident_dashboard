@@ -8,17 +8,19 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from dashboard_app.domain import (
-    build_recommended_fields_matrix,
-    build_standard_capability_note,
-    build_standard_analysis_capability_matrix,
-    build_standard_classification_audit,
-    build_standard_care_issue_audit,
-    build_standard_disease_profile,
     build_standard_file_structure_audit,
-    build_standard_semantic_status_summary,
-    build_standard_symptom_audit,
     standardize_df,
     standardize_ll_by_disease,
+)
+from dashboard_app.standard_transverse import (
+    build_recommended_fields_matrix,
+    build_standard_analysis_capability_matrix,
+    build_standard_capability_note,
+    build_standard_care_issue_audit,
+    build_standard_classification_audit,
+    build_standard_disease_profile,
+    build_standard_semantic_status_summary,
+    build_standard_symptom_audit,
 )
 
 

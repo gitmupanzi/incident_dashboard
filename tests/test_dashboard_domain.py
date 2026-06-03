@@ -43,16 +43,8 @@ from dashboard_app.domain import (
     DATE_PREL,
     DATE_RECEP,
     DATE_RES,
-    build_recommended_fields_matrix,
-    build_standard_capability_note,
     build_cousp_standard_export_package,
-    build_standard_analysis_capability_matrix,
-    build_standard_classification_audit,
-    build_standard_care_issue_audit,
-    build_standard_disease_profile,
     build_standard_file_structure_audit,
-    build_standard_semantic_status_summary,
-    build_standard_symptom_audit,
     build_operational_risk_score,
     cascade_metrics,
     build_standard_followup_tables,
@@ -80,6 +72,16 @@ from dashboard_app.overview import (
     build_simple_lab_table,
     format_range_label_for_display,
     split_geo_pair_label,
+)
+from dashboard_app.standard_transverse import (
+    build_recommended_fields_matrix,
+    build_standard_analysis_capability_matrix,
+    build_standard_capability_note,
+    build_standard_care_issue_audit,
+    build_standard_classification_audit,
+    build_standard_disease_profile,
+    build_standard_semantic_status_summary,
+    build_standard_symptom_audit,
 )
 from dashboard_app.tabs.idsr import (
     _build_idsr_completeness_matrices,

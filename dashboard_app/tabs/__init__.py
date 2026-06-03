@@ -1,1 +1,1 @@
-"""Streamlit tab renderers."""
+"""Fonctions de rendu des onglets Streamlit."""
