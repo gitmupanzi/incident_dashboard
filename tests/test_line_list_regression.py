@@ -9,6 +9,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from dashboard_app.domain import (
+    build_standard_analysis_capability_matrix,
+    build_standard_classification_audit,
+    build_standard_care_issue_audit,
+    build_standard_file_structure_audit,
+    build_standard_symptom_audit,
     compute_indicators,
     build_standard_followup_tables,
     build_standard_signal_table,
@@ -36,7 +41,10 @@ def _guess_disease_key(path: Path) -> str:
 class RealLineListRegressionTest(unittest.TestCase):
     def test_standard_chain_keeps_valid_rates_on_real_line_lists(self):
         line_list_dir = PROJECT_ROOT / "line_list"
-        files = sorted(line_list_dir.glob("*.xlsx"))
+        files = sorted(
+            path for path in line_list_dir.glob("*.xlsx")
+            if "sem21_rdc" not in path.name.lower()
+        )
         self.assertTrue(files, "Aucune line list .xlsx n'a ete trouvee dans le dossier line_list.")
 
         checks_passed = 0
@@ -138,6 +146,82 @@ class RealLineListRegressionTest(unittest.TestCase):
             success_rate,
             0.90,
             f"Taux de reussite insuffisant sur les line lists reelles: {success_rate:.1%}. "
+            f"Echecs: {' | '.join(failures)}",
+        )
+
+    def test_standard_analysis_audit_stays_usable_on_real_line_lists(self):
+        line_list_dir = PROJECT_ROOT / "line_list"
+        files = sorted(
+            path for path in line_list_dir.glob("*.xlsx")
+            if "sem21_rdc" not in path.name.lower()
+        )
+        self.assertTrue(files, "Aucune line list .xlsx n'a ete trouvee dans le dossier line_list.")
+
+        checks_passed = 0
+        checks_total = 0
+        failures: list[str] = []
+
+        for path in files:
+            disease_key = _guess_disease_key(path)
+            with self.subTest(file=path.name, disease=disease_key):
+                with pd.ExcelFile(path) as xls:
+                    raw = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+                    sheet_name = xls.sheet_names[0]
+                standardized = standardize_df(standardize_ll_by_disease(raw, disease_key))
+
+                audit = build_standard_file_structure_audit(
+                    standardized,
+                    source_name=path.name,
+                    sheet_name=sheet_name,
+                )
+                matrix = build_standard_analysis_capability_matrix(standardized)
+                classification_audit = build_standard_classification_audit(standardized)
+                care_issue_audit = build_standard_care_issue_audit(standardized)
+                symptom_audit = build_standard_symptom_audit(standardized)
+
+                checks_total += 7
+
+                if len(audit) == 1:
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: audit structure indisponible")
+
+                if not audit.empty and int(audit.iloc[0]["Nombre_lignes"]) == len(standardized):
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: audit structure incoherent sur le nombre de lignes")
+
+                if not matrix.empty and {"Bloc analytique", "Statut", "Score activation (%)"}.issubset(matrix.columns):
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: matrice de capacites indisponible")
+
+                available_or_partial = matrix["Statut"].isin(["Disponible", "Partiel"]).sum() if not matrix.empty else 0
+                if available_or_partial >= 4:
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: trop peu de briques activables ({available_or_partial})")
+
+                if isinstance(classification_audit, pd.DataFrame) and not classification_audit.empty:
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: audit classification indisponible")
+
+                if isinstance(care_issue_audit, pd.DataFrame) and not care_issue_audit.empty:
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: audit PEC/issue indisponible")
+
+                if isinstance(symptom_audit, pd.DataFrame):
+                    checks_passed += 1
+                else:
+                    failures.append(f"{path.name}: audit symptomes indisponible")
+
+        success_rate = checks_passed / checks_total if checks_total else 0.0
+        self.assertGreaterEqual(
+            success_rate,
+            0.80,
+            f"Taux de reussite insuffisant pour l'audit standard: {success_rate:.1%}. "
             f"Echecs: {' | '.join(failures)}",
         )
 

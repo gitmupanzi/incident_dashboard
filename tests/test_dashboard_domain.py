@@ -44,6 +44,11 @@ from dashboard_app.domain import (
     DATE_RECEP,
     DATE_RES,
     build_cousp_standard_export_package,
+    build_standard_analysis_capability_matrix,
+    build_standard_classification_audit,
+    build_standard_care_issue_audit,
+    build_standard_file_structure_audit,
+    build_standard_symptom_audit,
     build_operational_risk_score,
     cascade_metrics,
     build_standard_followup_tables,
@@ -89,6 +94,7 @@ from dashboard_app.tabs.idsr import (
     list_available_idsr_files,
     normalize_idsr_debutsem_column,
 )
+from dashboard_app.tabs.methodology import _build_conservative_audit_scope
 from dashboard_app.tabs.irep import (
     _irep_clean_province_series,
     _irep_build_silence_table,
@@ -249,12 +255,13 @@ class StandardizationTest(unittest.TestCase):
         self.assertEqual(int(out.loc[0, COL_WNUM]), 2)
         self.assertEqual(out.loc[0, COL_WEEK], "2026-W02")
 
-    def test_standardize_df_derives_investigation_from_date_and_classification(self):
+    def test_standardize_df_derives_investigation_from_date_and_investigation_classification(self):
         raw = pd.DataFrame(
             {
                 COL_INVEST: [None, None, "Non", "Oui"],
                 DATE_INV: ["2026-01-03", None, "2026-01-04", None],
-                COL_CLASS: ["Suspect", "Non cas", "Probable", None],
+                "Classification_investigation": ["Suspect", "Non cas", "Probable", None],
+                COL_CLASS: ["Positif", "Negatif", "Indetermine", None],
                 COL_PROV: ["Kinshasa"] * 4,
                 COL_ZS: ["Gombe"] * 4,
             }
@@ -268,6 +275,20 @@ class StandardizationTest(unittest.TestCase):
         self.assertEqual(out.loc[3, COL_INVEST], "Oui")
         self.assertTrue(bool(out.loc[2, "investigated_oui_non"]))
         self.assertEqual(int(out["investigated_oui_non"].sum()), 4)
+
+    def test_standardize_df_does_not_infer_investigation_from_classification_finale_alone(self):
+        raw = pd.DataFrame(
+            {
+                COL_CLASS: ["Positif", "Negatif", "Indetermine"],
+                COL_PROV: ["Kinshasa"] * 3,
+                COL_ZS: ["Gombe"] * 3,
+            }
+        )
+
+        out = standardize_df(raw)
+
+        self.assertEqual(int(out["investigated_oui_non"].sum()), 0)
+        self.assertTrue(out[COL_INVEST].isna().all())
 
     def test_standardize_df_derives_extended_promptitude_delays(self):
         raw = pd.DataFrame(
@@ -382,7 +403,7 @@ class StandardizationTest(unittest.TestCase):
         payload = build_dashboard_kpi_payload(standardize_df(raw))
         chain = {str(item["label"]): item.get("value") for item in payload.get("surveillance_chain", [])}
 
-        self.assertEqual(chain.get("Cas investigues"), 3)
+        self.assertEqual(chain.get("Cas investigues"), 2)
 
 
 class IndicatorTest(unittest.TestCase):
@@ -1658,6 +1679,162 @@ class StandardSchemaContractTest(unittest.TestCase):
             min_recent_cases=5,
         )
         self.assertIsInstance(clusters, pd.DataFrame)
+
+
+class StandardAnalysisCapabilityTest(unittest.TestCase):
+    def test_build_standard_file_structure_audit_summarizes_standard_fields(self):
+        df = pd.DataFrame(
+            {
+                DATE_NOTIF: ["2026-01-03", "2026-01-04"],
+                DATE_ONSET: ["2026-01-01", None],
+                COL_PROV: ["Kinshasa", "Kinshasa"],
+                COL_ZS: ["Gombe", "Bandalungwa"],
+                COL_SEX: ["Masculin", "Feminin"],
+                COL_AGE: [20, 31],
+                COL_CLASS: ["Suspect", "Confirme"],
+                "unused_empty": [None, None],
+            }
+        )
+        df = standardize_df(df)
+
+        audit = build_standard_file_structure_audit(
+            df,
+            source_name="test_source",
+            sheet_name="LL_Test",
+        )
+
+        self.assertEqual(len(audit), 1)
+        row = audit.iloc[0]
+        self.assertEqual(row["Source"], "test_source")
+        self.assertEqual(row["Feuille"], "LL_Test")
+        self.assertEqual(int(row["Nombre_lignes"]), 2)
+        self.assertGreaterEqual(float(row["Taux_couverture_champs_standards_%"]), 10.0)
+        self.assertGreaterEqual(int(row["Nb_colonnes_vides"]), 1)
+
+    def test_build_standard_analysis_capability_matrix_flags_available_blocks(self):
+        df = pd.DataFrame(
+            {
+                DATE_NOTIF: ["2026-01-03", "2026-01-04"],
+                DATE_ONSET: ["2026-01-01", "2026-01-02"],
+                "Annee_epid": [2026, 2026],
+                "Num_semaine_epid": [1, 1],
+                COL_PROV: ["Kinshasa", "Kinshasa"],
+                COL_ZS: ["Gombe", "Bandalungwa"],
+                COL_AS: ["AS1", "AS2"],
+                COL_SEX: ["Masculin", "Feminin"],
+                COL_AGE: [20, 31],
+                "Age_en_ans": [20, 31],
+                COL_INVEST: ["Oui", "Oui"],
+                DATE_INV: ["2026-01-03", "2026-01-05"],
+                COL_CLASS: ["Suspect", "Confirme"],
+                COL_PREL: ["Oui", "Oui"],
+                DATE_PREL: ["2026-01-03", "2026-01-05"],
+                DATE_RECEP: ["2026-01-04", "2026-01-06"],
+                DATE_RES: ["2026-01-05", "2026-01-07"],
+                COL_ISSUE: ["Vivant", "Deces"],
+                DATE_ISSUE: ["2026-01-09", "2026-01-10"],
+                "Localite": ["Loc1", "Loc2"],
+            }
+        )
+        df = standardize_df(df)
+
+        matrix = build_standard_analysis_capability_matrix(df)
+
+        self.assertFalse(matrix.empty)
+        status_by_block = dict(zip(matrix["Bloc analytique"], matrix["Statut"]))
+        self.assertEqual(status_by_block.get("Temps"), "Disponible")
+        self.assertEqual(status_by_block.get("Geographie"), "Disponible")
+        self.assertIn(status_by_block.get("Laboratoire"), {"Disponible", "Partiel"})
+        self.assertIn("Qualite / coherence", status_by_block)
+
+    def test_methodology_audit_scope_restores_documented_source_columns(self):
+        df_current = pd.DataFrame(
+            {
+                "Classification_investigation": [pd.NA, pd.NA],
+                DATE_INV: ["2026-01-03", None],
+            },
+            index=[10, 11],
+        )
+        df_source = pd.DataFrame(
+            {
+                "Classification_investigation": ["Suspect", "Confirme"],
+                DATE_INV: ["2026-01-03", None],
+            },
+            index=[10, 11],
+        )
+
+        audit_scope = _build_conservative_audit_scope(df_current, df_source)
+        matrix = build_standard_analysis_capability_matrix(audit_scope)
+        block_row = matrix.loc[matrix["Bloc analytique"] == "Investigation / classification"].iloc[0]
+
+        self.assertIn("Classification_investigation", str(block_row["Colonnes presentes"]))
+        self.assertNotIn("Classification_investigation", str(block_row["Colonnes vides"]))
+
+
+class StandardClassificationAuditTest(unittest.TestCase):
+    def test_build_standard_classification_audit_separates_alert_and_investigation(self):
+        df = pd.DataFrame(
+            {
+                "Classification_alerte": ["Validee", "A investiguer", None, "Rejetee"],
+                "Classification_investigation": ["Suspect", "Probable", "Confirme", "Non cas"],
+                "Cas_suspect": ["Oui", "Oui", None, None],
+            }
+        )
+        df = standardize_df(df)
+
+        audit = build_standard_classification_audit(df)
+
+        self.assertEqual(list(audit["Etape"]), ["Alerte", "Investigation"])
+        alert_row = audit.loc[audit["Etape"] == "Alerte"].iloc[0]
+        invest_row = audit.loc[audit["Etape"] == "Investigation"].iloc[0]
+
+        self.assertEqual(int(alert_row["Validee"]), 1)
+        self.assertEqual(int(alert_row["A investiguer"]), 1)
+        self.assertEqual(int(invest_row["Suspect"]), 1)
+        self.assertEqual(int(invest_row["Probable"]), 1)
+        self.assertEqual(int(invest_row["Confirme"]), 1)
+        self.assertEqual(int(invest_row["Non cas"]), 1)
+
+
+class StandardCareIssueAndSymptomAuditTest(unittest.TestCase):
+    def test_build_standard_care_issue_audit_summarizes_care_chain(self):
+        df = pd.DataFrame(
+            {
+                COL_HOSP: ["Oui", None],
+                DATE_ADM: ["2026-01-03", None],
+                COL_ISSUE: ["Vivant", "Deces"],
+                DATE_ISSUE: ["2026-01-10", "2026-01-08"],
+                "Patient_en_isolement": ["Oui", None],
+            }
+        )
+        df = standardize_df(df)
+
+        audit = build_standard_care_issue_audit(df)
+
+        self.assertEqual(len(audit), 1)
+        row = audit.iloc[0]
+        self.assertEqual(int(row["Cas"]), 2)
+        self.assertGreaterEqual(int(row["Admission documentee"]), 1)
+        self.assertGreaterEqual(int(row["Issue documentee"]), 2)
+        self.assertGreaterEqual(int(row["Deces documentes"]), 1)
+
+    def test_build_standard_symptom_audit_counts_documented_symptoms(self):
+        df = pd.DataFrame(
+            {
+                "Signes_symptomes": ["FV;VOM", "FV;DIA", None],
+                "Autres_Signes_symptomes": [None, "AN", None],
+                DATE_ONSET: ["2026-01-01", "2026-01-02", None],
+            }
+        )
+        df = standardize_df(df)
+
+        audit = build_standard_symptom_audit(df)
+
+        self.assertEqual(len(audit), 1)
+        row = audit.iloc[0]
+        self.assertEqual(int(row["Cas documentes"]), 2)
+        self.assertGreaterEqual(int(row["Symptomes uniques"]), 3)
+        self.assertIn("FV", str(row["Top symptomes"]))
 
 
 if __name__ == "__main__":

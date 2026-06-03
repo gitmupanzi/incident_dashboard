@@ -111,6 +111,7 @@ COL_INVEST = "Investigation"
 COL_DEHY = "Degre_deshydratation"
 COL_ISSUE= "Issue"
 COL_CLASS= "Classification_finale"
+COL_CLASS_INVEST = "Classification_investigation"
 
 DATE_ONSET = "Date_debut_maladie"
 DATE_NOTIF = "Date_notification"
@@ -395,7 +396,6 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
         "default_sheet": "LL_Meningite",
         "rename_map": {
             "Date_de_reception": "Date_reception_labo",
-            "Classification_investigation": "Classification_finale",
         },
         "onset_candidates": ["Date_debut_maladie", "Date_debut_symptomes"],
         "notif_candidates": ["Date_notification", "Date_consultation"],
@@ -404,7 +404,8 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
         "issue_candidates": ["Date_issue", "Date_sortie_au_CT"],
         "result_candidates": ["Date_resultat"],
         "receipt_candidates": ["Date_reception_labo", "Date_de_reception"],
-        "class_candidates": ["Classification_finale", "Classification_investigation"],
+        "class_candidates": ["Classification_finale"],
+        "investigation_class_candidates": ["Classification_investigation"],
     },
     "autre": {
         "label": "Autre (line list générique)",
@@ -445,9 +446,9 @@ DISEASE_SPECS: Dict[str, Dict[str, Any]] = {
         ],
         "class_candidates": [
             "Classification_finale",
-            "Classification_investigation",
             "Status_cas",
         ],
+        "investigation_class_candidates": ["Classification_investigation"],
     },
 }
 
@@ -546,7 +547,10 @@ def standardize_ll_by_disease(df: pd.DataFrame, disease_key: str) -> pd.DataFram
     }
     text_candidate_map = {
         "Classification_finale": list(
-            dict.fromkeys((spec.get("class_candidates", []) or []) + ["Classification_finale", "Classification_investigation", "Status_cas"])
+            dict.fromkeys((spec.get("class_candidates", []) or []) + ["Classification_finale", "Status_cas"])
+        ),
+        "Classification_investigation": list(
+            dict.fromkeys((spec.get("investigation_class_candidates", []) or []) + ["Classification_investigation"])
         ),
         "Issue": list(
             dict.fromkeys((spec.get("issue_text_candidates", []) or []) + ["Issue", "Evolution", "Outcome", "Statut_Cas"])
@@ -2192,17 +2196,38 @@ def _has_investigation_classification(series: pd.Series) -> pd.Series:
     return norm.notna() & norm.ne("") & ~norm.isin(INVESTIGATION_CLASS_MISSING_SET)
 
 
+def _normalize_standard_classification_labels(source: pd.Series) -> pd.Series:
+    """Harmonise une série de classifications vers des libellés standards."""
+    norm = (
+        source.astype("string")
+        .str.strip()
+        .str.lower()
+        .apply(lambda v: _strip_accents(v) if pd.notna(v) else v)
+    )
+    mapped = pd.Series(pd.NA, index=source.index, dtype="string")
+    mapped = mapped.mask(norm.str.contains("confirm", na=False) | norm.eq("positif"), "Confirmé")
+    mapped = mapped.mask(norm.str.contains("probab", na=False), "Probable")
+    mapped = mapped.mask(norm.str.contains("suspect", na=False), "Suspect")
+    mapped = mapped.mask(norm.isin(["non cas", "non_cas", "discarded"]) | norm.str.contains("non cas", na=False), "Non cas")
+    mapped = mapped.mask(norm.str.contains("compat", na=False), "Compatible")
+    return mapped.fillna(source.astype("string").str.strip())
+
+
+def _standard_investigation_classification_series(df: pd.DataFrame) -> pd.Series:
+    """Retourne la classification d'investigation standardisée quand elle existe."""
+    if "Classification_investigation_std" in df.columns:
+        return df["Classification_investigation_std"].astype("string")
+    if COL_CLASS_INVEST in df.columns:
+        return _normalize_standard_classification_labels(df[COL_CLASS_INVEST])
+    return pd.Series(pd.NA, index=df.index, dtype="string")
+
+
 def _standard_investigation_documented_mask(df: pd.DataFrame) -> pd.Series:
     """Retourne les cas avec investigation documentée ou fortement inférée via classification."""
     index = df.index
     investigate_yes = _is_yes_series(df[COL_INVEST]) if COL_INVEST in df.columns else pd.Series(False, index=index)
     investigate_date = pd.to_datetime(df[DATE_INV], errors="coerce").notna() if DATE_INV in df.columns else pd.Series(False, index=index)
-    if "Classification_finale_std" in df.columns:
-        classification_documented = _has_investigation_classification(df["Classification_finale_std"])
-    elif COL_CLASS in df.columns:
-        classification_documented = _has_investigation_classification(df[COL_CLASS])
-    else:
-        classification_documented = pd.Series(False, index=index)
+    classification_documented = _has_investigation_classification(_standard_investigation_classification_series(df))
     return (
         pd.Series(investigate_yes, index=index).fillna(False)
         | pd.Series(investigate_date, index=index).fillna(False)
@@ -2657,6 +2682,8 @@ def standardize_df(df):
         df["is_tdr_pos"] = False
 
     # harmonisations standards
+    if COL_CLASS_INVEST in df.columns:
+        df["Classification_investigation_std"] = _normalize_standard_classification_labels(df[COL_CLASS_INVEST])
     if COL_CLASS in df.columns:
         class_norm = (
             df[COL_CLASS].astype("string").str.strip().str.lower()
@@ -2915,7 +2942,7 @@ def qc_flags(df: pd.DataFrame) -> pd.DataFrame:
 
     evidence = _standard_surveillance_evidence_masks(df)
 
-    if any(c in df.columns for c in [COL_INVEST, DATE_INV, COL_CLASS, "Classification_finale_std"]):
+    if any(c in df.columns for c in [COL_INVEST, DATE_INV, COL_CLASS_INVEST, "Classification_investigation_std"]):
         investigate_yes = df["investigated_oui_non"] if "investigated_oui_non" in df.columns else (_is_yes_series(df[COL_INVEST]) if COL_INVEST in df.columns else pd.Series(False, index=df.index))
         _add(~pd.Series(investigate_yes, index=df.index).fillna(False), "Investigation non documentée")
 
@@ -3174,26 +3201,354 @@ STANDARD_DELAY_LABELS = {
 def _standard_classification_series(df: pd.DataFrame) -> pd.Series:
     """Retourne une classification standardisée exploitable sur plusieurs maladies."""
     source = None
-    if "Classification_finale_std" in df.columns:
+    if "Classification_investigation_std" in df.columns and _series_effectively_documented_mask(df["Classification_investigation_std"]).any():
+        source = df["Classification_investigation_std"]
+    elif "Classification_finale_std" in df.columns:
         source = df["Classification_finale_std"]
+    elif COL_CLASS_INVEST in df.columns:
+        source = df[COL_CLASS_INVEST]
     elif COL_CLASS in df.columns:
         source = df[COL_CLASS]
     else:
         return pd.Series(pd.NA, index=df.index, dtype="string")
+    return _normalize_standard_classification_labels(source)
 
+
+def _coalesce_documented_series(df: pd.DataFrame, candidates: list[str]) -> tuple[pd.Series, str]:
+    """Fusionne plusieurs colonnes sources en gardant la premiere valeur documentee par ligne."""
+    source = pd.Series(pd.NA, index=df.index, dtype="string")
+    used_columns: list[str] = []
+    for col in candidates:
+        if col not in df.columns:
+            continue
+        used_columns.append(col)
+        current = df[col].astype("string").str.strip()
+        fill_mask = source.isna() | source.astype("string").str.strip().eq("")
+        source = source.mask(fill_mask, current)
+    source = source.astype("string").str.strip()
+    source = source.mask(source.eq(""), pd.NA)
+    return source, " / ".join(used_columns) if used_columns else "Aucune"
+
+
+def _map_alert_classification_series(series: pd.Series) -> pd.Series:
+    """Normalise les statuts de classification d'alerte quand ils existent."""
     norm = (
-        source.astype("string")
+        series.astype("string")
         .str.strip()
         .str.lower()
         .apply(lambda v: _strip_accents(v) if pd.notna(v) else v)
     )
-    mapped = pd.Series(pd.NA, index=df.index, dtype="string")
-    mapped = mapped.mask(norm.str.contains("confirm", na=False) | norm.eq("positif"), "Confirmé")
-    mapped = mapped.mask(norm.str.contains("probab", na=False), "Probable")
-    mapped = mapped.mask(norm.str.contains("suspect", na=False), "Suspect")
-    mapped = mapped.mask(norm.isin(["non cas", "non_cas", "discarded"]) | norm.str.contains("non cas", na=False), "Non cas")
-    mapped = mapped.mask(norm.str.contains("compat", na=False), "Compatible")
-    return mapped.fillna(source.astype("string").str.strip())
+    mapped = pd.Series(pd.NA, index=series.index, dtype="string")
+    mapped = mapped.mask(
+        norm.str.contains("valid", na=False) | norm.str.contains("reten", na=False),
+        "Validee",
+    )
+    mapped = mapped.mask(
+        norm.str.contains("non valid", na=False)
+        | norm.str.contains("rejete", na=False)
+        | norm.str.contains("infonde", na=False)
+        | norm.str.contains("non reten", na=False),
+        "Non retenue",
+    )
+    mapped = mapped.mask(
+        norm.str.contains("suspect", na=False)
+        | norm.str.contains("a investiguer", na=False)
+        | norm.str.contains("en cours", na=False),
+        "A investiguer",
+    )
+    mapped = mapped.mask(
+        norm.str.contains("indet", na=False)
+        | norm.str.contains("inconclu", na=False)
+        | norm.str.contains("equivo", na=False),
+        "Indeterminee",
+    )
+    return mapped.fillna(series.astype("string").str.strip())
+
+
+def build_standard_classification_audit(df: pd.DataFrame) -> pd.DataFrame:
+    """Synthese transverse des classifications d'alerte et d'investigation."""
+    columns = [
+        "Etape",
+        "Variable source",
+        "Cas documentes",
+        "% documente",
+        "Validee",
+        "A investiguer",
+        "Suspect",
+        "Probable",
+        "Compatible",
+        "Confirme",
+        "Non cas",
+        "Indetermine",
+        "Autres",
+        "Commentaire",
+    ]
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+
+    alert_source, alert_source_name = _coalesce_documented_series(
+        df,
+        ["Classification_alerte", "Statut_alerte", "Validation_alerte"],
+    )
+    if alert_source_name != "Aucune":
+        alert_mapped = _map_alert_classification_series(alert_source)
+        alert_documented = _series_effectively_documented_mask(alert_source)
+        normalized_alert = (
+            alert_mapped.astype("string")
+            .str.strip()
+            .str.lower()
+            .apply(lambda v: _strip_accents(v) if pd.notna(v) else v)
+        )
+        rows.append(
+            {
+                "Etape": "Alerte",
+                "Variable source": alert_source_name,
+                "Cas documentes": int(alert_documented.sum()),
+                "% documente": round(float(alert_documented.mean() * 100.0), 1),
+                "Validee": int(normalized_alert.eq("validee").sum()),
+                "A investiguer": int(normalized_alert.eq("a investiguer").sum()),
+                "Suspect": int(normalized_alert.eq("suspect").sum()),
+                "Probable": int(normalized_alert.eq("probable").sum()),
+                "Compatible": int(normalized_alert.eq("compatible").sum()),
+                "Confirme": int(normalized_alert.eq("confirme").sum()),
+                "Non cas": int(normalized_alert.eq("non cas").sum()),
+                "Indetermine": int(normalized_alert.eq("indeterminee").sum()),
+                "Autres": int(
+                    alert_documented.sum()
+                    - normalized_alert.isin(
+                        ["validee", "a investiguer", "suspect", "probable", "compatible", "confirme", "non cas", "indeterminee"]
+                    ).sum()
+                ),
+                "Commentaire": "Lecture de la qualification des alertes quand la source la documente.",
+            }
+        )
+
+    investigation_source, investigation_source_name = _coalesce_documented_series(
+        df,
+        [COL_CLASS_INVEST],
+    )
+    if "Cas_suspect" in df.columns:
+        suspect_declared = _is_yes_series(df["Cas_suspect"])
+        fill_mask = investigation_source.isna() | investigation_source.astype("string").str.strip().eq("")
+        investigation_source = investigation_source.mask(fill_mask & suspect_declared, "Suspect")
+
+    investigation_documented = _series_effectively_documented_mask(investigation_source)
+    if investigation_source_name != "Aucune" or investigation_documented.any():
+        investigation_mapped = _normalize_standard_classification_labels(investigation_source)
+        normalized_invest = (
+            investigation_mapped.astype("string")
+            .str.strip()
+            .str.lower()
+            .apply(lambda v: _strip_accents(v) if pd.notna(v) else v)
+        )
+        rows.append(
+            {
+                "Etape": "Investigation",
+                "Variable source": investigation_source_name if investigation_source_name != "Aucune" else "Cas_suspect",
+                "Cas documentes": int(investigation_documented.sum()),
+                "% documente": round(float(investigation_documented.mean() * 100.0), 1),
+                "Validee": pd.NA,
+                "A investiguer": pd.NA,
+                "Suspect": int(normalized_invest.eq("suspect").sum()),
+                "Probable": int(normalized_invest.eq("probable").sum()),
+                "Compatible": int(normalized_invest.eq("compatible").sum()),
+                "Confirme": int(normalized_invest.eq("confirme").sum()),
+                "Non cas": int(normalized_invest.eq("non cas").sum()),
+                "Indetermine": int(normalized_invest.str.contains("indet", na=False).sum()),
+                "Autres": int(
+                    investigation_documented.sum()
+                    - normalized_invest.isin(["suspect", "probable", "compatible", "confirme", "non cas"]).sum()
+                    - normalized_invest.str.contains("indet", na=False).sum()
+                ),
+                "Commentaire": "Lecture de la classification d'investigation. Cette ligne ne s'appuie plus sur Classification_finale.",
+            }
+        )
+
+    final_source, final_source_name = _coalesce_documented_series(
+        df,
+        ["Classification_finale_std", COL_CLASS],
+    )
+    final_documented = _series_effectively_documented_mask(final_source)
+    if final_source_name != "Aucune" and final_documented.any():
+        final_mapped = _normalize_standard_classification_labels(final_source)
+        normalized_final = (
+            final_mapped.astype("string")
+            .str.strip()
+            .str.lower()
+            .apply(lambda v: _strip_accents(v) if pd.notna(v) else v)
+        )
+        rows.append(
+            {
+                "Etape": "Synthese finale / resultat",
+                "Variable source": final_source_name,
+                "Cas documentes": int(final_documented.sum()),
+                "% documente": round(float(final_documented.mean() * 100.0), 1),
+                "Validee": pd.NA,
+                "A investiguer": pd.NA,
+                "Suspect": int(normalized_final.eq("suspect").sum()),
+                "Probable": int(normalized_final.eq("probable").sum()),
+                "Compatible": int(normalized_final.eq("compatible").sum()),
+                "Confirme": int(normalized_final.eq("confirme").sum()),
+                "Non cas": int(normalized_final.eq("non cas").sum()),
+                "Indetermine": int(normalized_final.str.contains("indet", na=False).sum()),
+                "Autres": int(
+                    final_documented.sum()
+                    - normalized_final.isin(["suspect", "probable", "compatible", "confirme", "non cas"]).sum()
+                    - normalized_final.str.contains("indet", na=False).sum()
+                ),
+                "Commentaire": "Lecture de synthese finale. Cette ligne peut melanger statut final, issue ou resultat selon la source et n'est pas utilisee comme preuve d'investigation.",
+            }
+        )
+
+    out = pd.DataFrame(rows, columns=columns)
+    if not out.empty:
+        out["% documente"] = pd.to_numeric(out["% documente"], errors="coerce").round(1)
+        out["Cas documentes"] = pd.to_numeric(out["Cas documentes"], errors="coerce").fillna(0).astype(int)
+    return out
+
+
+def build_standard_care_issue_audit(df: pd.DataFrame) -> pd.DataFrame:
+    """Resume standard de la prise en charge et des issues documentees."""
+    columns = [
+        "Cas",
+        "Admission documentee",
+        "% admission documentee",
+        "Isolement documente",
+        "% isolement documente",
+        "Issue documentee",
+        "% issue documentee",
+        "Deces documentes",
+        "Sortie documentee",
+        "Duree mediane sejour (jours)",
+        "Variables support",
+    ]
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    work = df.copy()
+    care_issue_masks = _standard_care_issue_masks(work)
+    n_cases = int(len(work))
+    deaths = work["is_death"] if "is_death" in work.columns else (work[COL_ISSUE].apply(is_death) if COL_ISSUE in work.columns else pd.Series(False, index=work.index))
+    sortie_documentee = pd.Series(False, index=work.index)
+    isolement_documente = _non_empty_mask(work["Patient_en_isolement"]) if "Patient_en_isolement" in work.columns else pd.Series(False, index=work.index)
+    if "Date_sortie_au_CT" in work.columns:
+        sortie_documentee |= pd.to_datetime(work["Date_sortie_au_CT"], errors="coerce").notna()
+    if "Type_sortie_CT" in work.columns:
+        sortie_documentee |= _non_empty_mask(work["Type_sortie_CT"])
+
+    duration = pd.Series(pd.NA, index=work.index, dtype="Float64")
+    if "Duree_du_sejour_au_CT" in work.columns:
+        duration = pd.to_numeric(work["Duree_du_sejour_au_CT"], errors="coerce").astype("Float64")
+    if DATE_ADM in work.columns and DATE_ISSUE in work.columns:
+        computed_duration = (
+            pd.to_datetime(work[DATE_ISSUE], errors="coerce")
+            - pd.to_datetime(work[DATE_ADM], errors="coerce")
+        ).dt.days.astype("Float64")
+        duration = duration.fillna(computed_duration)
+    duration = pd.to_numeric(duration, errors="coerce")
+    duration = duration[duration.notna() & duration.ge(0)]
+    median_duration = round(float(duration.median()), 1) if not duration.empty else np.nan
+
+    support_cols = [
+        col for col in [
+            COL_HOSP, DATE_ADM, COL_ISSUE, DATE_ISSUE,
+            "Patient_en_isolement", "Type_sortie_CT", "Duree_du_sejour_au_CT", "Date_sortie_au_CT"
+        ] if col in work.columns
+    ]
+    return pd.DataFrame(
+        [
+            {
+                "Cas": n_cases,
+                "Admission documentee": int(care_issue_masks["admission_documented"].sum()),
+                "% admission documentee": round(float(care_issue_masks["admission_documented"].mean() * 100.0), 1),
+                "Isolement documente": int(isolement_documente.sum()),
+                "% isolement documente": round(float(isolement_documente.mean() * 100.0), 1),
+                "Issue documentee": int(care_issue_masks["issue_documented"].sum()),
+                "% issue documentee": round(float(care_issue_masks["issue_documented"].mean() * 100.0), 1),
+                "Deces documentes": int(pd.Series(deaths, index=work.index).fillna(False).sum()),
+                "Sortie documentee": int(sortie_documentee.fillna(False).sum()),
+                "Duree mediane sejour (jours)": median_duration,
+                "Variables support": " / ".join(support_cols) if support_cols else "Aucune",
+            }
+        ],
+        columns=columns,
+    )
+
+
+def _split_symptom_tokens(series: pd.Series) -> pd.Series:
+    """Decoupe une chaine de symptomes multi-codes en tokens normalises."""
+    normalized = (
+        series.astype("string")
+        .fillna("")
+        .str.replace(r"[\r\n]+", ";", regex=True)
+        .str.replace(r"[,/|]+", ";", regex=True)
+        .str.split(";")
+    )
+    exploded = normalized.explode().astype("string").str.strip()
+    exploded = exploded[exploded.notna() & exploded.ne("")]
+    return exploded
+
+
+def build_standard_symptom_audit(df: pd.DataFrame) -> pd.DataFrame:
+    """Resume clinique optionnel quand des variables de symptomes existent."""
+    columns = [
+        "Variable source",
+        "Cas documentes",
+        "% documente",
+        "Symptomes uniques",
+        "Symptomes moyens par cas documente",
+        "Top symptomes",
+        "Date debut documentee",
+    ]
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    symptom_cols = [col for col in ["Signes_symptomes", "Autres_Signes_symptomes"] if col in df.columns]
+    if not symptom_cols:
+        return pd.DataFrame(columns=columns)
+
+    combined = pd.Series(pd.NA, index=df.index, dtype="string")
+    source_name = " / ".join(symptom_cols)
+    for col in symptom_cols:
+        current = df[col].astype("string").str.strip()
+        fill_mask = combined.isna() | combined.astype("string").str.strip().eq("")
+        combined = combined.mask(fill_mask, current)
+        both_mask = (~fill_mask) & current.notna() & current.ne("")
+        combined = combined.mask(both_mask, combined.astype("string") + "; " + current)
+
+    documented = _series_effectively_documented_mask(combined)
+    if not documented.any():
+        return pd.DataFrame(columns=columns)
+
+    tokens = _split_symptom_tokens(combined[documented])
+    token_counts = tokens.value_counts()
+    top_symptoms = ", ".join(
+        f"{idx} ({int(val)})" for idx, val in token_counts.head(5).items()
+    ) if not token_counts.empty else "Aucun"
+
+    symptom_count_per_case = (
+        _split_symptom_tokens(combined[documented]).groupby(level=0).size()
+        if documented.any() else pd.Series(dtype="int64")
+    )
+    avg_per_case = round(float(symptom_count_per_case.mean()), 1) if not symptom_count_per_case.empty else np.nan
+    onset_documented = int(pd.to_datetime(df[DATE_ONSET], errors="coerce").notna().sum()) if DATE_ONSET in df.columns else 0
+
+    return pd.DataFrame(
+        [
+            {
+                "Variable source": source_name,
+                "Cas documentes": int(documented.sum()),
+                "% documente": round(float(documented.mean() * 100.0), 1),
+                "Symptomes uniques": int(token_counts.index.nunique()),
+                "Symptomes moyens par cas documente": avg_per_case,
+                "Top symptomes": top_symptoms,
+                "Date debut documentee": onset_documented,
+            }
+        ],
+        columns=columns,
+    )
 
 
 def _standard_lab_result_series(df: pd.DataFrame) -> pd.Series:
@@ -3408,7 +3763,7 @@ def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
     evidence = _standard_surveillance_evidence_masks(work)
     issue_std = work["Issue_std"] if "Issue_std" in work.columns else work.get(COL_ISSUE, pd.Series(pd.NA, index=work.index, dtype="string"))
 
-    investigation_source_present = any(col in work.columns for col in [COL_INVEST, DATE_INV, COL_CLASS, "Classification_finale_std"])
+    investigation_source_present = any(col in work.columns for col in [COL_INVEST, DATE_INV, COL_CLASS_INVEST, "Classification_investigation_std"])
     investigate_yes = work["investigated_oui_non"] if "investigated_oui_non" in work.columns else (_is_yes_series(work[COL_INVEST]) if COL_INVEST in work.columns else pd.Series(False, index=work.index))
     prelev_yes = evidence["prelev_yes"]
     hosp_yes = work["hospitalise_oui_non"] if "hospitalise_oui_non" in work.columns else (_is_yes_series(work[COL_HOSP]) if COL_HOSP in work.columns else pd.Series(False, index=work.index))
@@ -3498,7 +3853,7 @@ def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
     _append("Notification", "Cas notifiés", n_cases, n_cases, "Cas filtrés", "Lignes filtrées")
 
     if investigation_source_present:
-        _append("Investigation", "Cas investigués", int(investigate_yes.sum()), investigate_den, investigate_base, f"{COL_INVEST} / {DATE_INV} / {COL_CLASS}")
+        _append("Investigation", "Cas investigués", int(investigate_yes.sum()), investigate_den, investigate_base, f"{COL_INVEST} / {DATE_INV} / {COL_CLASS_INVEST}")
     if classification.notna().any():
         class_labels = {
             "Suspect": "Cas suspects",
@@ -3507,7 +3862,7 @@ def build_standard_surveillance_chain_table(df: pd.DataFrame) -> pd.DataFrame:
             "Non cas": "Non cas documentés",
         }
         for label, display_label in class_labels.items():
-            _append("Investigation", display_label, int((classification == label).sum()), class_den, class_base, "Classification_finale")
+            _append("Investigation", display_label, int((classification == label).sum()), class_den, class_base, f"{COL_CLASS_INVEST} / {COL_CLASS}")
 
     if exposure_masks["documented"].any():
         _append("Exposition", "Exposition ou lien épid documenté", int(exposure_masks["documented"].sum()), n_cases, "Cas filtrés", "Lien_epid_avec_un_cas / Cas_source_id / Facteur_exposition / Type_de_lien / Type_contact")
@@ -3577,12 +3932,12 @@ def build_standard_followup_tables(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.D
         geo_missing |= work["missing_parent_geo_flag"].fillna(False)
 
     rules: list[tuple[str, str, pd.Series, str]] = []
-    if any(col in work.columns for col in [COL_INVEST, DATE_INV, COL_CLASS, "Classification_finale_std"]):
+    if any(col in work.columns for col in [COL_INVEST, DATE_INV, COL_CLASS_INVEST, "Classification_investigation_std"]):
         rules.append((
             "Cas sans investigation documentée",
             "Investigation",
             ~investigate_yes,
-            "Relancer la documentation de l'investigation ou compléter la classification.",
+            "Relancer la documentation de l'investigation ou compléter la classification d'investigation.",
         ))
     if classification.notna().any():
         rules.append((
@@ -3766,7 +4121,7 @@ def build_recommended_fields_matrix(df: pd.DataFrame) -> pd.DataFrame:
         "Alerte / Identification": ["Nom_complet", "N_alerte", "Source_alerte", "N_epid", "N", "N_labo", "Localite"],
         "Géographie": [COL_PROV, COL_ZS, COL_AS],
         "Personne": [COL_SEX, "Age_en_ans", "Tranche_age"],
-        "Investigation / Temps": [DATE_ONSET, DATE_CONS, DATE_NOTIF, DATE_INV, DATE_ADM, DATE_PREL, DATE_RECEP, DATE_RES, DATE_ISSUE, "Date_confirmation"],
+        "Investigation / Temps": [COL_INVEST, COL_CLASS_INVEST, DATE_ONSET, DATE_CONS, DATE_NOTIF, DATE_INV, DATE_ADM, DATE_PREL, DATE_RECEP, DATE_RES, DATE_ISSUE, "Date_confirmation"],
         "Issue / PEC": [COL_HOSP, COL_ISSUE, DATE_ISSUE, "Date_sortie_au_CT"],
         "Labo": [COL_PREL, COL_TDR, COL_TDRR, "Resultat_labo", "Type_de_prelevement", "Nom_laboratoire", "Etat_echantillon"],
         "Vaccination": ["Statut_vaccinal", "Vaccin_precedemment", "Nombre_dose", "Nombre_dose_recues", "Date_derniere_vaccination"],
@@ -3782,6 +4137,201 @@ def build_recommended_fields_matrix(df: pd.DataFrame) -> pd.DataFrame:
                 "Complétude_%": round(float(df[c].notna().mean() * 100), 1) if c in df.columns else np.nan,
             })
     return pd.DataFrame(rows)
+
+def _series_effectively_documented_mask(series: pd.Series) -> pd.Series:
+    """Retourne les valeurs considerees comme documentees, y compris pour les textes vides."""
+    if series is None:
+        return pd.Series(dtype=bool)
+    if is_numeric_dtype(series) or pd.api.types.is_datetime64_any_dtype(series):
+        return series.notna()
+    normalized = series.astype("string").str.strip()
+    return normalized.notna() & normalized.ne("")
+
+
+STANDARD_ANALYSIS_BLOCK_SPECS = [
+    {
+        "block": "Temps",
+        "expected": [DATE_NOTIF, DATE_ONSET, "Annee_epid", "Num_semaine_epid", DATE_INV, DATE_PREL, DATE_RECEP, DATE_RES, "Date_confirmation"],
+        "minimum_required": 3,
+        "comment": "Active les tendances, les semaines epidemiologiques et la lecture chronologique standard.",
+    },
+    {
+        "block": "Geographie",
+        "expected": [COL_PROV, COL_ZS, COL_AS, "Localite"],
+        "minimum_required": 2,
+        "comment": "Permet les analyses province / zone de sante / aire de sante et les priorites terrain.",
+    },
+    {
+        "block": "Personne",
+        "expected": [COL_SEX, COL_AGE, "Age_en_ans", COL_AGEG, COL_AGEG2, "Profession", "Statut_vaccinal"],
+        "minimum_required": 2,
+        "comment": "Soutient les analyses age, sexe, profession, vaccination et profils des cas.",
+    },
+    {
+        "block": "Investigation / classification",
+        "expected": [COL_INVEST, DATE_INV, COL_CLASS_INVEST, "Cas_suspect"],
+        "minimum_required": 2,
+        "comment": "Sert a decrire l'investigation, la classification d'investigation et les cas suspects/probables/confirmes.",
+    },
+    {
+        "block": "Laboratoire",
+        "expected": [COL_PREL, DATE_PREL, DATE_RECEP, DATE_RES, "Date_confirmation", COL_TDRR, "Resultat_labo", "Nom_laboratoire", "N_labo"],
+        "minimum_required": 2,
+        "comment": "Active la chaine prelevement -> reception -> resultat -> positivite.",
+    },
+    {
+        "block": "Prise en charge / issue",
+        "expected": [COL_HOSP, DATE_ADM, COL_ISSUE, DATE_ISSUE, "Patient_en_isolement", "Type_sortie_CT", "Duree_du_sejour_au_CT"],
+        "minimum_required": 2,
+        "comment": "Permet la lecture admission, isolement, issue, letalite et duree de sejour.",
+    },
+    {
+        "block": "Clinique / symptomes",
+        "expected": ["Signes_symptomes", "Autres_Signes_symptomes", DATE_ONSET],
+        "minimum_required": 1,
+        "comment": "Bloc optionnel pour les analyses de symptomes quand la source les documente.",
+    },
+    {
+        "block": "Qualite / coherence",
+        "expected": ["N_alerte", "N_epid", "N_labo", DATE_NOTIF, DATE_ONSET, DATE_INV, DATE_PREL, DATE_RECEP, DATE_RES, DATE_ISSUE, COL_PROV, COL_ZS, COL_AGE],
+        "minimum_required": 4,
+        "comment": "Conditionne les controles de completude, incoherences, doublons et retards.",
+    },
+    {
+        "block": "Action operationnelle",
+        "expected": ["Localite", COL_PROV, COL_ZS, COL_CLASS, COL_PREL, DATE_RECEP, DATE_RES, COL_ISSUE],
+        "minimum_required": 3,
+        "comment": "Permet de prioriser les cas a relancer, les signaux et les zones a surveiller.",
+    },
+]
+
+
+def build_standard_analysis_capability_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    """Matrice des analyses standard activables a partir des colonnes disponibles."""
+    columns = [
+        "Bloc analytique",
+        "Statut",
+        "Score activation (%)",
+        "Colonnes attendues",
+        "Colonnes presentes",
+        "Colonnes manquantes",
+        "Colonnes vides",
+        "Commentaire",
+    ]
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for spec in STANDARD_ANALYSIS_BLOCK_SPECS:
+        expected = [col for col in spec["expected"] if col]
+        present = [col for col in expected if col in df.columns]
+        missing = [col for col in expected if col not in df.columns]
+        empty_present = [
+            col for col in present
+            if not _series_effectively_documented_mask(df[col]).any()
+        ]
+        documented_present = [col for col in present if col not in empty_present]
+        expected_count = max(len(expected), 1)
+        score = round(len(documented_present) / expected_count * 100.0, 1)
+        minimum_required = int(spec.get("minimum_required", 1))
+
+        if len(documented_present) >= minimum_required and score >= 70.0:
+            status = "Disponible"
+        elif len(documented_present) >= minimum_required:
+            status = "Partiel"
+        else:
+            status = "Indisponible"
+
+        rows.append(
+            {
+                "Bloc analytique": spec["block"],
+                "Statut": status,
+                "Score activation (%)": score,
+                "Colonnes attendues": ", ".join(expected),
+                "Colonnes presentes": ", ".join(documented_present) if documented_present else "Aucune",
+                "Colonnes manquantes": ", ".join(missing) if missing else "Aucune",
+                "Colonnes vides": ", ".join(empty_present) if empty_present else "Aucune",
+                "Commentaire": spec["comment"],
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns)
+
+
+def build_standard_file_structure_audit(
+    df: pd.DataFrame,
+    *,
+    source_name: str | None = None,
+    sheet_name: str | None = None,
+) -> pd.DataFrame:
+    """Synthese standard de la structure et de l'exploitabilite d'une line list."""
+    columns = [
+        "Source",
+        "Feuille",
+        "Nombre_lignes",
+        "Nombre_colonnes",
+        "Colonnes_dupliquees",
+        "Colonnes_vides",
+        "Nb_colonnes_vides",
+        "Champs_standards_presents",
+        "Champs_standards_absents",
+        "Taux_couverture_champs_standards_%",
+        "Blocs_disponibles",
+        "Blocs_partiels",
+        "Blocs_indisponibles",
+        "Commentaire",
+    ]
+    if df is None or not isinstance(df, pd.DataFrame):
+        return pd.DataFrame(columns=columns)
+
+    field_matrix = build_recommended_fields_matrix(df)
+    expected_fields = (
+        field_matrix["Variable"].astype("string").dropna().unique().tolist()
+        if not field_matrix.empty else []
+    )
+    present_fields = [col for col in expected_fields if col in df.columns]
+    missing_fields = [col for col in expected_fields if col not in df.columns]
+    empty_columns = [
+        col for col in df.columns
+        if not _series_effectively_documented_mask(df[col]).any()
+    ]
+    coverage = round(len(present_fields) / max(len(expected_fields), 1) * 100.0, 1) if expected_fields else 0.0
+
+    capability_matrix = build_standard_analysis_capability_matrix(df)
+    available_blocks = capability_matrix.loc[
+        capability_matrix["Statut"] == "Disponible", "Bloc analytique"
+    ].astype("string").tolist() if not capability_matrix.empty else []
+    partial_blocks = capability_matrix.loc[
+        capability_matrix["Statut"] == "Partiel", "Bloc analytique"
+    ].astype("string").tolist() if not capability_matrix.empty else []
+    unavailable_blocks = capability_matrix.loc[
+        capability_matrix["Statut"] == "Indisponible", "Bloc analytique"
+    ].astype("string").tolist() if not capability_matrix.empty else []
+
+    if available_blocks:
+        comment = "Le fichier active deja plusieurs briques standard multi-maladies."
+    elif partial_blocks:
+        comment = "Le fichier reste exploitable, mais plusieurs analyses standard seront partielles."
+    else:
+        comment = "Le fichier est faiblement exploitable sans enrichissement ou mapping complementaire."
+
+    row = {
+        "Source": source_name or "Source courante",
+        "Feuille": sheet_name or "Non precisee",
+        "Nombre_lignes": int(len(df)),
+        "Nombre_colonnes": int(len(df.columns)),
+        "Colonnes_dupliquees": int(df.columns.duplicated().sum()),
+        "Colonnes_vides": ", ".join(map(str, empty_columns[:20])) if empty_columns else "Aucune",
+        "Nb_colonnes_vides": int(len(empty_columns)),
+        "Champs_standards_presents": int(len(present_fields)),
+        "Champs_standards_absents": int(len(missing_fields)),
+        "Taux_couverture_champs_standards_%": coverage,
+        "Blocs_disponibles": ", ".join(available_blocks) if available_blocks else "Aucun",
+        "Blocs_partiels": ", ".join(partial_blocks) if partial_blocks else "Aucun",
+        "Blocs_indisponibles": ", ".join(unavailable_blocks) if unavailable_blocks else "Aucun",
+        "Commentaire": comment,
+    }
+    return pd.DataFrame([row], columns=columns)
 
 @st.cache_data(show_spinner=False)
 def cascade_metrics(df: pd.DataFrame) -> pd.DataFrame:
@@ -4423,7 +4973,7 @@ def build_standard_signal_table(
     )
 
     investigation_mask = _standard_investigation_documented_mask(latest_scope)
-    investigation_sources_present = any(col in latest_scope.columns for col in [COL_INVEST, DATE_INV, COL_CLASS, "Classification_finale_std"])
+    investigation_sources_present = any(col in latest_scope.columns for col in [COL_INVEST, DATE_INV, COL_CLASS_INVEST, "Classification_investigation_std"])
 
     if investigation_sources_present and total_cases > 0:
         investigated = int(investigation_mask.sum())
@@ -5453,7 +6003,7 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
         "classification": "Classification_finale",
         "classif": "Classification_finale",
         "statut_cas": "Classification_finale",
-        "classification_investigation": "Classification_finale",
+        "classification_investigation": "Classification_investigation",
         "investigation": "Investigation",
         "investigated": "Investigation",
         "cas_investigue": "Investigation",
@@ -5482,7 +6032,7 @@ def standardize_ll_core(df: pd.DataFrame) -> pd.DataFrame:
         "Semaine_epid", "Num_semaine_epid", "Annee_epid",
         "Sexe", "Age", "Unite_age", "Age_en_ans",
         "Tranche_age", "Tranche_age_en_ans",
-        "Issue", "Classification_finale", "Investigation", "Prelevement", "TDR_realise", "TDR_Resultat", "Hospitalisation", "Resultat_labo",
+        "Issue", "Classification_investigation", "Classification_finale", "Investigation", "Prelevement", "TDR_realise", "TDR_Resultat", "Hospitalisation", "Resultat_labo",
     ]
     for c in required:
         if c not in df.columns:

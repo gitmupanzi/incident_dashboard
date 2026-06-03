@@ -36,6 +36,7 @@ SOURCE_COLUMNS: dict[str, dict[str, Any]] = {
     "Age": {"role": "Age brut du cas", "required": False, "level": "important"},
     "Unite_age": {"role": "Unite utilisee pour l'age", "required": False, "level": "important"},
     "Issue": {"role": "Issue du cas ou outcome", "required": False, "level": "optional"},
+    "Classification_investigation": {"role": "Classification d'investigation du cas", "required": False, "level": "optional"},
     "Classification_finale": {"role": "Classification finale du cas", "required": False, "level": "optional"},
     "Investigation": {"role": "Statut d'investigation du cas", "required": False, "level": "optional"},
     "Prelevement": {"role": "Prelevement ou echantillon realise", "required": False, "level": "optional"},
@@ -204,10 +205,14 @@ COLUMN_VARIANTS: dict[str, list[str]] = {
         "etat_sortie_malade",
         "statut_a_l_arrivee",
     ],
+    "Classification_investigation": [
+        "classification_investigation",
+        "classification investigation",
+        "classification_investig",
+    ],
     "Classification_finale": [
         "status_cas",
         "statut_cas",
-        "classification_investigation",
         "classification",
         "classif",
         "classification_finale_du_cas",

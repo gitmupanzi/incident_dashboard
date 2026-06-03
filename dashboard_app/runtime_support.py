@@ -17,7 +17,17 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import dashboard_app.advanced as advanced_api
 from dashboard_app.core import _normalize_metric_alias_columns
-from dashboard_app.domain import _is_yes_series, _norm_key, _resolve_map_filter_value, _tdr_result_norm
+from dashboard_app.domain import (
+    _is_yes_series,
+    _norm_key,
+    _resolve_map_filter_value,
+    _tdr_result_norm,
+    build_standard_classification_audit,
+    build_standard_analysis_capability_matrix,
+    build_standard_care_issue_audit,
+    build_standard_file_structure_audit,
+    build_standard_symptom_audit,
+)
 from dashboard_app.overview import format_range_label_for_display
 
 _STATIC_RUNTIME_CONTEXT = {
@@ -53,6 +63,11 @@ _STATIC_RUNTIME_CONTEXT.update(
         "_norm_key": _norm_key,
         "_resolve_map_filter_value": _resolve_map_filter_value,
         "_tdr_result_norm": _tdr_result_norm,
+        "build_standard_classification_audit": build_standard_classification_audit,
+        "build_standard_analysis_capability_matrix": build_standard_analysis_capability_matrix,
+        "build_standard_care_issue_audit": build_standard_care_issue_audit,
+        "build_standard_file_structure_audit": build_standard_file_structure_audit,
+        "build_standard_symptom_audit": build_standard_symptom_audit,
         "format_range_label_for_display": format_range_label_for_display,
     }
 )

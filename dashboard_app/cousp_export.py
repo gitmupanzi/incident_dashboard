@@ -139,7 +139,6 @@ ALIAS_SOURCE_VERS_COUSP = {
     "Date_reception_labo": "Date_reception_echantillon_labo",
     "Date_resultat": "Date_analyse",
     "Resultat_labo": "Resultat_final_labo",
-    "Classification_finale": "Classification_investigation",
     "Type_de_prelevement": "Type_prelevement",
 }
 
@@ -245,10 +244,6 @@ def normaliser_dataframe_cousp(df: pd.DataFrame) -> pd.DataFrame:
 
     vide_prel = data["Prelevement"].isna() | data["Prelevement"].astype("string").str.strip().eq("")
     data.loc[vide_prel & data["Date_prelevement"].notna(), "Prelevement"] = "Oui"
-
-    vide_classif = data["Classification_investigation"].isna() | data["Classification_investigation"].astype("string").str.strip().eq("")
-    if "Classification_finale" in df.columns:
-        data.loc[vide_classif, "Classification_investigation"] = df.loc[vide_classif, "Classification_finale"]
 
     vide_suspect = data["Cas_suspect"].isna() | data["Cas_suspect"].astype("string").str.strip().eq("")
     suspect_calc = _is_suspect(

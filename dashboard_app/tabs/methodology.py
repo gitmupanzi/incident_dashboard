@@ -5,6 +5,59 @@ from dashboard_app.runtime_support import inject_runtime_support
 inject_runtime_support(globals())
 
 
+def _series_has_documented_values(series: pd.Series) -> bool:
+    """Retourne True seulement si une colonne contient au moins une valeur réellement documentée."""
+    if series is None:
+        return False
+    if isinstance(series, pd.DataFrame):
+        return any(_series_has_documented_values(series[col]) for col in series.columns)
+    if pd.api.types.is_numeric_dtype(series) or pd.api.types.is_datetime64_any_dtype(series):
+        return bool(series.notna().any())
+    normalized = series.astype("string").str.strip()
+    return bool((normalized.notna() & normalized.ne("")).any())
+
+
+def _build_conservative_audit_scope(
+    df_current: pd.DataFrame,
+    df_source: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Construit un périmètre d'audit prudent en réinjectant les colonnes documentées du frame source."""
+    if not isinstance(df_current, pd.DataFrame):
+        return pd.DataFrame()
+
+    audit_scope = df_current.copy()
+    if not isinstance(df_source, pd.DataFrame) or df_source.empty:
+        return audit_scope
+
+    source_scope = df_source.copy()
+    if not source_scope.index.equals(audit_scope.index):
+        source_scope = source_scope.reindex(audit_scope.index)
+
+    for col in source_scope.columns:
+        if col not in audit_scope.columns:
+            audit_scope[col] = source_scope[col]
+            continue
+        try:
+            current_has_data = _series_has_documented_values(audit_scope[col])
+            source_has_data = _series_has_documented_values(source_scope[col])
+        except Exception:
+            continue
+        if (not current_has_data) and source_has_data:
+            audit_scope[col] = source_scope[col]
+
+    return audit_scope
+
+
+def _clear_builder_cache(builder) -> None:
+    """Efface prudemment le cache Streamlit d'un builder quand il en expose un."""
+    clear_fn = getattr(builder, "clear", None)
+    if callable(clear_fn):
+        try:
+            clear_fn()
+        except Exception:
+            pass
+
+
 def render_methodology_tab(ctx: dict) -> None:
     """Render the methodology and interpretation tab."""
     globals().update(ctx)
@@ -28,6 +81,78 @@ def render_methodology_tab(ctx: dict) -> None:
     )
     st.dataframe(methodology_context, width="stretch", hide_index=True)
 
+    methodology_scope = _build_conservative_audit_scope(
+        df_f if isinstance(df_f, pd.DataFrame) else pd.DataFrame(),
+        ctx.get("df_f_source"),
+    )
+
+    st.markdown("### 0. Audit standard du fichier et analyses activables")
+    structure_audit_builder = globals().get("build_standard_file_structure_audit")
+    capability_matrix_builder = globals().get("build_standard_analysis_capability_matrix")
+    if callable(structure_audit_builder) and callable(capability_matrix_builder) and isinstance(methodology_scope, pd.DataFrame):
+        _clear_builder_cache(structure_audit_builder)
+        _clear_builder_cache(capability_matrix_builder)
+        structure_audit = structure_audit_builder(
+            methodology_scope,
+            source_name=current_disease_label,
+            sheet_name="Perimetre filtre",
+        )
+        capability_matrix = capability_matrix_builder(methodology_scope)
+
+        if not structure_audit.empty:
+            audit_row = structure_audit.iloc[0]
+            a1, a2, a3, a4 = st.columns(4)
+            a1.metric("Lignes", f"{int(audit_row['Nombre_lignes']):,}".replace(",", " "))
+            a2.metric("Colonnes", f"{int(audit_row['Nombre_colonnes'])}")
+            a3.metric("Colonnes vides", f"{int(audit_row['Nb_colonnes_vides'])}")
+            a4.metric(
+                "Couverture champs standards",
+                f"{float(audit_row['Taux_couverture_champs_standards_%']):.1f}%",
+            )
+            st.dataframe(structure_audit, width="stretch", hide_index=True)
+
+        if not capability_matrix.empty:
+            st.caption(
+                "Cette matrice indique quelles briques analytiques standard sont pleinement disponibles, "
+                "partielles ou indisponibles sur le perimetre actuellement filtre."
+            )
+            st.dataframe(capability_matrix, width="stretch", hide_index=True, height=380)
+
+    classification_audit_builder = globals().get("build_standard_classification_audit")
+    if callable(classification_audit_builder) and isinstance(methodology_scope, pd.DataFrame):
+        _clear_builder_cache(classification_audit_builder)
+        classification_audit = classification_audit_builder(methodology_scope)
+        if not classification_audit.empty:
+            st.markdown("### 0.b Classification standard active")
+            st.caption(
+                "Ce tableau separe, quand la source le permet, la lecture de qualification des alertes "
+                "de la classification d'investigation et de la synthese finale / resultat."
+            )
+            st.dataframe(classification_audit, width="stretch", hide_index=True, height=260)
+
+    care_issue_audit_builder = globals().get("build_standard_care_issue_audit")
+    if callable(care_issue_audit_builder) and isinstance(methodology_scope, pd.DataFrame):
+        _clear_builder_cache(care_issue_audit_builder)
+        care_issue_audit = care_issue_audit_builder(methodology_scope)
+        if not care_issue_audit.empty:
+            st.markdown("### 0.c Prise en charge / issue standard")
+            st.caption(
+                "Ce resume transverse consolide admission, isolement, issue, deces et duree de sejour "
+                "quand les variables correspondantes sont documentees."
+            )
+            st.dataframe(care_issue_audit, width="stretch", hide_index=True)
+
+    symptom_audit_builder = globals().get("build_standard_symptom_audit")
+    if callable(symptom_audit_builder) and isinstance(methodology_scope, pd.DataFrame):
+        _clear_builder_cache(symptom_audit_builder)
+        symptom_audit = symptom_audit_builder(methodology_scope)
+        if not symptom_audit.empty:
+            st.markdown("### 0.d Bloc clinique / symptomes")
+            st.caption(
+                "Ce bloc reste optionnel : il ne s'affiche que lorsque la source documente des symptomes exploitables."
+            )
+            st.dataframe(symptom_audit, width="stretch", hide_index=True)
+
     st.markdown("### 1. Principes généraux de lecture")
     st.markdown(
         """
@@ -48,7 +173,7 @@ def render_methodology_tab(ctx: dict) -> None:
         [
             ("Alerte", "N_alerte, Source_alerte, Localite si disponibles", "Identifier les alertes et leur origine dans la chaîne de surveillance."),
             ("Notification", "Lignes filtrées / N_epid si disponible", "Décrire les cas effectivement notifiés dans le périmètre actif."),
-            ("Investigation", "Investigation, Date_investigation, Classification_finale", "Vérifier que les cas ont fait l'objet d'une investigation documentée ou fortement inférée par une classification exploitable."),
+            ("Investigation", "Investigation, Date_investigation, Classification_investigation", "Vérifier que les cas ont fait l'objet d'une investigation documentée ou fortement inférée par une classification d'investigation exploitable."),
             ("Exposition", "Lien épidémiologique, cas source, facteur d'exposition", "Décrire les liens de transmission et les expositions documentées."),
             ("Prélèvement", "Prelevement, Date_prelevement, Type_de_prelevement", "Suivre la couverture de prélèvement parmi les cas éligibles."),
             ("Laboratoire", "Date_reception_labo, Resultat_labo / TDR_Resultat, Date_confirmation", "Suivre l'acheminement, l'analyse et l'interprétation des résultats."),
@@ -58,7 +183,7 @@ def render_methodology_tab(ctx: dict) -> None:
     )
     st.dataframe(chain_method, width="stretch", hide_index=True, height=300)
 
-    current_chain = build_standard_surveillance_chain_table(df_f) if isinstance(df_f, pd.DataFrame) else pd.DataFrame()
+    current_chain = build_standard_surveillance_chain_table(methodology_scope) if isinstance(methodology_scope, pd.DataFrame) else pd.DataFrame()
     if not current_chain.empty:
         with st.expander("Aperçu de la chaîne standard sur le périmètre filtré", expanded=False):
             st.caption(
@@ -71,7 +196,7 @@ def render_methodology_tab(ctx: dict) -> None:
             ("Alertes documentées", "Nombre d'identifiants d'alerte non vides", "Toutes les lignes filtrées", "Disponible seulement si `N_alerte` existe."),
             ("Cas / notifications", "Nombre de lignes/cas dans la liste filtrée", "Toutes les lignes du périmètre filtré", "Dépend de la déduplication, de la définition de cas et des filtres."),
             ("Cas investigués", "Investigation=Oui ou investigation documentée par date/classification", "Alertes documentées si disponibles, sinon cas filtrés", "Par convention standard, une classification exploitable est traitée comme une forte preuve d'investigation, même si la colonne `Investigation` manque."),
-            ("Cas suspects / probables / confirmés", "Effectif par classification standardisée", "Cas investigués si possible, sinon cas filtrés", "La qualité de `Classification_finale` influence directement ces indicateurs."),
+            ("Cas suspects / probables / confirmés", "Effectif par classification standardisée", "Cas investigués si possible, sinon cas filtrés", "La qualité de `Classification_investigation` influence prioritairement ces indicateurs ; `Classification_finale` est lue séparément comme synthèse finale si elle existe."),
             ("Décès", "Cas dont l'issue est interprétée comme décès", "Tous les cas filtrés", "La qualité du champ Issue influence fortement l'indicateur."),
             ("Létalité / CFR (%)", "Décès / Cas × 100", "Tous les cas filtrés", "À interpréter avec prudence si le nombre de cas est faible."),
             ("Prélèvement (%)", "Cas avec prélèvement documenté Oui / Cas × 100", "Cas suspects si possible, sinon cas filtrés", "Peut refléter la pratique terrain ou la complétude du champ."),
@@ -125,7 +250,7 @@ def render_methodology_tab(ctx: dict) -> None:
         columns=["Délai standard", "Formule source", "Interprétation"],
     )
     st.dataframe(delay_defs, width="stretch", hide_index=True, height=360)
-    available_delays = list_available_standard_delays(df_f) if isinstance(df_f, pd.DataFrame) else []
+    available_delays = list_available_standard_delays(methodology_scope) if isinstance(methodology_scope, pd.DataFrame) else []
     if available_delays:
         available_delay_tbl = pd.DataFrame(available_delays, columns=["Code délai", "Libellé disponible"])
         with st.expander("Délais actuellement disponibles dans le périmètre filtré", expanded=False):
@@ -195,7 +320,7 @@ IREP = w_tendance × Score_tendance
             ("Dates", "Les dates ISO sont lues en year-first ; les autres formats sont interprétés avec prudence en day-first."),
             ("Âge", "L'âge est converti en années lorsque l'unité est disponible : jours, semaines, mois ou ans."),
             ("Sexe", "Les variantes usuelles sont harmonisées vers Masculin/Feminin lorsque possible."),
-            ("Investigation", "Une investigation est considérée comme documentée si l'un des éléments suivants existe : `Investigation=Oui`, `Date_investigation`, ou une classification exploitable. Cette règle matérialise l'hypothèse métier selon laquelle une classification reflète très souvent une investigation déjà réalisée."),
+            ("Investigation", "Une investigation est considérée comme documentée si l'un des éléments suivants existe : `Investigation=Oui`, `Date_investigation`, ou `Classification_investigation`. `Classification_finale` n'est plus utilisée comme substitut automatique de l'investigation."),
             ("Issue", "Les libellés compatibles avec décès alimentent l'indicateur `is_death` et les statuts vivants, y compris les sorties avec patient vivant, sont standardisés dans `Issue_std`."),
             ("Laboratoire", "Les résultats sont classés en positifs, négatifs, invalides ou non interprétables selon les valeurs disponibles ; `Resultat_labo` et `TDR_Resultat` sont rapprochés."),
             ("Promptitude", "Les délais standard sont calculés seulement quand les deux dates sources existent ; les délais négatifs sont conservés pour la qualité mais exclus des lectures opérationnelles."),
@@ -204,7 +329,7 @@ IREP = w_tendance × Score_tendance
     )
     st.dataframe(standardization_rules, width="stretch", hide_index=True)
 
-    field_matrix = build_recommended_fields_matrix(df_f) if isinstance(df_f, pd.DataFrame) else pd.DataFrame()
+    field_matrix = build_recommended_fields_matrix(methodology_scope) if isinstance(methodology_scope, pd.DataFrame) else pd.DataFrame()
     if not field_matrix.empty:
         with st.expander("Disponibilité des variables standards dans la source filtrée", expanded=False):
             st.caption(
