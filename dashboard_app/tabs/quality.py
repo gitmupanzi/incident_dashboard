@@ -1,5 +1,62 @@
 ﻿"""Affiche l'onglet qualité des données et export."""
 
+from typing import TYPE_CHECKING
+
+from dashboard_app.advanced import (
+    BytesIO,
+    COL_AGE,
+    COL_AS,
+    COL_CLASS,
+    COL_HOSP,
+    COL_ISSUE,
+    COL_PREL,
+    COL_PROV,
+    COL_SEX,
+    COL_TDR,
+    COL_TDRR,
+    COL_UNIT,
+    COL_WEEK,
+    COL_WNUM,
+    COL_YEAR,
+    COL_ZS,
+    DATE_ADM,
+    DATE_INV,
+    DATE_ISSUE,
+    DATE_NOTIF,
+    DATE_ONSET,
+    DATE_PREL,
+    DATE_RECEP,
+    DATE_RES,
+    DISEASE_SPECS,
+    EPIDEMIE,
+    Iterable,
+    Optional,
+    apply_plotly_value_annotations,
+    build_operational_risk_score,
+    build_spatiotemporal_cluster_table,
+    build_standard_action_tracker_template,
+    build_standard_signal_table,
+    build_weekly_alerts,
+    cascade_metrics,
+    completeness_table,
+    compute_analysis_period_value,
+    compute_indicators,
+    date,
+    df_to_csv_bytes,
+    duplicate_candidates_table,
+    format_metric_value,
+    hashlib,
+    merge_standard_action_tracker_template,
+    np,
+    pd,
+    px,
+    qc_flags,
+    render_section_title,
+    st,
+    st_dataframe_safe,
+    standard_data_quality_summary,
+    tab_help,
+)
 from dashboard_app.domain import (
     TDR_NEG_SET,
     TDR_POS_SET,
@@ -7,8 +64,19 @@ from dashboard_app.domain import (
     _standard_surveillance_evidence_masks,
     _standard_test_documented_mask,
     _tdr_result_norm,
+    build_standard_followup_tables,
 )
+from dashboard_app.narratives import _surveillance_clean_text_series, render_absence_narrative, render_tab_narrative
 from dashboard_app.runtime_support import inject_runtime_support
+
+if TYPE_CHECKING:
+    disease_key: str
+    IDSR_MODE: bool
+    annot_vals: bool
+    seuil_jours: float
+    files_used: list[str]
+    df_f: pd.DataFrame
+    df_f_source: pd.DataFrame
 
 inject_runtime_support(globals())
 

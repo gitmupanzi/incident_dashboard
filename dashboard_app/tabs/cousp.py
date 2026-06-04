@@ -5,6 +5,8 @@ from __future__ import annotations
 from io import BytesIO
 import re
 
+from dashboard_app.advanced import pd, px, render_section_title, st, st_dataframe_safe, tab_help
+from dashboard_app.narratives import render_absence_narrative
 from dashboard_app.runtime_support import inject_runtime_support
 
 # Les deux fonctions de haut niveau existent dans dashboard_app.domain.

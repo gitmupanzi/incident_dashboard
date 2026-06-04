@@ -1,8 +1,42 @@
 """Affiche l'onglet IREP orienté vers la décision."""
 
 from functools import lru_cache
+from pathlib import Path
+import re
+from typing import TYPE_CHECKING
+import unicodedata
 
+from dashboard_app.advanced import (
+    COL_AGE,
+    COL_CLASS,
+    COL_ISSUE,
+    COL_PROV,
+    COL_SEX,
+    COL_ZS,
+    DATE_ADM,
+    DATE_NOTIF,
+    DATE_ONSET,
+    DATE_PREL,
+    _score_quantile_0_100,
+    df_to_csv_bytes,
+    format_metric_value,
+    get_session_int,
+    is_death,
+    load_excel_cached,
+    np,
+    pd,
+    px,
+    render_section_title,
+    st,
+    st_plot,
+    tab_help,
+)
+from dashboard_app.narratives import render_absence_narrative, render_tab_narrative
 from dashboard_app.runtime_support import inject_runtime_support
+
+if TYPE_CHECKING:
+    df: pd.DataFrame
+    df_f: pd.DataFrame
 
 inject_runtime_support(globals())
 

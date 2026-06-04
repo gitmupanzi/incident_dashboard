@@ -1,7 +1,59 @@
 """Affiche l'onglet d'analyses de surveillance."""
 
+from typing import TYPE_CHECKING
+
+from dashboard_app.advanced import (
+    Any,
+    COL_AS,
+    COL_CLASS,
+    COL_PROV,
+    COL_SEX,
+    COL_WEEK,
+    COL_ZS,
+    apply_plotly_value_annotations,
+    build_delay_group_summary,
+    build_spatiotemporal_cluster_table,
+    build_standard_delay_summary,
+    build_standard_signal_table,
+    build_weekly_alerts,
+    build_weekly_lab_summary,
+    build_weekly_multiline_by_group,
+    format_metric_value,
+    go,
+    list_available_standard_delays,
+    np,
+    pct_under_threshold,
+    pd,
+    pick_age_col,
+    px,
+    render_section_title,
+    st,
+    st_dataframe_safe,
+    st_plot,
+    tab_help,
+)
+from dashboard_app.domain import build_standard_surveillance_chain_table, sanitize_plotly_figure_for_streamlit
+from dashboard_app.narratives import (
+    _build_province_interpretations,
+    _build_surveillance_action_lines,
+    _build_surveillance_summary_lines,
+    _build_surveillance_top_table,
+    _describe_surveillance_top_table,
+    _prepare_surveillance_period_scope,
+    render_absence_narrative,
+    render_reader_narrative,
+    render_tab_narrative,
+)
 from dashboard_app.runtime_support import inject_runtime_support
 from dashboard_app.standard_transverse import build_standard_capability_note, build_standard_disease_profile
+
+if TYPE_CHECKING:
+    disease_key: str
+    IDSR_MODE: bool
+    annot_vals: bool
+    pas_x: int
+    seuil_jours: float
+    df_f: pd.DataFrame
 
 inject_runtime_support(globals())
 

@@ -1,5 +1,25 @@
 """Affiche l'onglet de méthodologie et d'interprétation."""
 
+from typing import TYPE_CHECKING
+
+from dashboard_app.advanced import (
+    DATE_ADM,
+    DATE_INV,
+    DATE_ISSUE,
+    DATE_NOTIF,
+    DATE_ONSET,
+    DATE_PREL,
+    DATE_RECEP,
+    DATE_RES,
+    DISEASE_SPECS,
+    build_recommended_fields_matrix,
+    list_available_standard_delays,
+    pd,
+    render_section_title,
+    st,
+)
+from dashboard_app.domain import build_standard_surveillance_chain_table
+from dashboard_app.narratives import render_reader_narrative
 from dashboard_app.runtime_support import inject_runtime_support
 from dashboard_app.standard_transverse import (
     build_standard_analysis_capability_matrix,
@@ -11,6 +31,11 @@ from dashboard_app.standard_transverse import (
     build_standard_semantic_status_summary,
     build_standard_symptom_audit,
 )
+
+if TYPE_CHECKING:
+    disease_key: str
+    IDSR_MODE: bool
+    df_f: pd.DataFrame
 
 inject_runtime_support(globals())
 

@@ -1,5 +1,6 @@
 """Affiche l'onglet de détail de la vue d'ensemble."""
 
+from dashboard_app.advanced import st
 from dashboard_app.runtime_support import inject_runtime_support
 
 inject_runtime_support(globals())

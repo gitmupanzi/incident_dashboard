@@ -1,7 +1,68 @@
 """Affiche l'onglet du profil épidémiologique."""
 
+from typing import TYPE_CHECKING
+
+from dashboard_app.advanced import (
+    AGE_PYRAMID_MODE_LABELS,
+    AGE_UNIT_DAY_PATTERN,
+    AGE_UNIT_MONTH_PATTERN,
+    AGE_UNIT_WEEK_PATTERN,
+    AGE_UNIT_YEAR_PATTERN,
+    COL_AGE,
+    COL_AGEG,
+    COL_AGEG2,
+    COL_AS,
+    COL_CLASS,
+    COL_DEHY,
+    COL_HOSP,
+    COL_ISSUE,
+    COL_PREL,
+    COL_PROV,
+    COL_SEX,
+    COL_TDR,
+    COL_TDRR,
+    COL_UNIT,
+    COL_ZS,
+    DATE_ADM,
+    DATE_NOTIF,
+    DATE_ONSET,
+    HAS_CUSTOM_VIZ,
+    apply_plotly_value_annotations,
+    build_frequency_table,
+    build_global_summary_table,
+    build_simple_lab_table,
+    build_weekly_lab_summary,
+    build_who_narrative_summary,
+    compute_group_indicators,
+    derive_age_4cat_generic,
+    derive_age_5yr_generic,
+    derive_age_pyramid_generic,
+    get_age_pyramid_group_column_name,
+    go,
+    graphique_pyramide_age,
+    infer_age_years_generic,
+    is_numeric_dtype,
+    np,
+    pd,
+    pick_age_col,
+    px,
+    render_section_title,
+    st,
+    st_dataframe_safe,
+    st_plot,
+    tab_help,
+)
+from dashboard_app.core import _normalize_metric_alias_columns
+from dashboard_app.narratives import render_absence_narrative, render_tab_narrative
 from dashboard_app.runtime_support import inject_runtime_support
 from dashboard_app.standard_transverse import build_standard_capability_note, build_standard_disease_profile
+
+if TYPE_CHECKING:
+    disease_key: str
+    IDSR_MODE: bool
+    annot_vals: bool
+    use_custom_viz: bool
+    df_f: pd.DataFrame
 
 inject_runtime_support(globals())
 

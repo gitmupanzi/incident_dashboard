@@ -1,8 +1,30 @@
 """Affiche l'onglet des notions statistiques."""
 
 import html
+from typing import TYPE_CHECKING
 
+from dashboard_app.advanced import (
+    Any,
+    DISEASE_SPECS,
+    build_standard_delay_summary,
+    build_weekly_overview_table,
+    compute_indicators,
+    get_session_int,
+    pct_under_threshold,
+    pd,
+    render_section_title,
+    render_standards_note,
+    safe_pct,
+    st,
+    standard_data_quality_summary,
+)
+from dashboard_app.narratives import render_reader_narrative
 from dashboard_app.runtime_support import inject_runtime_support
+
+if TYPE_CHECKING:
+    disease_key: str
+    IDSR_MODE: bool
+    df_f: pd.DataFrame
 
 inject_runtime_support(globals())
 

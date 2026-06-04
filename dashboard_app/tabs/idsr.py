@@ -1,15 +1,42 @@
 """Affiche l'onglet d'analyses hebdomadaires IDSR."""
 
+from io import BytesIO
 import re
+from typing import Any, Optional
 import unicodedata
 import warnings
 from pathlib import Path
+
+from dashboard_app.advanced import (
+    apply_plotly_value_annotations,
+    clean_week,
+    clean_year,
+    compute_analysis_period_value,
+    fmt_yw_label,
+    go,
+    iso_monday_from_year_week,
+    load_excel_cached,
+    make_unique,
+    norm_text,
+    np,
+    parse_year_from_filename,
+    pct_change_metric_safe,
+    pd,
+    px,
+    render_idsr_maps_section,
+    render_section_title,
+    st,
+    st_plot,
+    tab_help,
+    to_numeric_cols,
+)
 
 from dashboard_app.app_loader import (
     get_line_list_bundle_caption,
     guess_preferred_included_file,
     list_available_line_list_files,
 )
+from dashboard_app.narratives import render_reader_narrative, render_tab_narrative
 from dashboard_app.overview import format_range_label_for_display
 from dashboard_app.runtime_support import inject_runtime_support
 
