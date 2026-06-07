@@ -148,7 +148,18 @@ Le mode line list permet de charger les donnees depuis :
 
 - un televersement local `.xlsx`, `.xls` ou `.csv`
 - un fichier present dans `line_list/`
+- une requete `DHIS2 Tracker` via une URL `analytics/enrollments` `.json` ou `.csv`
 - une table ou une requete `SELECT` depuis PostgreSQL
+
+### Pipeline `DHIS2 Tracker`
+
+Pour les extractions `DHIS2 Tracker`, le dashboard applique un pipeline de preparation specifique avant l'analyse :
+
+1. nettoyage des noms de colonnes avec `dashboard_app/colonne_nettoyage.py` pour supprimer accents, ponctuation et caracteres speciaux ;
+2. comparaison des colonnes nettoyees avec le fichier de reference `data/Rename_columns.xlsx` a partir des colonnes `Original` et `Renamed` ;
+3. fusion automatique des colonnes dupliquees ou quasi identiques (par exemple suffixes `.1`, `_1`, `_2`) en conservant la premiere valeur non vide ;
+4. standardisation metier multi-maladies via `dashboard_app/domain.py` pour injecter les conventions propres a la maladie selectionnee ;
+5. ajout des colonnes de provenance, de date de telechargement et, si disponible, de la geographie de notification extraite de la hierarchie DHIS2.
 
 ### Pour l'option `Autre`
 
@@ -231,6 +242,8 @@ Un fichier IDSR exploitable doit fournir, selon le format disponible, des inform
 ## Fonctionnalites principales
 
 - harmonisation automatique des noms de colonnes et des valeurs usuelles
+- nettoyage des noms de colonnes avant renommage de reference (`Original` -> `Renamed`)
+- fusion automatique des colonnes homonymes ou quasi identiques apres standardisation
 - standardisation des schemas multi-maladies
 - audit standard de structure du fichier et des briques activables
 - profil standard multi-maladies adapte a la source active
@@ -312,8 +325,9 @@ incident_dashboard/
 |-- incident_dashboard.py              # point d'entree Streamlit principal
 |-- call_center.py                     # composant auxiliaire present dans le depot
 |-- dashboard_app/
-|   |-- app_loader.py                  # chargement des sources et validation PostgreSQL
+|   |-- app_loader.py                  # chargement des sources upload/local/DHIS2/PostgreSQL et pre-standardisation
 |   |-- advanced.py                    # aides avancees et wrappers analytiques
+|   |-- colonne_nettoyage.py           # nettoyage des noms de colonnes et renommage via fichier de reference
 |   |-- column_mapping.py              # mapping auto/manu, profils, export standardise
 |   |-- core.py                        # helpers transverses, rendu, export
 |   |-- domain.py                      # logique metier, standardisation, indicateurs, chaine COUSP, QC
@@ -335,6 +349,7 @@ incident_dashboard/
 |   |-- geometry_rdc_provinces.geojson
 |   |-- geometry_rdc_zones_sante.geojson
 |   |-- RDC_Zone_de_sante_OCHA.xlsx
+|   |-- Rename_columns.xlsx            # reference principale de renommage des colonnes
 |-- line_list/                         # fichiers locaux d'exemple / travail
 |-- tests/                             # tests unitaires et fixture IDSR
 |-- requirements.txt
@@ -428,12 +443,15 @@ streamlit run .\incident_dashboard.py
 - certaines analyses exigent des dates et une geographie suffisamment renseignees
 - certaines sources ne distinguent pas explicitement `N_alerte` et `N_epid`, ce qui limite la lecture purement orientee alerte
 - le mode `Autre` reste dependant de la qualite du mapping utilisateur
+- les extractions DHIS2 tres riches peuvent produire des colonnes proches ou redondantes ; le pipeline les fusionne automatiquement mais un controle ponctuel reste utile sur les nouveaux formulaires
 - les analyses IDSR et les analyses line list suivent des logiques differentes et ne doivent pas etre confondues
 - les conventions de mapping multi-maladies doivent etre maintenues au fil des nouveaux formats sources
 
 ## Fichiers d'entree principaux
 
 - application principale : [incident_dashboard.py](./incident_dashboard.py)
+- chargement et pipeline des sources : [dashboard_app/app_loader.py](./dashboard_app/app_loader.py)
+- nettoyage / renommage des colonnes : [dashboard_app/colonne_nettoyage.py](./dashboard_app/colonne_nettoyage.py)
 - logique metier : [dashboard_app/domain.py](./dashboard_app/domain.py)
 - synthese et accueil : [dashboard_app/overview.py](./dashboard_app/overview.py)
 - mapping de colonnes : [dashboard_app/column_mapping.py](./dashboard_app/column_mapping.py)

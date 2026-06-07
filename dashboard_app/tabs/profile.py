@@ -452,6 +452,10 @@ def render_profile_tab(ctx: dict) -> None:
             "applicable à toute line list standardisée."
         )
 
+        has_tdr_chain = COL_TDR in df_f.columns and df_f[COL_TDR].notna().any()
+        coverage_label = "TDR réalisé (%)" if has_tdr_chain else "Tests documentés (%)"
+        positivity_label = "Positivité TDR (%)" if has_tdr_chain else "Positivité labo (%)"
+
         strat_age_col = pick_age_col(df_f)
         strat_candidates = []
         for c in [COL_SEX, strat_age_col, COL_PROV, COL_ZS, COL_AS, COL_CLASS, "Type_de_prelevement", "Nom_laboratoire"]:

@@ -7,6 +7,7 @@ from dashboard_app.app_loader import (
     get_line_list_bundle_caption,
     guess_preferred_included_file,
     list_available_line_list_files,
+    read_dhis2_tracker_file,
     read_postgresql_file,
 )
 from dashboard_app.column_mapping import (
@@ -100,6 +101,16 @@ postgres_password = ""
 postgres_query_mode = "Table"
 postgres_table_name = ""
 postgres_sql_query = ""
+dhis2_url = ""
+dhis2_username = ""
+dhis2_password = ""
+dhis2_format_sortie = "json"
+dhis2_connect_timeout = 30
+dhis2_read_timeout = 900
+dhis2_max_retries = 2
+dhis2_ajouter_localisation_notification = True
+dhis2_renommer_variable = True
+dhis2_variables_brute = False
 
 # Par défaut: feuille selon la maladie (modifiable)
 default_sheet = DISEASE_SPECS.get(disease_key, DISEASE_SPECS["cholera"]).get("default_sheet", "")
@@ -116,6 +127,7 @@ if disease_key != "idsr":
     source_options = {
         "T\u00e9l\u00e9verser un fichier": "upload",
         "Charger un fichier inclus": "local",
+        "Se connecter \u00e0 DHIS2 Tracker": "dhis2",
         "Se connecter \u00e0 PostgreSQL": "postgres",
     }
     source_label = st.sidebar.selectbox(
@@ -179,6 +191,64 @@ if disease_key != "idsr":
                     )
         else:
             st.sidebar.warning("Aucun fichier `.xlsx`, `.xls` ou `.csv` inclus dans l'application n'a \u00e9t\u00e9 trouv\u00e9.")
+    elif line_list_source == "dhis2":
+        st.sidebar.caption("Connexion à DHIS2 Tracker")
+        dhis2_url = st.sidebar.text_area(
+            "URL DHIS2 Tracker",
+            value="",
+            height=160,
+            key="ll_dhis2_url",
+            help="Colle ici l'URL analytics/enrollments .json ou .csv.",
+        )
+        dhis2_username = st.sidebar.text_input("Utilisateur DHIS2", value="", key="ll_dhis2_user")
+        dhis2_password = st.sidebar.text_input("Mot de passe DHIS2", value="", type="password", key="ll_dhis2_password")
+        dhis2_format_sortie = st.sidebar.radio(
+            "Format de sortie DHIS2",
+            ["json", "csv"],
+            index=0,
+            key="ll_dhis2_format",
+            horizontal=True,
+        )
+        dhis2_connect_timeout = st.sidebar.number_input(
+            "Timeout connexion (s)",
+            min_value=1,
+            max_value=300,
+            value=30,
+            step=1,
+            key="ll_dhis2_connect_timeout",
+        )
+        dhis2_read_timeout = st.sidebar.number_input(
+            "Timeout lecture (s)",
+            min_value=1,
+            max_value=3600,
+            value=900,
+            step=30,
+            key="ll_dhis2_read_timeout",
+        )
+        dhis2_max_retries = st.sidebar.number_input(
+            "Nombre de tentatives",
+            min_value=0,
+            max_value=10,
+            value=2,
+            step=1,
+            key="ll_dhis2_max_retries",
+        )
+        dhis2_ajouter_localisation_notification = st.sidebar.checkbox(
+            "Ajouter la localisation de notification",
+            value=True,
+            key="ll_dhis2_add_notification_location",
+        )
+        dhis2_renommer_variable = st.sidebar.checkbox(
+            "Renommer / standardiser les variables",
+            value=True,
+            key="ll_dhis2_rename_variables",
+            help="Utilise par défaut `data/Rename_columns.xlsx` comme référence.",
+        )
+        dhis2_variables_brute = st.sidebar.checkbox(
+            "Conserver les variables brutes DHIS2",
+            value=False,
+            key="ll_dhis2_keep_raw_variables",
+        )
     else:
         st.sidebar.caption("Connexion à une base PostgreSQL")
         postgres_host = st.sidebar.text_input("Hôte PostgreSQL", value="localhost", key="ll_pg_host")
@@ -748,6 +818,9 @@ if not IDSR_MODE:
     elif line_list_source == "local":
         source_ready = selected_local_path is not None and selected_local_path.exists()
         source_message = "Aucun fichier inclus exploitable n'est disponible dans l'application."
+    elif line_list_source == "dhis2":
+        source_ready = bool(str(dhis2_url).strip())
+        source_message = "Renseigne l'URL DHIS2 Tracker pour charger les données de surveillance."
     else:
         source_ready = all([
             str(postgres_host).strip(),
@@ -847,6 +920,42 @@ if not IDSR_MODE:
                 st.session_state["_ll_cache_raw"] = raw
 
             files_used = [f"bundle:{selected_local_path.name}"]
+        elif line_list_source == "dhis2":
+            _cache_key = (
+                "dhis2",
+                dhis2_url.strip(),
+                dhis2_username.strip(),
+                hashlib.sha256(str(dhis2_password).encode("utf-8")).hexdigest(),
+                dhis2_format_sortie,
+                int(dhis2_connect_timeout),
+                int(dhis2_read_timeout),
+                int(dhis2_max_retries),
+                bool(dhis2_ajouter_localisation_notification),
+                bool(dhis2_renommer_variable),
+                bool(dhis2_variables_brute),
+                disease_key,
+            )
+
+            if st.session_state.get("_ll_cache_key") == _cache_key and isinstance(st.session_state.get("_ll_cache_raw"), pd.DataFrame):
+                raw = st.session_state["_ll_cache_raw"]
+            else:
+                raw = read_dhis2_tracker_file(
+                    url=dhis2_url.strip(),
+                    username=dhis2_username.strip(),
+                    password=dhis2_password,
+                    format_sortie=dhis2_format_sortie,
+                    connect_timeout=int(dhis2_connect_timeout),
+                    read_timeout=int(dhis2_read_timeout),
+                    max_retries=int(dhis2_max_retries),
+                    ajouter_localisation_notification=bool(dhis2_ajouter_localisation_notification),
+                    renommer_variable=bool(dhis2_renommer_variable),
+                    variables_brute=bool(dhis2_variables_brute),
+                    disease_key=disease_key,
+                )
+                st.session_state["_ll_cache_key"] = _cache_key
+                st.session_state["_ll_cache_raw"] = raw
+
+            files_used = [f"dhis2:{dhis2_url.strip()}"]
         else:
             query = build_postgresql_query(postgres_query_mode, postgres_table_name, postgres_sql_query)
             _cache_key = (
@@ -880,6 +989,8 @@ if not IDSR_MODE:
             st.error(f"Impossible de lire le fichier téléversé : {e}")
         elif line_list_source == "local":
             st.error(f"Impossible de lire le fichier inclus sélectionné : {e}")
+        elif line_list_source == "dhis2":
+            st.error(f"Impossible de charger les données DHIS2 Tracker : {e}")
         else:
             st.error(f"Impossible de charger les données PostgreSQL : {e}")
         st.stop()
