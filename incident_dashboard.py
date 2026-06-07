@@ -1,15 +1,5 @@
 from dashboard_app.runtime_support import build_runtime_context, inject_runtime_support
-from dashboard_app.app_loader import (
-    LINE_LIST_BUNDLE_LABEL,
-    LINE_LIST_DIR,
-    build_postgresql_query,
-    get_excel_sheet_names_from_path,
-    get_line_list_bundle_caption,
-    guess_preferred_included_file,
-    list_available_line_list_files,
-    read_dhis2_tracker_file,
-    read_postgresql_file,
-)
+import dashboard_app.app_loader as app_loader
 from dashboard_app.column_mapping import (
     AUTO_APPLY_CONFIDENCE_THRESHOLD,
     DEFAULT_CONFIDENCE_THRESHOLD,
@@ -43,6 +33,16 @@ from dashboard_app.tabs.irep import render_irep_tab
 from dashboard_app.tabs.maps import render_maps_tab
 from dashboard_app.tabs.methodology import render_methodology_tab
 from dashboard_app.domain import     _resolve_map_filter_value
+
+LINE_LIST_BUNDLE_LABEL = app_loader.LINE_LIST_BUNDLE_LABEL
+LINE_LIST_DIR = app_loader.LINE_LIST_DIR
+build_postgresql_query = app_loader.build_postgresql_query
+get_excel_sheet_names_from_path = app_loader.get_excel_sheet_names_from_path
+get_line_list_bundle_caption = app_loader.get_line_list_bundle_caption
+guess_preferred_included_file = app_loader.guess_preferred_included_file
+list_available_line_list_files = app_loader.list_available_line_list_files
+read_postgresql_file = app_loader.read_postgresql_file
+read_dhis2_tracker_file = getattr(app_loader, "read_dhis2_tracker_file", None)
 
 try:
     from dashboard_app.overview import format_range_label_for_display, split_geo_pair_label
@@ -921,6 +921,12 @@ if not IDSR_MODE:
 
             files_used = [f"bundle:{selected_local_path.name}"]
         elif line_list_source == "dhis2":
+            if read_dhis2_tracker_file is None:
+                st.error(
+                    "La fonction `read_dhis2_tracker_file` n'est pas disponible dans cette version déployée. "
+                    "Redéploie l'application avec la dernière version du dépôt."
+                )
+                st.stop()
             _cache_key = (
                 "dhis2",
                 dhis2_url.strip(),
