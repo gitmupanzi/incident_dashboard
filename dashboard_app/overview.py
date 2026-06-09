@@ -1728,7 +1728,6 @@ def render_interactive_map_overview(
     selection_state = st.plotly_chart(
         fig_map,
         width="stretch",
-        height=height,
         key=chart_key,
         on_select="rerun",
         selection_mode="points",
@@ -1827,7 +1826,6 @@ def _render_detailed_geo_level_map(
             selection_state = st.plotly_chart(
                 fig_map,
                 width="stretch",
-                height=height,
                 key=chart_key,
                 on_select="rerun",
                 selection_mode="points",
@@ -2099,7 +2097,6 @@ def _render_idsr_geo_level_map(
             selection_state = st.plotly_chart(
                 fig_map,
                 width="stretch",
-                height=height,
                 key=chart_key,
                 on_select="rerun",
                 selection_mode="points",

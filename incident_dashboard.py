@@ -32,7 +32,7 @@ from dashboard_app.tabs.idsr import render_idsr_tab
 from dashboard_app.tabs.irep import render_irep_tab
 from dashboard_app.tabs.maps import render_maps_tab
 from dashboard_app.tabs.methodology import render_methodology_tab
-from dashboard_app.domain import     _resolve_map_filter_value
+from dashboard_app.domain import _resolve_map_filter_value, resolve_available_filter_column
 
 LINE_LIST_BUNDLE_LABEL = app_loader.LINE_LIST_BUNDLE_LABEL
 LINE_LIST_DIR = app_loader.LINE_LIST_DIR
@@ -1496,40 +1496,41 @@ if not IDSR_MODE:
     df_f = df3
 
     # =========================
-    # Classification finale (multiselect, "Toutes" par défaut, dépend de df_f)
+    # Classification finale / investigation (multiselect, "Toutes" par défaut, dépend de df_f)
     # =========================
-    if COL_CLASS in df_f.columns:
-        class_values = sorted([x for x in df_f[COL_CLASS].dropna().unique().tolist() if x])
+    class_filter_available, class_filter_col, class_filter_series, class_filter_label = resolve_available_filter_column(
+        df_f, COL_CLASS
+    )
+    if class_filter_available and class_filter_col is not None and class_filter_series is not None:
+        class_values = sorted([x for x in class_filter_series.dropna().unique().tolist() if x])
         class_options = ["Toutes"] + class_values
         normalize_sel("class_sel", class_options)
 
         class_sel = st.sidebar.multiselect(
-            "Classification finale",
+            class_filter_label or "Classification finale",
             options=class_options,
             key="class_sel",
         )
 
         if class_sel and ("Toutes" not in class_sel):
-            df_f = df_f[df_f[COL_CLASS].isin(class_sel)]
+            df_f = df_f[df_f[class_filter_col].isin(class_sel)]
 
     # =========================
     # Résultat final labo (multiselect, "Toutes" par défaut, dépend de df_f)
     # =========================
-    lab_result_filter_col = None
-    if "Resultat_labo" in df_f.columns and df_f["Resultat_labo"].notna().any():
-        lab_result_filter_col = "Resultat_labo"
-    elif COL_TDRR in df_f.columns and df_f[COL_TDRR].notna().any():
-        lab_result_filter_col = COL_TDRR
+    lab_result_filter_available, lab_result_filter_col, lab_result_filter_series, lab_result_filter_label = (
+        resolve_available_filter_column(df_f, "Resultat_labo")
+    )
 
-    if lab_result_filter_col is not None:
+    if lab_result_filter_available and lab_result_filter_col is not None and lab_result_filter_series is not None:
         lab_result_values = sorted(
-            [x for x in df_f[lab_result_filter_col].dropna().unique().tolist() if x]
+            [x for x in lab_result_filter_series.dropna().unique().tolist() if x]
         )
         lab_result_options = ["Toutes"] + lab_result_values
         normalize_sel("lab_result_sel", lab_result_options)
 
         lab_result_sel = st.sidebar.multiselect(
-            "Résultat final labo",
+            lab_result_filter_label or "Résultat final labo",
             options=lab_result_options,
             key="lab_result_sel",
         )

@@ -982,7 +982,6 @@ def render_map(df_filtered):
     selection_state = st.plotly_chart(
         fig_map,
         width="stretch",
-        height=520,
         key="province_map",
         on_select="rerun",
         selection_mode="points",

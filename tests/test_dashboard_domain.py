@@ -20,12 +20,14 @@ from dashboard_app.domain import (
     COL_AGEG,
     COL_AGEG2,
     COL_CLASS,
+    COL_CLASS_INVEST,
     COL_DEHY,
     COL_PROV,
     COL_HOSP,
     COL_INVEST,
     COL_ISSUE,
     COL_PREL,
+    COL_RESUL,
     COL_SEX,
     COL_TDR,
     COL_TDRR,
@@ -56,6 +58,7 @@ from dashboard_app.domain import (
     compute_indicators,
     is_death,
     merge_standard_action_tracker_template,
+    resolve_available_filter_column,
     standard_data_quality_summary,
     standardize_df,
     standardize_ll_by_disease,
@@ -1828,6 +1831,48 @@ class StandardAnalysisCapabilityTest(unittest.TestCase):
 
         self.assertEqual(str(result_row["Disponible"]), "Non")
         self.assertEqual(str(result_row["Support"]), "Aucun")
+
+    def test_resolve_available_filter_column_uses_investigation_classification_when_finale_missing(self):
+        df = pd.DataFrame(
+            {
+                COL_CLASS_INVEST: ["Suspect", "Probable", None],
+            }
+        )
+
+        available, source_name, source_series, label = resolve_available_filter_column(df, COL_CLASS)
+
+        self.assertTrue(available)
+        self.assertEqual(source_name, COL_CLASS_INVEST)
+        self.assertEqual(label, "Classification d'investigation")
+        self.assertEqual(source_series.dropna().tolist(), ["Suspect", "Probable"])
+
+    def test_resolve_available_filter_column_uses_resultat_final_labo_when_present(self):
+        df = pd.DataFrame(
+            {
+                COL_RESUL: ["Positif", "Negatif", None],
+            }
+        )
+
+        available, source_name, source_series, label = resolve_available_filter_column(df, "Resultat_labo")
+
+        self.assertTrue(available)
+        self.assertEqual(source_name, COL_RESUL)
+        self.assertEqual(label, "Résultat final labo")
+        self.assertEqual(source_series.dropna().tolist(), ["Positif", "Negatif"])
+
+    def test_resolve_available_filter_column_uses_resultat_final_when_present(self):
+        df = pd.DataFrame(
+            {
+                "Resultat_final": ["Positif", "Negatif", None],
+            }
+        )
+
+        available, source_name, source_series, label = resolve_available_filter_column(df, "Resultat_labo")
+
+        self.assertTrue(available)
+        self.assertEqual(source_name, "Resultat_final")
+        self.assertEqual(label, "Résultat final labo")
+        self.assertEqual(source_series.dropna().tolist(), ["Positif", "Negatif"])
 
     def test_standard_disease_profile_reports_available_blocks(self):
         df = pd.DataFrame(

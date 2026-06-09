@@ -6,9 +6,51 @@ Le projet sert de cadre unique pour :
 
 - charger des line lists heterogenes de surveillance
 - standardiser les colonnes et les valeurs vers un schema commun
-- produire des lectures analytiques multi-maladies directement utilisables pour la decision
+- produire des lectures analytiques multi-maladies directement exploitables
 - exploiter des donnees de laboratoire integrees aux line lists
 - analyser des donnees IDSR agregees hebdomadaires
+
+## Demarrage rapide
+
+### Prerequis
+
+- Python 3.10+ recommande
+- dependances de `requirements.txt`
+- fichiers de travail dans `line_list/` pour les tests sur donnees reelles
+
+### Installation
+
+```bash
+python -m venv .venv
+```
+
+Sous Windows PowerShell :
+
+```powershell
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+### Lancer l'application
+
+```bash
+streamlit run .\incident_dashboard.py
+```
+
+### Lancer les tests
+
+Suite complete :
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Tests utiles sur la logique metier :
+
+```bash
+python -m unittest tests.test_dashboard_domain -v
+python -m unittest tests.test_column_mapping -v
+```
 
 ## Ce que fait l'application
 
@@ -28,110 +70,87 @@ L'application combine plusieurs briques dans une meme interface :
 - separation semantique standard entre investigation, classification finale, resultat laboratoire et issue clinique
 - controle qualite, detection de doublons et revue de coherence
 - tableaux standard de cas a relancer dans la chaine de surveillance
-- generation d'une synthese COUSP orientee decision
+- synthese COUSP orientee decision
 - calcul d'un indice composite IREP
 - cartographie statique et interactive
 - lecture IDSR agregee avec completude, incidence, taux d'attaque et tableaux standards
 
 ## Logique standard COUSP
 
-Le projet vise un cadre de lecture standard multi-maladies pour les listes lineaires de surveillance. La logique analytique privilegie les blocs suivants :
+Le dashboard applique un cadre de lecture standard multi-maladies organise autour des blocs suivants :
 
 - `Alerte` : `N_alerte`, `Source_alerte`, `Localite` quand ils existent
-- `Notification` : cas effectivement presents dans le perimetre filtre
+- `Notification` : cas presents dans le perimetre filtre
 - `Investigation` : `Investigation`, `Date_investigation`, `Classification_investigation`
 - `Exposition` : lien epidemiologique, cas source, facteur d'exposition
 - `Prelevement` : `Prelevement`, `Date_prelevement`, `Type_de_prelevement`
 - `Laboratoire` : `Date_reception_labo`, `Resultat_labo`, `Resultat_final_labo` ou `TDR_Resultat`, `Date_confirmation`
 - `Prise en charge / Issue` : `Hospitalisation`, `Date_admission_au_CT`, `Issue`, `Date_issue`
 
-Cette organisation permet de rester standard meme quand certaines maladies ont moins de variables que d'autres. Les blocs absents dans la source ne cassent pas le dashboard : ils sont simplement reduits ou ignores.
-Pour l'investigation, le dashboard applique une convention standard importante : une classification d'investigation exploitable est consideree comme une forte preuve qu'une investigation a eu lieu, meme si la colonne `Investigation` est absente ou vide.
-`Classification_finale` n'est plus utilisee comme substitut automatique de l'investigation ; elle est lue separement comme synthese finale ou comme support de resultat laboratoire seulement quand les valeurs le justifient.
+Cette organisation permet de rester robuste meme quand certaines maladies ont moins de variables que d'autres. Les blocs absents dans la source ne cassent pas le dashboard : ils sont reduits ou ignores.
 
-### Difference entre `Classification_investigation` et `Classification_finale`
+## Conventions importantes sur les colonnes
 
-- `Classification_investigation` decrit la lecture epidemiologique du cas apres investigation.
-- `Classification_investigation` sert a documenter l'etape `Investigation` de la chaine standard.
-- `Classification_investigation` peut porter des statuts comme `Suspect`, `Probable`, `Confirme`, `Non cas`.
-- `Classification_finale` ne doit pas etre confondue avec l'investigation.
-- `Classification_finale` represente une synthese finale de cas, ou dans certaines sources un support de resultat biologique final.
-- quand `Classification_finale` contient des modalites comme `Positif`, `Negatif`, `Invalide`, `Indetermine`, elle est traitee comme proche d'un `Resultat_labo`, pas comme une classification d'investigation.
-- dans le dashboard, la logique standard priorise donc `Classification_investigation` pour l'investigation, et lit `Classification_finale` dans une lecture separee de synthese finale / laboratoire.
+### Investigation
+
+- `Classification_investigation` est la source prioritaire pour documenter l'etape d'investigation
+- une classification d'investigation exploitable est consideree comme une forte preuve qu'une investigation a eu lieu
+- `Classification_finale` n'est plus utilisee comme substitut automatique de l'investigation
+
+### Classification finale
+
+- `Classification_finale` represente une synthese finale de cas
+- elle peut contenir des statuts comme `Suspect`, `Probable`, `Confirme`, `Non cas`
+- elle peut aussi, selon la source, porter des valeurs proches d'un resultat biologique
+
+### Resultat laboratoire
+
+Le projet doit gerer des sources heterogenes. Selon le fichier, le resultat labo peut etre porte par :
+
+- `Resultat_labo`
+- `Resultat_final_labo`
+- `Resultat_final`
+- `TDR_Resultat`
+- parfois `Classification_finale` quand les valeurs ressemblent clairement a des resultats biologiques
+
+### Filtres dynamiques dans l'interface
+
+Les filtres de l'application ne supposent pas un seul nom de colonne :
+
+- le filtre de classification peut utiliser `Classification_finale` ou `Classification_investigation` selon la colonne documentee disponible
+- le filtre de resultat labo peut utiliser `Resultat_labo`, `Resultat_final_labo`, `Resultat_final` ou `TDR_Resultat`
+
+Cette logique evite les filtres vides sur des fichiers reels qui n'emploient pas tous les memes noms de variables.
 
 ## Espaces analytiques de l'interface
 
 L'interface principale expose aujourd'hui les onglets suivants :
 
 - `Vue d'ensemble` : synthese d'accueil, KPI, cartes rapides, tendance hebdomadaire et lecture contextuelle
-- `Notions statistiques` : explication pedagogique des notions quantitatives utilisees dans le projet et de leur importance
-- `Surveillance` : dynamique epidemiologique, completude de surveillance, alertes, clusters, chaine analytique standard COUSP et delais de promptitude
-- `Profil` : lecture descriptive selon le modele Temps-Lieu-Personne, pyramides, distributions age/sexe, detail labo
-- `Qualite et export` : qualite des donnees, promptitude, coherence, cas a relancer, exports CSV/Excel, QC flags, doublons, tracker d'actions
-- `COUSP` : synthese orientee decision, foyers prioritaires, signaux utiles a la decision et export standard
-- `IREP` : indice composite de risque epidemiologique avec sorties telechargeables
+- `Notions statistiques` : explication pedagogique des notions quantitatives utilisees
+- `Surveillance` : dynamique epidemiologique, completude, alertes, clusters, chaine COUSP et delais
+- `Profil` : lecture descriptive selon le modele Temps-Lieu-Personne, detail labo
+- `Qualite et export` : qualite des donnees, promptitude, coherence, doublons et exports
+- `COUSP` : synthese orientee decision, foyers prioritaires et export standard
+- `IREP` : indice composite de risque epidemiologique
 - `Cartographie` : cartes detaillees par province et zone de sante
-- `Methodologie` : definitions, chaines standards, denominateurs, delais, conventions analytiques et limites d'interpretation
-- `IDSR` : analyse des donnees agregees hebdomadaires, distincte du flux line list
+- `Methodologie` : definitions, conventions analytiques, denominateurs et limites
+- `IDSR` : analyse des donnees agregees hebdomadaires
 
-Les onglets `Vue d'ensemble`, `Surveillance`, `Profil`, `Qualite` et `Methodologie` exposent aussi des briques transversales standard :
+## Sources de donnees supportees
 
-- profil standard multi-maladies de la source active
-- note de capacite standard resumant les briques disponibles, partielles et indisponibles
-- audit semantique separant investigation, classification finale, resultat laboratoire et issue clinique
+### Line lists
 
-### Implementation des onglets `dashboard_app/tabs`
+Le mode line list permet de charger les donnees depuis :
 
-Les onglets de l'interface sont maintenant isoles dans `dashboard_app/tabs/` pour clarifier la maintenance et separer la logique d'affichage de la logique metier transverse.
+- un televersement local `.xlsx`, `.xls` ou `.csv`
+- un fichier present dans `line_list/`
+- une extraction `DHIS2 Tracker`
+- une table ou une requete `SELECT` depuis PostgreSQL
 
-- `overview_detail.py` : detail et messages de contexte de la vue d'ensemble
-- `statistics.py` : notions statistiques, definitions et limites d'interpretation
-- `surveillance.py` : dynamique hebdomadaire, signaux, completude de surveillance et delais
-- `profile.py` : profil epidemiologique Temps-Lieu-Personne et detail laboratoire
-- `quality.py` : qualite des donnees, coherence, completude, promptitude et exports
-- `cousp.py` : synthese standard COUSP, foyers prioritaires et export standard
-- `irep.py` : indice composite IREP et sorties orientees decision
-- `maps.py` : cartographie detaillee statique et interactive
-- `methodology.py` : audit standard du fichier, capacites analytiques, conventions et limites
-- `idsr.py` : lecture IDSR hebdomadaire agregee
+### IDSR
 
-Ces onglets s'appuient sur `dashboard_app/standard_transverse.py`, `dashboard_app/runtime_support.py`, `dashboard_app/domain.py` et `dashboard_app/overview.py` pour partager les briques standard transversales et multi-maladies.
-
-## Perimetre analytique
-
-### 1. Line lists de surveillance
-
-Les configurations maladies actuellement supportees incluent :
-
-- cholera
-- rougeole / rubeole
-- mpox
-- Ebola / MVE
-- meningite
-- intoxication
-- autre line list via mapping manuel ou semi-automatique
-
-Le pipeline essaie de standardiser automatiquement les variantes frequentes de colonnes, puis enrichit les champs derives necessaires aux analyses.
-
-### 2. Donnees de laboratoire
-
-Quand elles existent dans les fichiers sources, les variables biologiques sont integrees au pipeline :
-
-- prelevement
-- date de prelevement
-- date de reception labo
-- date de resultat
-- resultat TDR
-- resultat labo
-- resultat final labo
-- type de prelevement
-- nom et numero de laboratoire
-
-Les tableaux de bord calculent notamment les volumes de prelevements, les resultats positifs, negatifs, invalides, les receptions labo documentees, certains delais de chaine et plusieurs indicateurs de coherence.
-
-### 3. Donnees IDSR agregees
-
-L'onglet `IDSR` est dedie aux donnees hebdomadaires agregees par maladie et par niveau geographique. Il permet notamment :
+L'onglet `IDSR` est dedie aux donnees agregees hebdomadaires. Il permet notamment :
 
 - la lecture des cas et deces par semaine
 - la completude de rapportage
@@ -140,81 +159,16 @@ L'onglet `IDSR` est dedie aux donnees hebdomadaires agregees par maladie et par 
 - des controles qualite sur semaines, dates et doublons
 - des exports CSV et Excel
 
-## Sources de donnees supportees
+## Donnees attendues
 
 ### Pour les line lists
 
-Le mode line list permet de charger les donnees depuis :
-
-- un televersement local `.xlsx`, `.xls` ou `.csv`
-- un fichier present dans `line_list/`
-- une requete `DHIS2 Tracker` via une URL `analytics/enrollments` `.json` ou `.csv`
-- une table ou une requete `SELECT` depuis PostgreSQL
-
-### Pipeline `DHIS2 Tracker`
-
-Pour les extractions `DHIS2 Tracker`, le dashboard applique un pipeline de preparation specifique avant l'analyse :
-
-1. nettoyage des noms de colonnes avec `dashboard_app/colonne_nettoyage.py` pour supprimer accents, ponctuation et caracteres speciaux ;
-2. comparaison des colonnes nettoyees avec le fichier de reference `data/Rename_columns.xlsx` a partir des colonnes `Original` et `Renamed` ;
-3. fusion automatique des colonnes dupliquees ou quasi identiques (par exemple suffixes `.1`, `_1`, `_2`) en conservant la premiere valeur non vide ;
-4. standardisation metier multi-maladies via `dashboard_app/domain.py` pour injecter les conventions propres a la maladie selectionnee ;
-5. ajout des colonnes de provenance, de date de telechargement et, si disponible, de la geographie de notification extraite de la hierarchie DHIS2.
-
-### Pour l'option `Autre`
-
-Si le fichier ne suit pas un schema deja connu, l'application propose :
-
-- la detection automatique des correspondances de colonnes
-- une validation ou correction manuelle des mappings
-- un rapport de qualite du mapping
-- l'export d'une version standardisee du fichier
-- la sauvegarde et le rechargement de profils de mapping reutilisables
-
-Les profils de mapping sont geres par `dashboard_app/column_mapping.py` et sont destines a etre persistes dans `data/mappings/` lors de leur sauvegarde.
-
-## Performance Streamlit et cache
-
-Le projet utilise `st.cache_data(show_spinner=False)` sur les transformations et resumes standard les plus reutilises afin d'accelerer le chargement et les reruns Streamlit.
-
-En pratique, cela couvre notamment :
-
-- les payloads KPI d'accueil
-- les audits standards du fichier
-- la matrice des capacites analytiques
-- la matrice des champs standards recommandes
-- le profil standard multi-maladies
-- la note de capacite standard
-- le resume semantique standard
-
-Point important :
-
-- l'onglet `Methodologie` ne vide plus ces caches a chaque rendu
-- le cache se renouvelle naturellement quand le fichier, le perimetre filtre ou les DataFrames changes
-- cette strategie reduit les recalculs inutiles au lancement et lors de la navigation entre onglets
-
-### Pour IDSR
-
-Le mode IDSR est volontairement plus strict :
-
-- l'utilisateur charge un classeur Excel IDSR dans l'onglet `IDSR`
-- un fichier IDSR peut aussi etre selectionne parmi les fichiers locaux disponibles
-- la validation du format est effectuee avant l'analyse
-
-En mode `idsr`, les onglets line list restent visibles mais leurs analyses detaillees ne remplacent pas le flux IDSR dedie.
-
-## Donnees attendues
-
-### Line lists
-
 Les analyses sont plus robustes si les fichiers contiennent au minimum :
 
-- une geographie de notification :
-  `Province_notification`, `Zone_de_sante_notification`
-- un repere temporel :
-  `Date_notification` ou le couple `Annee_epid` + `Num_semaine_epid`
+- une geographie de notification : `Province_notification`, `Zone_de_sante_notification`
+- un repere temporel : `Date_notification` ou le couple `Annee_epid` + `Num_semaine_epid`
 
-Selon les modules, d'autres variables sont tres utiles :
+Variables tres utiles selon les modules :
 
 - `N_alerte`, `N_epid`, `Source_alerte`, `Localite`
 - `Date_debut_maladie`
@@ -222,13 +176,13 @@ Selon les modules, d'autres variables sont tres utiles :
 - `Age`, `Unite_age`
 - `Sexe`
 - `Issue`
-- `Classification_investigation` pour documenter l'etape d'investigation et la lecture suspect / probable / confirme / non cas
-- `Classification_finale` pour la synthese finale de cas, distincte de l'investigation
-- `Investigation`, `Date_investigation` ou une `Classification_investigation` exploitable
+- `Classification_investigation`
+- `Classification_finale`
+- `Investigation`
 - `Date_prelevement`, `Date_reception_labo`, `Date_resultat`, `Date_confirmation`
 - variables de laboratoire
 
-### IDSR
+### Pour IDSR
 
 Un fichier IDSR exploitable doit fournir, selon le format disponible, des informations du type :
 
@@ -239,61 +193,19 @@ Un fichier IDSR exploitable doit fournir, selon le format disponible, des inform
 - population
 - maladie
 
-## Fonctionnalites principales
-
-- harmonisation automatique des noms de colonnes et des valeurs usuelles
-- nettoyage des noms de colonnes avant renommage de reference (`Original` -> `Renamed`)
-- fusion automatique des colonnes homonymes ou quasi identiques apres standardisation
-- standardisation des schemas multi-maladies
-- audit standard de structure du fichier et des briques activables
-- profil standard multi-maladies adapte a la source active
-- separation standard des lectures investigation / classification finale / laboratoire / issue
-- priorisation explicite de `Classification_investigation` pour la lecture d'investigation
-- lecture de `Classification_finale` comme synthese finale ou support de resultat laboratoire selon les valeurs observees
-- calcul des semaines epidemiologiques ISO
-- harmonisation geographique avec referentiels et jointures fuzzy
-- calcul d'indicateurs standards :
-  alertes documentees, cas, cas investigues, suspects, probables, confirmes,
-  prelevements, receptions labo, positivite labo, deces, vivants documentes, promptitude, completude
-- calcul de la chaine standard COUSP avec denominateurs adaptes selon les colonnes disponibles
-- prise en compte standard de l'investigation documentee a partir du statut, de la date ou d'une classification d'investigation exploitable
-- alertes hebdomadaires et clusters spatio-temporels
-- tableaux standard de relance :
-  cas sans investigation, suspects/probables sans prelevement, prelevements sans reception,
-  receptions sans resultat, positifs sans date de confirmation, deces sans date d'issue
-- score de risque operationnel et IREP
-- generation de tableaux de synthese, graphiques Plotly et exports
-
 ## Denominateurs et conventions standards
 
-Pour rester multi-maladies, le dashboard n'impose pas un seul denominateur partout. Il utilise une logique standard adaptee aux colonnes reellement disponibles :
+Pour rester multi-maladies, le dashboard adapte les denominateurs aux colonnes reellement disponibles :
 
-- `Cas investigues` :
-  alertes documentees si `N_alerte` existe, sinon cas filtres
-- `Cas suspects / probables / confirmes` :
-  cas investigues si possible, sinon cas filtres
-- `Cas preleves` :
-  cas suspects si la classification existe, sinon cas filtres
-- `Receptions labo documentees` :
-  cas preleves
-- `Resultats labo disponibles` :
-  receptions labo si disponibles, sinon cas preleves
-- `Positifs / negatifs / invalides` :
-  resultats documentes ou resultats valides selon l'indicateur
-- `Promptitude` :
-  uniquement les cas avec dates valides et delai non negatif
-
-Cette convention est aussi documentee dans l'onglet `Methodologie`.
-
-En particulier :
-
-- `Classification_investigation` alimente la lecture standard de l'investigation
-- `Classification_finale` n'est pas utilisee comme substitut automatique de l'investigation
-- `Classification_finale` peut toutefois soutenir la lecture `Resultat_labo` quand ses valeurs sont manifestement biologiques
+- `Cas investigues` : alertes documentees si `N_alerte` existe, sinon cas filtres
+- `Cas suspects / probables / confirmes` : cas investigues si possible, sinon cas filtres
+- `Cas preleves` : cas suspects si la classification existe, sinon cas filtres
+- `Receptions labo documentees` : cas preleves
+- `Resultats labo disponibles` : receptions labo si disponibles, sinon cas preleves
+- `Positifs / negatifs / invalides` : resultats documentes ou resultats valides selon l'indicateur
+- `Promptitude` : uniquement les cas avec dates valides et delai non negatif
 
 ## Delais standards suivis
-
-Le dashboard suit en priorite les delais suivants quand les dates existent :
 
 - debut maladie -> notification
 - notification -> investigation
@@ -306,56 +218,44 @@ Le dashboard suit en priorite les delais suivants quand les dates existent :
 - debut maladie -> prelevement
 - prelevement -> resultat
 
-## Exports disponibles
-
-Selon les onglets, l'application propose des sorties comme :
-
-- CSV line list filtree
-- Excel line list standardisee
-- CSV de QC flags
-- CSV de doublons
-- CSV/Excel de tableaux analytiques
-- CSV des cas a relancer dans la chaine standard
-- CSV du suivi d'actions et du score de risque
-
-## Structure actuelle du projet
+## Structure du projet
 
 ```text
 incident_dashboard/
 |-- incident_dashboard.py              # point d'entree Streamlit principal
 |-- call_center.py                     # composant auxiliaire present dans le depot
 |-- dashboard_app/
-|   |-- app_loader.py                  # chargement des sources upload/local/DHIS2/PostgreSQL et pre-standardisation
-|   |-- advanced.py                    # aides avancees et wrappers analytiques
-|   |-- colonne_nettoyage.py           # nettoyage des noms de colonnes et renommage via fichier de reference
+|   |-- app_loader.py                  # chargement des sources et pre-standardisation
+|   |-- advanced.py                    # wrappers et aides analytiques
+|   |-- colonne_nettoyage.py           # nettoyage et renommage via reference
 |   |-- column_mapping.py              # mapping auto/manu, profils, export standardise
-|   |-- core.py                        # helpers transverses, rendu, export
-|   |-- domain.py                      # logique metier, standardisation, indicateurs, chaine COUSP, QC
-|   |-- narratives.py                  # textes de lecture et narration
+|   |-- core.py                        # helpers transverses
+|   |-- domain.py                      # logique metier, standardisation, indicateurs, QC
+|   |-- narratives.py                  # narration et textes de lecture
 |   |-- overview.py                    # synthese, KPI, cartes et composants d'accueil
 |   |-- runtime_support.py             # contexte partage entre onglets
 |   |-- tabs/
-|   |   |-- overview_detail.py         # vue d'ensemble detaillee
-|   |   |-- statistics.py              # notions statistiques, formules et aide a l'interpretation
-|   |   |-- surveillance.py            # surveillance, chaine standard, delais, alertes, clusters
-|   |   |-- profile.py                 # analyses Temps-Lieu-Personne
-|   |   |-- quality.py                 # qualite, coherence, cas a relancer, extraction et export
-|   |   |-- cousp.py                   # synthese COUSP orientee decision
-|   |   |-- irep.py                    # indice composite IREP
-|   |   |-- maps.py                    # cartographie detaillee
-|   |   |-- methodology.py             # definitions, chaines standard, denominateurs et limites
-|   |   |-- idsr.py                    # flux IDSR hebdomadaire agrege
+|   |   |-- overview_detail.py
+|   |   |-- statistics.py
+|   |   |-- surveillance.py
+|   |   |-- profile.py
+|   |   |-- quality.py
+|   |   |-- cousp.py
+|   |   |-- irep.py
+|   |   |-- maps.py
+|   |   |-- methodology.py
+|   |   |-- idsr.py
 |-- data/
 |   |-- geometry_rdc_provinces.geojson
 |   |-- geometry_rdc_zones_sante.geojson
 |   |-- RDC_Zone_de_sante_OCHA.xlsx
-|   |-- Rename_columns.xlsx            # reference principale de renommage des colonnes
-|-- line_list/                         # fichiers locaux d'exemple / travail
-|-- tests/                             # tests unitaires et fixture IDSR
+|   |-- Rename_columns.xlsx
+|-- line_list/
+|-- tests/
 |-- requirements.txt
 ```
 
-## Jeux de donnees presentes dans le depot
+## Jeux de donnees presents dans le depot
 
 ### `line_list/`
 
@@ -368,7 +268,7 @@ Le depot contient deja plusieurs exemples de travail local, notamment :
 
 ### `data/`
 
-Les ressources geographiques presentes servent a la cartographie et aux rapprochements geographiques :
+Ressources geographiques principales :
 
 - `geometry_rdc_provinces.geojson`
 - `geometry_rdc_zones_sante.geojson`
@@ -376,7 +276,7 @@ Les ressources geographiques presentes servent a la cartographie et aux rapproch
 
 ## Tests et fiabilite
 
-Le projet contient une suite de tests orientee sur les briques critiques :
+Le projet contient des tests sur les briques critiques :
 
 - standardisation des line lists et schema commun
 - mapping de colonnes et profils de mapping
@@ -386,51 +286,18 @@ Le projet contient une suite de tests orientee sur les briques critiques :
 - calculs IREP
 - alertes, clusters et contrats de schema standards
 
-Principaux fichiers de test :
+Principaux fichiers :
 
 - `tests/test_dashboard_domain.py`
 - `tests/test_column_mapping.py`
+- `tests/test_line_list_regression.py`
 - `tests/IDSR.xlsx`
-
-Execution :
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-## Installation
-
-### 1. Creer un environnement virtuel
-
-```bash
-python -m venv .venv
-```
-
-### 2. Activer l'environnement
-
-Sous Windows PowerShell :
-
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-### 3. Installer les dependances
-
-```bash
-pip install -r requirements.txt
-```
-
-## Lancer l'application
-
-```bash
-streamlit run .\incident_dashboard.py
-```
 
 ## Cas d'usage couverts
 
 - suivi hebdomadaire de flambees et d'incidents de sante publique
 - surveillance multi-maladies basee sur line lists
-- lecture standardisee COUSP pour revues de surveillance multi-maladies
+- lecture standardisee COUSP pour revues de surveillance
 - preparation de lectures pour reunions de coordination
 - production de tableaux et exports pour diffusion
 - identification rapide des ruptures de chaine investigation -> prelevement -> labo -> issue
@@ -441,11 +308,35 @@ streamlit run .\incident_dashboard.py
 
 - la qualite des sorties depend directement de la qualite des colonnes sources
 - certaines analyses exigent des dates et une geographie suffisamment renseignees
-- certaines sources ne distinguent pas explicitement `N_alerte` et `N_epid`, ce qui limite la lecture purement orientee alerte
+- certaines sources ne distinguent pas explicitement `N_alerte` et `N_epid`
 - le mode `Autre` reste dependant de la qualite du mapping utilisateur
-- les extractions DHIS2 tres riches peuvent produire des colonnes proches ou redondantes ; le pipeline les fusionne automatiquement mais un controle ponctuel reste utile sur les nouveaux formulaires
-- les analyses IDSR et les analyses line list suivent des logiques differentes et ne doivent pas etre confondues
-- les conventions de mapping multi-maladies doivent etre maintenues au fil des nouveaux formats sources
+- les extractions DHIS2 tres riches peuvent produire des colonnes proches ou redondantes
+- les analyses IDSR et les analyses line list suivent des logiques differentes
+- les conventions de mapping multi-maladies doivent etre maintenues au fil des nouveaux formats
+
+## Depannage
+
+### Warning Streamlit / Plotly
+
+Si un warning de ce type apparait :
+
+```text
+The keyword arguments have been deprecated and will be removed in a future release.
+Use `config` instead to specify Plotly configuration options.
+```
+
+la cause la plus frequente est l'envoi d'arguments non supportes directement a `st.plotly_chart`.
+Dans ce projet, la hauteur des graphiques doit etre appliquee sur la figure Plotly elle-meme, pas via `st.plotly_chart(height=...)`.
+
+### GDAL_DATA non defini
+
+Si vous voyez :
+
+```text
+Cannot find gdalvrt.xsd (GDAL_DATA is not defined)
+```
+
+cela vient de l'environnement geospatial local. Le dashboard peut continuer a fonctionner, mais certaines operations cartographiques dependront d'une installation GDAL correctement configuree.
 
 ## Fichiers d'entree principaux
 

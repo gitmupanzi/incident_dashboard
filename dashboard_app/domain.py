@@ -112,6 +112,7 @@ COL_DEHY = "Degre_deshydratation"
 COL_ISSUE= "Issue"
 COL_CLASS= "Classification_finale"
 COL_CLASS_INVEST = "Classification_investigation"
+COL_RESUL="Resultat_final_labo"
 
 DATE_ONSET = "Date_debut_maladie"
 DATE_NOTIF = "Date_notification"
@@ -867,7 +868,7 @@ def st_plot(fig, key=None, height=None, stretch=True, annotate_values: Optional[
     - Remplace use_container_width (déprécié) par width
     - width='stretch'  -> pleine largeur
     - width='content'  -> largeur naturelle
-    - N'envoie jamais height=None
+    - Applique la hauteur sur la figure Plotly plutôt que via st.plotly_chart
     - Évite les dépendances implicites à globals()
     """
     if fig is None:
@@ -892,22 +893,21 @@ def st_plot(fig, key=None, height=None, stretch=True, annotate_values: Optional[
     except Exception:
         pass
 
+    if height is not None:
+        try:
+            fig.update_layout(height=height)
+        except Exception:
+            pass
+
     fig = _apply_compact_bar_spacing(fig, bargap=0.0, bargroupgap=0.0)
     fig = apply_plotly_value_annotations(fig, bool(annotate_values))
     fig = sanitize_plotly_figure_for_streamlit(fig)
 
-    kwargs = {}
-
-    # Nouveau standard Streamlit
-    kwargs["width"] = "stretch" if stretch else "content"
+    chart_width = "stretch" if stretch else "content"
 
     if key is not None:
-        kwargs["key"] = key
-
-    if height is not None:
-        kwargs["height"] = height
-
-    return st.plotly_chart(fig, **kwargs)
+        return st.plotly_chart(fig, width=chart_width, key=key)
+    return st.plotly_chart(fig, width=chart_width)
 
 
 def render_section_title(section_number: int, title: str) -> None:
@@ -4475,16 +4475,33 @@ STANDARD_ANALYSIS_EQUIVALENT_COLUMNS = {
     "Classification_finale": [
         {"source": "Classification_finale_std"},
         {"source": "Resultat_labo"},
-        {"source": "Resultat_final_labo"},
+        {"source": COL_RESUL},
         {"source": COL_TDRR},
     ],
     "Resultat_labo": [
-        {"source": "Resultat_final_labo"},
+        {"source": COL_RESUL},
         {"source": COL_TDRR},
         {"source": "Classification_finale", "validator": "lab_result_like"},
     ],
     "Issue": [
         {"source": "Issue_std"},
+    ],
+}
+
+
+STANDARD_FILTER_EQUIVALENT_COLUMNS = {
+    COL_CLASS: [
+        {"source": COL_CLASS, "label": "Classification finale"},
+        {"source": COL_CLASS_INVEST, "label": "Classification d'investigation"},
+        {"source": "Classification_finale_std", "label": "Classification finale"},
+        {"source": "Classification_investigation_std", "label": "Classification d'investigation"},
+    ],
+    "Resultat_labo": [
+        {"source": "Resultat_labo", "label": "Résultat final labo"},
+        {"source": COL_RESUL, "label": "Résultat final labo"},
+        {"source": "Resultat_final", "label": "Résultat final labo"},
+        {"source": COL_TDRR, "label": "Résultat final labo"},
+        {"source": COL_CLASS, "label": "Résultat final labo", "validator": "lab_result_like"},
     ],
 }
 
@@ -4530,6 +4547,25 @@ def _resolve_documented_standard_column(
     if column_name in df.columns and _series_effectively_documented_mask(df[column_name]).any():
         return True, column_name, df[column_name]
     return _resolve_equivalent_column_spec(df, column_name)
+
+
+def resolve_available_filter_column(
+    df: pd.DataFrame,
+    filter_name: str,
+) -> tuple[bool, str | None, pd.Series | None, str | None]:
+    """Résout la meilleure colonne documentée à utiliser dans les filtres UI."""
+    for spec in STANDARD_FILTER_EQUIVALENT_COLUMNS.get(filter_name, []):
+        source_name = str(spec.get("source", "")).strip()
+        if not source_name or source_name not in df.columns:
+            continue
+        source_series = df[source_name]
+        validator_name = str(spec.get("validator", "")).strip().lower()
+        if validator_name == "lab_result_like" and not _is_lab_result_like_series(source_series):
+            continue
+        if _series_effectively_documented_mask(source_series).any():
+            label = str(spec.get("label", "")).strip() or None
+            return True, source_name, source_series, label
+    return False, None, None, None
 
 
 def _find_documented_equivalent_column(df: pd.DataFrame, column_name: str) -> tuple[bool, str | None]:
