@@ -204,6 +204,7 @@ COLUMN_VARIANTS: dict[str, list[str]] = {
         "statut_sortie",
         "etat_sortie_malade",
         "statut_a_l_arrivee",
+        "statut_au_moment_de_la_sortie",
     ],
     "Classification_investigation": [
         "classification_investigation",
